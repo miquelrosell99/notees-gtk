@@ -69,7 +69,10 @@ def _read_raw() -> dict[str, Any]:
 def _write_raw(payload: dict[str, Any]) -> None:
     directory = config_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / _CONFIG_FILE_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path = directory / _CONFIG_FILE_NAME
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # The file carries the bearer token — never leave it group/world-readable.
+    os.chmod(path, 0o600)
 
 
 def load_config() -> ClientConfig:
