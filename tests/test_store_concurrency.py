@@ -90,6 +90,6 @@ def test_concurrent_enqueue_and_apply(tmp_path: Path) -> None:
     assert not any(thread.is_alive() for thread in threads), "worker thread hung"
     assert errors == []
     assert len(store.pending_outbox(WS, limit=10_000)) == ENQUEUE_THREADS * ENQUEUES_PER_THREAD
-    # Each create applied True exactly once across both appliers: (0, APPLIED_NODES).
-    assert sorted(applied_true_counts) == [0, APPLIED_NODES]
+    # Op-id dedupe: each create returned True exactly once across both appliers.
+    assert sum(applied_true_counts) == APPLIED_NODES
     assert len(store.nodes(WS)) == APPLIED_NODES
