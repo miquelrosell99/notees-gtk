@@ -16,6 +16,7 @@ First-class GTK4/libadwaita desktop client for [Notees](https://github.com/mique
 
 - Python 3.12 or later.
 - For the desktop UI: GTK 4 and libadwaita system libraries, plus PyGObject — installed automatically with the `ui` extra (`pip install 'notees-gtk[ui]'`). On Arch these are `gtk4` and `libadwaita`; on Fedora `gtk4` and `libadwaita`; on Debian/Ubuntu `gir1.2-gtk-4.0` and `gir1.2-adw-1`.
+- For production use, serve Notees over TLS or a private overlay network such as Tailscale (per the relay SPEC): the sync protocol encrypts nothing in transit by itself, and the client's default `http://localhost:8001` is for local development only.
 
 Headless machines can run the test suite and linters without the `ui` extra; the GTK widgets are only importable where PyGObject is installed.
 
