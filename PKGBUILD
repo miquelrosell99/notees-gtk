@@ -17,8 +17,12 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "$pkgname"
-  git describe --long --tags --abbrev=7 2>/dev/null | sed 's/^v//;s/-g/.g/;s/-/./g' \
-    || printf "0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  desc="$(git describe --long --tags --abbrev=7 2>/dev/null)" || true
+  if [ -n "$desc" ]; then
+    printf '%s\n' "$desc" | sed 's/^v//;s/-g/.g/;s/-/./g'
+  else
+    printf "0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  fi
 }
 
 build() {
