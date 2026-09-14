@@ -66,6 +66,7 @@ def create_env(
     content: object = None,
     hlc: tuple[int, int] = (1, 0),
     actor: str = ACTOR_A,
+    **extra: object,
 ) -> RelayEnvelope:
     """Build a ``node.create`` envelope; pass ``content`` to include initial content."""
     payload: dict[str, object] = {
@@ -76,6 +77,7 @@ def create_env(
         "icon": None,
         "color": None,
     }
+    payload.update(extra)
     if content is not None:
         payload["content"] = content
     return make_env("node.create", payload, hlc=hlc, actor=actor, affected=(node_id,))
@@ -364,10 +366,11 @@ class TestPull:
     def test_pull_applies_newest_content_and_skips_stale_lww(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         # Server log order (ascending seq) but the HLC clocks are out of order.
+        relay.receive_remote(create_env("n1", content="first", hlc=(1, 0)))
         relay.receive_remote(content_env("n1", "newer", hlc=(20, 0)))
         relay.receive_remote(content_env("n1", "stale", hlc=(10, 0)))
         result = make_engine(relay, store).pull()
-        assert result.applied == 1
+        assert result.applied == 2  # create + newer content; stale skipped
         row = store.node(WS, "n1")
         assert row is not None and row.content == "newer"
 
@@ -417,6 +420,7 @@ class TestSyncConvergence:
 class TestSync:
     def test_sync_pushes_then_pulls(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env("theirs", actor=ACTOR_B))
         relay.receive_remote(content_env("theirs", "remote text", hlc=(3, 0), actor=ACTOR_B))
         store.enqueue(create_env("mine"))
         make_engine(relay, store).sync()
@@ -424,7 +428,7 @@ class TestSync:
         assert store.node(WS, "mine") is not None
         row = store.node(WS, "theirs")
         assert row is not None and row.content == "remote text"
-        assert store.cursor(WS) == 2
+        assert store.cursor(WS) == 3
 
 
 class TestSnapshotRestore:
