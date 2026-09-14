@@ -21,6 +21,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -41,10 +42,55 @@ _log = logging.getLogger(__name__)
 #: Latest schema version applied to the database (see ``_MIGRATIONS``).
 SCHEMA_VERSION = 2
 
-#: Client ``nodes`` columns that are NOT NULL with no DEFAULT while nullable on
-#: the server (server ``node.updated_at`` is plain TEXT); coalesced to '' when
-#: restoring snapshots so real server blobs never fail the intersection insert.
-_NOT_NULL_NO_DEFAULT = frozenset({"updated_at"})
+#: Strict pattern every interpolated snapshot identifier must match — closes
+#: the quote-breakout surface on names read from the attached snapshot.
+_IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+#: Node tables a snapshot blob may provide. The server's derived schema uses
+#: ``node`` (singular); the plural ``nodes`` is the *client* cache's table and
+#: must never be accepted (it is how the original restore bug hid in tests).
+_SNAPSHOT_TABLES = frozenset({"node"})
+
+#: Snapshot node columns copied verbatim (client cache column → server column).
+_SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
+    "id": "id",
+    "workspace_id": "workspace_id",
+    "parent_id": "parent_id",
+    "icon": "icon",
+    "color": "color",
+    "content": "content",
+}
+
+
+def _quote_ident(name: str) -> str:
+    """Quote ``name`` for SQL, rejecting anything outside the strict pattern."""
+    if not _IDENT_RE.match(name):
+        raise ValueError(f"unsafe snapshot identifier: {name!r}")
+    return f'"{name}"'
+
+
+def _snapshot_select_exprs(remote_columns: set[str]) -> dict[str, str]:
+    """Map client cache columns to snapshot SELECT expressions.
+
+    Columns the snapshot lacks are skipped, except ``updated_at``: the client
+    cache column is ``NOT NULL`` with no default, so it falls back to an empty
+    string literal. Beyond verbatim copies this maps the server's names onto
+    the client cache: ``kind`` → ``node_type`` and ``active`` → ``archived``
+    with inverted polarity (server ``active=1`` is client ``archived=0``).
+    """
+    exprs: dict[str, str] = {}
+    for target, source in _SNAPSHOT_VERBATIM_COLUMNS.items():
+        if source in remote_columns:
+            exprs[target] = _quote_ident(source)
+    if "kind" in remote_columns:
+        exprs["node_type"] = _quote_ident("kind")
+    if "active" in remote_columns:
+        exprs["archived"] = f"1 - {_quote_ident('active')}"
+    if "updated_at" in remote_columns:
+        exprs["updated_at"] = f"COALESCE({_quote_ident('updated_at')}, '')"
+    else:
+        exprs["updated_at"] = "''"
+    return exprs
 
 
 @dataclass(frozen=True)
@@ -479,13 +525,18 @@ class LocalStore:
     def restore_snapshot(self, blob: bytes, *, workspace_id: str) -> bool:
         """Restore nodes from a downloaded snapshot blob (serialized derived DB).
 
-        The blob is attached as a temporary SQLite database and only columns
-        present in *both* schemas are copied (``INSERT OR REPLACE``) — the
-        server derived schema has more columns than the client cache. The
-        server's ``updated_at`` is nullable while the client cache is not, so
-        that column is coalesced to an empty string. On any SQLite error or
-        zero overlapping columns the blob is detached and ``False`` is
-        returned with local state untouched.
+        The blob is a serialized copy of the server's derived database, whose
+        node table is ``node`` (singular) with server-side column names:
+        ``kind`` maps to ``node_type`` and ``active`` to ``archived`` with
+        inverted polarity (server ``active=1`` is client ``archived=0``), and
+        the content-LWW columns ``hlc_physical``/``hlc_logical`` seed the
+        client's ``node_content_hlc`` baseline when present. The table is
+        discovered from ``snapshot_src.sqlite_master`` but restricted to a
+        small allowlist, and every interpolated identifier is validated
+        against a strict pattern. Snapshot columns the mapping needs but the
+        blob lacks are skipped. On any error, unrecognized schema, or empty
+        column mapping the blob is detached and ``False`` is returned with
+        local state untouched.
         """
         fd, path = tempfile.mkstemp(prefix="notees-snapshot-", suffix=".db")
         try:
@@ -499,25 +550,39 @@ class LocalStore:
         try:
             self._conn.execute("ATTACH DATABASE ? AS snapshot_src", (path,))
             attached = True
-            remote_columns = {row[1] for row in self._conn.execute("PRAGMA snapshot_src.table_info(nodes)")}
-            local_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(nodes)")}
-            common = sorted(remote_columns & local_columns)
-            if not common:
-                _log.warning("Snapshot restore failed: no overlapping node columns")
+            table = self._snapshot_table()
+            if table is None:
+                _log.warning("Snapshot restore failed: no recognized node table in snapshot")
                 return False
-            columns = ", ".join(f'"{name}"' for name in common)
-            select_exprs = ", ".join(
-                f"COALESCE(\"{name}\", '')" if name in _NOT_NULL_NO_DEFAULT else f'"{name}"' for name in common
-            )
-            select = f"SELECT {select_exprs} FROM snapshot_src.nodes"
+            remote_columns = {
+                str(row[1]) for row in self._conn.execute(f"PRAGMA snapshot_src.table_info({_quote_ident(table)})")
+            }
+            select_exprs = _snapshot_select_exprs(remote_columns)
+            if not select_exprs:
+                _log.warning("Snapshot restore failed: no usable node columns in snapshot")
+                return False
+            columns = ", ".join(_quote_ident(name) for name in select_exprs)
+            select = f"SELECT {', '.join(select_exprs.values())} FROM snapshot_src.{_quote_ident(table)}"
             params: tuple[Any, ...] = ()
-            if "workspace_id" in common:
-                select += ' WHERE "workspace_id" = ?'
+            if "workspace_id" in select_exprs:
+                select += f" WHERE {_quote_ident('workspace_id')} = ?"
                 params = (workspace_id,)
             with self._conn:
                 self._conn.execute(f"INSERT OR REPLACE INTO nodes ({columns}) {select}", params)
+            if {"hlc_physical", "hlc_logical"} <= remote_columns:
+                seed = (
+                    "INSERT OR REPLACE INTO node_content_hlc (node_id, physical, logical)"
+                    f" SELECT {_quote_ident('id')}, {_quote_ident('hlc_physical')}, {_quote_ident('hlc_logical')}"
+                    f" FROM snapshot_src.{_quote_ident(table)}"
+                )
+                seed_params: tuple[Any, ...] = ()
+                if "workspace_id" in remote_columns:
+                    seed += f" WHERE {_quote_ident('workspace_id')} = ?"
+                    seed_params = (workspace_id,)
+                with self._conn:
+                    self._conn.execute(seed, seed_params)
             return True
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError) as exc:
             _log.warning("Snapshot restore failed: %s", exc)
             return False
         finally:
@@ -528,6 +593,14 @@ class LocalStore:
                     _log.debug("snapshot_src detach failed", exc_info=True)
             with contextlib.suppress(OSError):
                 os.unlink(path)
+
+    def _snapshot_table(self) -> str | None:
+        """Return the snapshot's node table name when it is in the allowlist."""
+        rows = self._conn.execute("SELECT name FROM snapshot_src.sqlite_master WHERE type = 'table'").fetchall()
+        for (name,) in rows:
+            if name in _SNAPSHOT_TABLES and _IDENT_RE.match(str(name)):
+                return str(name)
+        return None
 
     # ---------------------------------------------------------------- lifecycle
 

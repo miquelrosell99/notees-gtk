@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
 from conftest import make_server_snapshot
+
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope

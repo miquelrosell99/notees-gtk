@@ -14,8 +14,8 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from conftest import make_server_snapshot
+
 from notees_gtk.core.api import (
     AuthenticationError,
     ForbiddenError,
