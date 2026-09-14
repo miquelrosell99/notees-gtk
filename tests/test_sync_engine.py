@@ -26,9 +26,9 @@ from notees_gtk.core.api import (
     ServerError,
     SnapshotMeta,
 )
-from notees_gtk.core.protocol.clock import Hlc
+from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
-from notees_gtk.core.protocol.models import CatchUpPaginatedResponse, RelayEnvelope
+from notees_gtk.core.protocol.models import CatchUpPaginatedResponse, RelayEnvelope, new_envelope
 from notees_gtk.core.sync import PushResult, SyncEngine
 from notees_gtk.data.store import LocalStore
 
@@ -183,6 +183,7 @@ def make_engine(
     *,
     actor: str = ACTOR_A,
     sleeper: RecordingSleeper | None = None,
+    clock: Clock | None = None,
     page_size: int = 1000,
 ) -> SyncEngine:
     return SyncEngine(
@@ -191,6 +192,7 @@ def make_engine(
         actor_id=actor,
         workspace_id=WS,
         sleeper=sleeper if sleeper is not None else RecordingSleeper(),
+        clock=clock,
         page_size=page_size,
     )
 
@@ -472,3 +474,54 @@ class TestSnapshotRestore:
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is False
         assert relay.snapshot_data_calls == 0
+
+
+class TestClockMerge:
+    """Pull must merge received HLCs into the local clock.
+
+    With a server clock ahead of the client's wall clock, an unmerged local
+    clock restarts at Hlc(0,0) each launch and the server-side LWW gate drops
+    the client's edits ("Save" appears to do nothing).
+    """
+
+    def test_pull_advances_shared_clock_past_received_hlc(self, store: LocalStore) -> None:
+        relay = FakeRelayClient(WS)
+        future = (10**15, 0)  # far-future server clock, ahead of any wall time
+        relay.receive_remote(create_env("remote-node", hlc=future))
+        clock = Clock("device-under-test")
+        make_engine(relay, store, clock=clock).pull()
+        stamped = new_envelope(
+            workspace_id=WS,
+            actor_id=ACTOR_A,
+            op_type="node.updateContent",
+            payload={"nodeId": "remote-node", "content": "local edit"},
+            clock=clock,
+        )
+        assert (stamped.hlc.physical, stamped.hlc.logical) > future
+
+    def test_pull_merges_across_pages(self, store: LocalStore) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(
+            create_env("a", hlc=(10**15, 0)),
+            create_env("b", hlc=(10**15, 5)),
+        )
+        clock = Clock("device-under-test")
+        make_engine(relay, store, clock=clock, page_size=1).pull()
+        stamped = new_envelope(
+            workspace_id=WS,
+            actor_id=ACTOR_A,
+            op_type="node.updateContent",
+            payload={"nodeId": "a", "content": "x"},
+            clock=clock,
+        )
+        assert (stamped.hlc.physical, stamped.hlc.logical) > (10**15, 5)
+
+
+def test_window_wires_shared_clock_into_engine() -> None:
+    """Static guard: the GTK window cannot be imported headless, so assert on
+    source that the engine receives the same Clock instance the editor stamps
+    envelopes with (otherwise merged HLC state would not be shared)."""
+    source = (Path(__file__).resolve().parent.parent / "src" / "notees_gtk" / "ui" / "window.py").read_text(
+        encoding="utf-8"
+    )
+    assert "clock=self._clock" in source
