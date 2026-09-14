@@ -14,6 +14,11 @@ dependencies = [
     "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+ui = [
+    "PyGObject>=3.50",
+]
+
 [project.scripts]
 notees-gtk = "notees_gtk.main:run"
 
@@ -29,8 +34,7 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
+select = [    "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
     "F",   # Pyflakes
     "I",   # isort
@@ -43,6 +47,10 @@ select = [
 ignore = [
     "E501",  # Line too long (handled by formatter)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# GTK modules must call gi.require_version() before gi.repository imports.
+"src/notees_gtk/ui/**" = ["E402"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
