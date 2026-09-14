@@ -51,6 +51,7 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         "asset.delete",
         # Activity
         "activity.record",
+        "activity.delete",
         "link.click",
         # Shares
         "share.public.create",
