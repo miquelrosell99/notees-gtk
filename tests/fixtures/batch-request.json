@@ -1,0 +1,42 @@
+{
+  "envelopes": [
+    {
+      "id": "018f0000-0000-7000-8000-000000000101",
+      "protocolVersion": 1,
+      "workspaceId": "018f0000-0000-7000-8000-000000000001",
+      "actorId": "018f0000-0000-7000-8000-0000000000aa",
+      "hlc": {
+        "physical": 1767225600000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "018f0000-0000-7000-8000-0000000000b1"
+      ],
+      "opType": "node.updateContent",
+      "timestamp": "2026-01-01T00:00:00Z",
+      "payload": {
+        "nodeId": "018f0000-0000-7000-8000-0000000000b1",
+        "content": "<p>Hello</p>"
+      }
+    },
+    {
+      "id": "018f0000-0000-7000-8000-000000000102",
+      "protocolVersion": 1,
+      "workspaceId": "018f0000-0000-7000-8000-000000000001",
+      "actorId": "018f0000-0000-7000-8000-0000000000aa",
+      "hlc": {
+        "physical": 1767225600000,
+        "logical": 1
+      },
+      "affectedNodeIds": [
+        "018f0000-0000-7000-8000-0000000000b1"
+      ],
+      "opType": "node.updateContent",
+      "timestamp": "2026-01-01T00:00:00Z",
+      "payload": {
+        "nodeId": "018f0000-0000-7000-8000-0000000000b1",
+        "content": "<p>Hello world</p>"
+      }
+    }
+  ]
+}

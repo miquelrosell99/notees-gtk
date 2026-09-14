@@ -1,0 +1,28 @@
+{
+  "type": "ops",
+  "protocolVersion": 2,
+  "envelopes": [
+    {
+      "id": "018f3c5e-9a1b-7c2d-8e4f-6a5b4c3d2e1f",
+      "protocolVersion": 1,
+      "workspaceId": "018f3c5e-0000-7000-8000-000000000001",
+      "actorId": "018f3c5e-0000-7000-8000-0000000000aa",
+      "hlc": {
+        "physical": 1755000000000,
+        "logical": 3
+      },
+      "affectedNodeIds": [
+        "018f3c5e-0000-7000-8000-0000000000bb"
+      ],
+      "opType": "node.create",
+      "timestamp": "2026-08-22T12:00:00Z",
+      "payload": {
+        "nodeId": "018f3c5e-0000-7000-8000-0000000000bb",
+        "kind": "page"
+      }
+    }
+  ],
+  "seqs": {
+    "018f3c5e-9a1b-7c2d-8e4f-6a5b4c3d2e1f": 4127
+  }
+}
