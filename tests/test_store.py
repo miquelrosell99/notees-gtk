@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_server_snapshot
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
@@ -87,39 +88,6 @@ def content_env(node_id: str, content: object, *, hlc: tuple[int, int]) -> Relay
     if content is not None:
         payload["content"] = content
     return make_env("node.updateContent", payload, hlc=hlc, affected=(node_id,))
-
-
-def make_server_snapshot(rows: list[dict[str, object]]) -> bytes:
-    """Serialize a fake *server-derived* snapshot DB (more columns than the client cache)."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
-        CREATE TABLE nodes (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT '',
-            class_ids TEXT NOT NULL DEFAULT '[]',
-            parent_id TEXT,
-            content TEXT,
-            icon TEXT,
-            color TEXT,
-            active INTEGER NOT NULL DEFAULT 1,
-            hlc_physical INTEGER NOT NULL DEFAULT 0,
-            hlc_logical INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT,
-            updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT
-        )
-        """
-    )
-    for row in rows:
-        cols = ", ".join(row)
-        placeholders = ", ".join("?" for _ in row)
-        conn.execute(f"INSERT INTO nodes ({cols}) VALUES ({placeholders})", tuple(row.values()))
-    blob = conn.serialize()
-    conn.close()
-    return blob
 
 
 @pytest.fixture
@@ -376,7 +344,7 @@ class TestNodesQuery:
 
 
 class TestSnapshotRestore:
-    def test_restore_imports_column_intersection(self, store: LocalStore) -> None:
+    def test_restore_maps_real_server_schema(self, store: LocalStore) -> None:
         mirror = '[{"type":"text","text":"snap"}]'
         blob = make_server_snapshot(
             [
@@ -391,26 +359,36 @@ class TestSnapshotRestore:
                     "active": 0,
                     "updated_at": "2026-01-01T00:00:00+00:00",
                     "created_by": ACTOR,
-                }
+                    "hlc_physical": 5,
+                    "hlc_logical": 2,
+                },
+                {"id": "n2", "workspace_id": WS_A, "kind": "block", "content": "[]"},
             ]
         )
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
-        (row,) = store.nodes(WS_A, include_archived=True)
-        # Shared columns come over; client-only columns keep their defaults and
-        # server-only columns (kind/active/created_by/...) are dropped.
-        assert row.id == "n1"
-        assert row.content == mirror
-        assert row.icon == "📄"
-        assert row.parent_id is None
-        assert row.node_type == ""
-        assert row.name == ""
-        assert row.archived is False
+        rows = {row.id: row for row in store.nodes(WS_A, include_archived=True)}
+        # Real-schema mapping: kind → node_type, active → archived INVERTED,
+        # verbatim columns copied, client-only columns keep their defaults,
+        # server-only columns (class_ids/created_by/…) are dropped.
+        assert rows["n1"].node_type == "page"
+        assert rows["n1"].archived is True  # active=0
+        assert rows["n1"].content == mirror
+        assert rows["n1"].icon == "📄"
+        assert rows["n1"].parent_id is None
+        assert rows["n1"].name == ""
+        assert rows["n2"].node_type == "block"
+        assert rows["n2"].archived is False  # active=1 (server default)
+        # Seeded LWW baseline (hlc 5,2): lower/equal content HLCs must lose.
+        assert store.apply_remote(content_env("n1", "stale echo", hlc=(4, 9))) is False
+        assert store.node(WS_A, "n1").content == mirror
+        assert store.apply_remote(content_env("n1", "newer", hlc=(5, 3))) is True
+        assert store.node(WS_A, "n1").content == "newer"
 
     def test_restore_filters_by_workspace(self, store: LocalStore) -> None:
         blob = make_server_snapshot(
             [
-                {"id": "n1", "workspace_id": WS_A},
-                {"id": "n2", "workspace_id": WS_B},
+                {"id": "n1", "workspace_id": WS_A, "kind": "page"},
+                {"id": "n2", "workspace_id": WS_B, "kind": "page"},
             ]
         )
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
@@ -418,11 +396,49 @@ class TestSnapshotRestore:
 
     def test_restore_with_zero_overlapping_columns_returns_false(self, store: LocalStore) -> None:
         conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE nodes (only_server_col TEXT)")
-        conn.execute("INSERT INTO nodes VALUES ('x')")
+        conn.execute("CREATE TABLE node (only_server_col TEXT)")
+        conn.execute("INSERT INTO node VALUES ('x')")
         blob = conn.serialize()
         conn.close()
         assert store.restore_snapshot(blob, workspace_id=WS_A) is False
+
+    def test_restore_rejects_unrecognized_snapshot_tables(self, store: LocalStore) -> None:
+        # The plural ``nodes`` table is a client-cache invention, not a server
+        # snapshot — accepting it is how the original double-fake bug hid.
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE nodes (id TEXT, workspace_id TEXT, kind TEXT)")
+        conn.execute("INSERT INTO nodes VALUES ('x', ?, 'page')", (WS_A,))
+        blob = conn.serialize()
+        conn.close()
+        assert store.restore_snapshot(blob, workspace_id=WS_A) is False
+
+    def test_restore_without_hlc_columns_skips_lww_baseline(self, store: LocalStore) -> None:
+        # Pre-HLC server snapshots lack hlc_physical/hlc_logical: restore must
+        # still work and simply not seed a content-HLC baseline.
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE node (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('page', 'block')),
+                content TEXT NOT NULL DEFAULT '[]',
+                active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO node (id, workspace_id, kind, content) VALUES ('legacy', ?, 'page', 'old')",
+            (WS_A,),
+        )
+        blob = conn.serialize()
+        conn.close()
+        assert store.restore_snapshot(blob, workspace_id=WS_A) is True
+        row = store.node(WS_A, "legacy")
+        assert row is not None and row.node_type == "page" and row.content == "old"
+        # No baseline → any later updateContent wins.
+        assert store.apply_remote(content_env("legacy", "new", hlc=(1, 0))) is True
+        assert store.node(WS_A, "legacy").content == "new"
 
     def test_restore_corrupt_blob_returns_false_and_leaves_state_untouched(self, store: LocalStore) -> None:
         store.apply_remote(create_env(content="local", hlc=(2, 0)))

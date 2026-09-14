@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from conftest import make_server_snapshot
 from notees_gtk.core.api import (
     AuthenticationError,
     ForbiddenError,
@@ -86,37 +87,6 @@ def create_env(
 def content_env(node_id: str, content: object, *, hlc: tuple[int, int], actor: str = ACTOR_A) -> RelayEnvelope:
     """Build a ``node.updateContent`` envelope."""
     return make_env("node.updateContent", {"nodeId": node_id, "content": content}, hlc=hlc, actor=actor)
-
-
-def make_server_snapshot(rows: list[dict[str, object]]) -> bytes:
-    """Serialize a fake server-derived snapshot DB (more columns than the client cache)."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
-        CREATE TABLE nodes (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT '',
-            class_ids TEXT NOT NULL DEFAULT '[]',
-            parent_id TEXT,
-            content TEXT,
-            icon TEXT,
-            color TEXT,
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT,
-            updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT
-        )
-        """
-    )
-    for row in rows:
-        cols = ", ".join(row)
-        placeholders = ", ".join("?" for _ in row)
-        conn.execute(f"INSERT INTO nodes ({cols}) VALUES ({placeholders})", tuple(row.values()))
-    blob = conn.serialize()
-    conn.close()
-    return blob
 
 
 def _no_http(request: httpx.Request) -> httpx.Response:
