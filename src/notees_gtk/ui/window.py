@@ -159,7 +159,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._workspace_id = workspace_id
         self._editor.set_workspace(workspace_id)
         actor_id = config_store.load_actor_id() or _ACTOR_FALLBACK
-        engine = SyncEngine(client, store, actor_id=actor_id, workspace_id=workspace_id)
+        engine = SyncEngine(client, store, actor_id=actor_id, workspace_id=workspace_id, clock=self._clock)
         self._engine = engine
         self._start_interval_sync()
 

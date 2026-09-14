@@ -525,3 +525,24 @@ def test_window_wires_shared_clock_into_engine() -> None:
         encoding="utf-8"
     )
     assert "clock=self._clock" in source
+
+
+class _NoProgressRelay(FakeRelayClient):
+    """Relay that claims more data but never advances the seq cursor."""
+
+    def catch_up(self, workspace_id: str, after_seq: int = 0, limit: int = 1000) -> CatchUpPaginatedResponse:
+        self.catch_up_calls.append(after_seq)
+        return CatchUpPaginatedResponse(
+            envelopes=[create_env("stuck")],
+            next_after_seq=after_seq,
+            has_more=True,
+        )
+
+
+class TestPullNoProgressGuard:
+    def test_pull_breaks_when_the_server_makes_no_progress(self, store: LocalStore) -> None:
+        relay = _NoProgressRelay(WS)
+        result = make_engine(relay, store).pull()
+        assert relay.catch_up_calls == [0]  # exactly one call — no infinite loop
+        assert result.cursor == 0
+        assert store.cursor(WS) == 0

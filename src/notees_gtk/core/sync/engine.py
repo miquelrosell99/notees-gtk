@@ -25,6 +25,7 @@ from notees_gtk.core.api import (
     RateLimitedError,
     ServerError,
 )
+from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.store import LocalStore
 
@@ -37,6 +38,11 @@ BACKOFF_SECONDS: tuple[float, ...] = (5, 15, 60, 300, 1800)
 
 #: Outbox envelopes submitted per ``POST /batch`` chunk.
 OUTBOX_CHUNK_SIZE = 100
+
+
+def _now_ms() -> int:
+    """Return the current wall-clock time in milliseconds."""
+    return int(time.time() * 1000)
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,11 @@ class SyncEngine:
         actor_id: Public id of the syncing user; envelopes are stamped with it
             by the producers (Task 5/6), the engine itself is actor-agnostic.
         workspace_id: Workspace to sync.
+        clock: Local HLC clock. Every catch-up page merges the newest received
+            HLC into it so envelopes stamped after a sync stay causally ahead
+            of state the client just pulled; defaults to a fresh clock bound
+            to ``actor_id`` (callers that stamp envelopes, e.g. the GTK
+            window, should inject their shared instance).
         sleeper: Callable sleeping ``n`` seconds between retries; injectable so
             tests can record the backoff schedule without real delays.
         page_size: Catch-up page size (server clamps to [1, 10,000]).
@@ -86,6 +97,7 @@ class SyncEngine:
         *,
         actor_id: str,
         workspace_id: str,
+        clock: Clock | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         page_size: int = 1000,
     ) -> None:
@@ -94,6 +106,7 @@ class SyncEngine:
         self._store = store
         self._actor_id = actor_id
         self._workspace_id = workspace_id
+        self._clock = clock if clock is not None else Clock(device_id=actor_id)
         self._sleeper = sleeper
         self._page_size = page_size
 
@@ -162,8 +175,12 @@ class SyncEngine:
         """Page catch-up from the stored cursor and apply every envelope.
 
         The cursor is persisted after every page, so a mid-page crash only
-        re-fetches the tail (op-id dedupe covers the overlap). The final page's
-        ``next_after_seq`` covers the tail and is adopted as the stored cursor.
+        re-fetches the tail (op-id dedupe covers the overlap). The local HLC
+        clock merges the newest envelope HLC of every page so subsequently
+        stamped envelopes stay causally ahead of pulled state. The final
+        page's ``next_after_seq`` covers the tail and is adopted as the
+        stored cursor; a page reporting no cursor progress breaks the loop
+        instead of spinning on a misbehaving server.
         """
         applied = 0
         after = self._store.cursor(self._workspace_id)
@@ -172,7 +189,13 @@ class SyncEngine:
             for env in page.envelopes:
                 if self._store.apply_remote(env):
                     applied += 1
+            if page.envelopes:
+                newest = max(page.envelopes, key=lambda env: (env.hlc.physical, env.hlc.logical)).hlc
+                self._clock.update(newest, _now_ms())
             if page.next_after_seq is not None:
+                if page.next_after_seq <= after:
+                    _log.warning("Catch-up made no progress (next_after_seq=%s after seq %s); aborting pull", page.next_after_seq, after)
+                    break
                 after = page.next_after_seq
                 self._store.set_cursor(self._workspace_id, after)
             if not page.has_more or page.next_after_seq is None:
