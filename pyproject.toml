@@ -12,7 +12,6 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx",
     "pydantic>=2",
-    "uuid7>=0.1.0",
 ]
 
 [project.scripts]

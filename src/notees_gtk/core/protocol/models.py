@@ -16,9 +16,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
-from uuid_extensions import uuid7
 
 from notees_gtk.core.protocol.clock import Clock, Hlc
+from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.op_types import KNOWN_OP_TYPES
 
 __all__ = [
@@ -74,7 +74,7 @@ class RelayEnvelope(BaseModel):
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    id: str = Field(default_factory=lambda: str(uuid7()))
+    id: str = Field(default_factory=new_uuid7)
     protocol_version: int = Field(default=PROTOCOL_VERSION)
     workspace_id: str
     actor_id: str
