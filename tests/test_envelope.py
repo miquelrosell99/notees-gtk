@@ -14,6 +14,8 @@ from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.models import (
     MAX_ENVELOPE_SIZE_BYTES,
     RelayEnvelope,
+    WsHelloMessage,
+    WsOpsMessage,
     check_payload_size,
     new_envelope,
 )
@@ -145,3 +147,32 @@ class TestNewEnvelope:
         payload = {"data": "x" * (MAX_ENVELOPE_SIZE_BYTES + 1)}
         with pytest.raises(ValueError, match="exceeds maximum payload size"):
             self._make(payload=payload)
+
+
+class TestProtocolVersionRejection:
+    """SPEC §7 / Flutter pattern: newer protocol versions must fail loudly.
+
+    Version-2 workspaces speak E2EE (``{"$e": ...}`` payloads); a client that
+    cannot decrypt must reject the envelope at validation time, never sync
+    ciphertext.
+    """
+
+    def test_envelope_v2_rejected(self) -> None:
+        raw = {**VALID_ENVELOPE, "protocolVersion": 2}
+        with pytest.raises(ValidationError, match="protocol_version"):
+            RelayEnvelope.model_validate(raw)
+
+    def test_envelope_v1_accepted(self) -> None:
+        assert RelayEnvelope.model_validate(VALID_ENVELOPE).protocol_version == 1
+
+    def test_ws_hello_framing_v3_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="protocol_version"):
+            WsHelloMessage.model_validate({"type": "hello", "protocolVersion": 3})
+
+    def test_ws_ops_framing_v3_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="protocol_version"):
+            WsOpsMessage.model_validate({"type": "ops", "protocolVersion": 3, "envelopes": [], "seqs": {}})
+
+    def test_ws_framing_v2_accepted(self) -> None:
+        assert WsHelloMessage.model_validate({"protocolVersion": 2}).protocol_version == 2
+        assert WsOpsMessage.model_validate({"protocolVersion": 2, "envelopes": []}).protocol_version == 2
