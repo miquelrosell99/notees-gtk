@@ -189,6 +189,9 @@ class NoteesWindow(Adw.ApplicationWindow):
         return True  # keep the GLib timeout source alive (GLib.SOURCE_CONTINUE)
 
     def _on_editor_saved(self, node_id: str) -> None:
+        # The editor already applied the envelope to the local mirror before
+        # this callback, so the toggle-off refresh below renders fresh content;
+        # the sync round only needs to push the outbox and pick up the echo.
         self.show_toast("Saved — syncing…")
         self._edit_toggle.set_active(False)
         engine = self._engine

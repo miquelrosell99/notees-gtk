@@ -3,8 +3,10 @@
 The read-only view renders the rich AST; editing goes through a plain-text
 ``Gtk.TextView`` seeded with :func:`ast_to_plaintext` — the same non-CRDT
 form the Flutter client uses. Saving rebuilds the paragraph AST, enqueues a
-``node.updateContent`` envelope, and hands off to the window, which runs the
-sync engine on a worker thread.
+``node.updateContent`` envelope, applies it optimistically to the local
+mirror (so the read-only view re-rendered on toggle-off already shows the new
+content; op-id dedupe makes the server echo harmless), and hands off to the
+window, which runs the sync engine on a worker thread.
 """
 
 from __future__ import annotations
@@ -92,4 +94,12 @@ class EditorView(Gtk.Box):
             clock=self._clock,
         )
         self._store.enqueue(envelope)
+        # Optimistically apply to the local mirror so the read-only view that
+        # the toggle flip re-renders already shows the saved content (enqueue
+        # alone only writes the outbox; the mirror would update on server
+        # echo). This runs synchronously on the main thread before ``on_saved``
+        # returns, so it strictly precedes the toggle-triggered refresh.
+        # Op-id dedupe makes the later server echo a no-op, and the LWW gate
+        # uses this envelope's fresh HLC, so the echo cannot regress content.
+        self._store.apply_remote(envelope)
         self._on_saved(self._node_id)
