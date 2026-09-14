@@ -19,11 +19,16 @@ ui = [
     "PyGObject>=3.50",
 ]
 
+[project.urls]
+Homepage = "https://github.com/miquelrosell99/notees-gtk"
+Repository = "https://github.com/miquelrosell99/notees-gtk"
+
 [project.scripts]
 notees-gtk = "notees_gtk.main:run"
 
 [dependency-groups]
 dev = [
+    "build>=1.2",
     "pytest>=9.0.3",
     "ruff>=0.6.0",
     "mypy>=1.10.0",
