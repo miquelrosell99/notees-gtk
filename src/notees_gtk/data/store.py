@@ -7,6 +7,12 @@ envelopes), the op-id dedupe log, the sync watermark (seq cursor +
 every schema change is guarded (``CREATE TABLE IF NOT EXISTS`` /
 ``_add_column_if_missing``), WAL journaling, and last-write-wins node content
 gated through ``node_content_hlc``.
+
+Thread-safety: the store is constructed on the GTK main thread while the sync
+engine runs on worker threads against the same connection. The connection is
+therefore opened with ``check_same_thread=False`` and every public method
+serializes through a re-entrant lock (see :func:`_synchronized`); private
+helpers are only ever called from locked public methods.
 """
 
 from __future__ import annotations
@@ -17,11 +23,13 @@ import logging
 import os
 import sqlite3
 import tempfile
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate
 
 from notees_gtk.core.protocol.clock import Hlc, compare_hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
@@ -91,6 +99,23 @@ def _content_to_string(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
+    """Run a :class:`LocalStore` public method while holding the instance lock.
+
+    The single SQLite connection is shared between the GTK main thread and
+    worker threads (``check_same_thread=False``); this decorator serializes
+    every public entry point. The lock is re-entrant, so locked methods may
+    call each other (and private helpers) freely.
+    """
+
+    @wraps(method)
+    def wrapper(self: LocalStore, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class LocalStore:
     """SQLite-backed local cache and relay outbox.
 
@@ -99,12 +124,16 @@ class LocalStore:
 
     All migrations are idempotent: opening a fresh database applies the full
     chain, and re-opening (or downgrading ``user_version``) never fails with
-    "duplicate column name" / "table already exists".
+    "duplicate column name" / "table already exists". The instance is safe to
+    share across threads: the connection is opened with
+    ``check_same_thread=False`` and every public method serializes through a
+    re-entrant lock.
     """
 
     def __init__(self, path: str | Path) -> None:
         """Open (creating if needed) the database and apply pending migrations."""
-        self._conn = sqlite3.connect(str(path))
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._appliers: dict[str, Callable[[RelayEnvelope], bool]] = {
             "node.create": self._apply_create,
@@ -145,6 +174,7 @@ class LocalStore:
 
     # ------------------------------------------------------------------ outbox
 
+    @_synchronized
     def enqueue(self, env: RelayEnvelope) -> None:
         """Append an envelope to the relay outbox for later submission.
 
@@ -162,6 +192,7 @@ class LocalStore:
                 (json.dumps(env.model_dump(mode="json", by_alias=True)), env.workspace_id, _now_iso()),
             )
 
+    @_synchronized
     def pending_outbox(self, workspace_id: str, limit: int = 100) -> list[RelayEnvelope]:
         """Return up to ``limit`` pending envelopes for a workspace, oldest first."""
         rows = self._conn.execute(
@@ -171,6 +202,7 @@ class LocalStore:
         ).fetchall()
         return [RelayEnvelope.model_validate(json.loads(raw)) for (raw,) in rows]
 
+    @_synchronized
     def mark_outbox_sent(self, ids: Iterable[str]) -> None:
         """Remove outbox rows whose envelope id is in ``ids`` (whole-chunk ack)."""
         row_ids = self._matching_outbox_rows(ids)
@@ -180,6 +212,7 @@ class LocalStore:
         with self._conn:
             self._conn.execute(f"DELETE FROM relay_outbox WHERE id IN ({placeholders})", row_ids)
 
+    @_synchronized
     def quarantine_outbox(self, ids: Iterable[str], reason: str) -> None:
         """Park outbox rows whose envelope id is in ``ids`` as ``quarantined``."""
         row_ids = self._matching_outbox_rows(ids)
@@ -202,6 +235,7 @@ class LocalStore:
 
     # -------------------------------------------------------------- sync state
 
+    @_synchronized
     def cursor(self, workspace_id: str) -> int:
         """Return the persisted catch-up seq cursor (0 when never synced)."""
         row = self._conn.execute(
@@ -209,6 +243,7 @@ class LocalStore:
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    @_synchronized
     def set_cursor(self, workspace_id: str, seq: int) -> None:
         """Persist the catch-up seq cursor for a workspace."""
         with self._conn:
@@ -218,6 +253,7 @@ class LocalStore:
                 (workspace_id, seq),
             )
 
+    @_synchronized
     def stored_restore_epoch(self, workspace_id: str) -> int:
         """Return the persisted server ``restore_epoch`` (0 when never synced)."""
         row = self._conn.execute(
@@ -225,6 +261,7 @@ class LocalStore:
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    @_synchronized
     def set_restore_epoch(self, workspace_id: str, epoch: int) -> None:
         """Persist the server ``restore_epoch`` for a workspace."""
         with self._conn:
@@ -234,6 +271,7 @@ class LocalStore:
                 (workspace_id, epoch),
             )
 
+    @_synchronized
     def wipe(self, workspace_id: str) -> None:
         """Delete every piece of local state for a workspace (all tables)."""
         with self._conn:
@@ -249,6 +287,7 @@ class LocalStore:
 
     # ------------------------------------------------------------ remote apply
 
+    @_synchronized
     def apply_remote(self, env: RelayEnvelope) -> bool:
         """Apply one remote envelope to the local cache.
 
@@ -390,6 +429,7 @@ class LocalStore:
 
     # -------------------------------------------------------------- node cache
 
+    @_synchronized
     def nodes(self, workspace_id: str, parent_id: str | None = None, include_archived: bool = False) -> list[NodeRow]:
         """List cached node rows, optionally filtered by parent.
 
@@ -409,6 +449,7 @@ class LocalStore:
             sql += " AND archived = 0"
         return [self._to_node_row(row) for row in self._conn.execute(sql, params).fetchall()]
 
+    @_synchronized
     def node(self, workspace_id: str, node_id: str) -> NodeRow | None:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
@@ -434,6 +475,7 @@ class LocalStore:
 
     # ---------------------------------------------------------------- snapshots
 
+    @_synchronized
     def restore_snapshot(self, blob: bytes, *, workspace_id: str) -> bool:
         """Restore nodes from a downloaded snapshot blob (serialized derived DB).
 
@@ -489,6 +531,7 @@ class LocalStore:
 
     # ---------------------------------------------------------------- lifecycle
 
+    @_synchronized
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
