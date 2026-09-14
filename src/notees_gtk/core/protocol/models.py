@@ -91,6 +91,21 @@ class RelayEnvelope(BaseModel):
             raise ValueError(f"Unknown op_type: {value!r}")
         return value
 
+    @field_validator("protocol_version")
+    @classmethod
+    def _validate_protocol_version(cls, value: int) -> int:
+        """Fail loudly on newer envelope versions (SPEC §7).
+
+        Version-2 workspaces are E2EE and carry ``{"$e": ...}`` payloads this
+        client cannot decrypt; silently accepting them would sync ciphertext.
+        """
+        if value > PROTOCOL_VERSION:
+            raise ValueError(
+                f"Unsupported protocol_version {value}: this client speaks v{PROTOCOL_VERSION} "
+                "and must not sync newer (possibly E2EE) payloads"
+            )
+        return value
+
     @field_validator("timestamp")
     @classmethod
     def _normalize_timestamp(cls, value: datetime | None) -> datetime | None:
@@ -156,6 +171,24 @@ class WsHelloMessage(BaseModel):
     restore_epoch: int = 0
     latest_seq: int = 0
 
+    @field_validator("protocol_version")
+    @classmethod
+    def _check_framing_version(cls, value: int) -> int:
+        return _validate_framing_version(value)
+
+
+def _validate_framing_version(value: int) -> int:
+    """Fail loudly on newer WS framing versions (SPEC §5).
+
+    A client that cannot parse a newer frame must abort at validation time
+    instead of misreading the stream.
+    """
+    if value > WS_PROTOCOL_VERSION:
+        raise ValueError(
+            f"Unsupported protocol_version {value}: this client speaks WS framing v{WS_PROTOCOL_VERSION}"
+        )
+    return value
+
 
 class WsOpsMessage(BaseModel):
     """Batch of envelopes broadcast to workspace subscribers.
@@ -175,6 +208,11 @@ class WsOpsMessage(BaseModel):
     protocol_version: int = WS_PROTOCOL_VERSION
     envelopes: list[RelayEnvelope]
     seqs: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _check_framing_version(cls, value: int) -> int:
+        return _validate_framing_version(value)
 
 
 def _wall_clock_ms() -> int:
