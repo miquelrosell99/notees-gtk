@@ -1,18 +1,28 @@
-"""Local SQLite store for the Notees GTK client.
+"""Local SQLite store for the Notees GTK client (relay protocol v2).
 
 Owns the offline-capable client cache: the relay outbox (pending/quarantined
 envelopes), the op-id dedupe log, the sync watermark (seq cursor +
-``restore_epoch``), and the mirrored node table. Mirrors the mobile client's
-``AppDatabase`` contract: idempotent ``PRAGMA user_version`` migrations where
-every schema change is guarded (``CREATE TABLE IF NOT EXISTS`` /
-``_add_column_if_missing``), WAL journaling, and last-write-wins node content
-gated through ``node_content_hlc``.
+``restore_epoch``), and the mirrored v2 node table with the applier semantics
+ported from v2 ``packages/store/src/appliers.ts``: row-level last-write-wins by
+``(hlc_physical, hlc_logical, actor_id)``, OR-Set class/collection membership,
+m2m class extends with an applier-maintained transitive closure (cycles fail
+loud), fractional child-order positions, property values with tombstones, and
+soft/permanent deletes with trash retention.
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
 therefore opened with ``check_same_thread=False`` and every public method
 serializes through a re-entrant lock (see :func:`_synchronized`); private
 helpers are only ever called from locked public methods.
+
+Schema notes: the client cache keeps its own table shapes where they match the
+v2 derived schema — the ``nodes`` mirror is keyed ``(workspace_id, id)`` (the
+v2 server keys ``id`` alone; node ids are uuid7, so the difference is
+theoretical) and carries the same v2 column names. Placement invariants the
+server enforces as CHECK constraints ("bullet-proof schema") are enforced in
+the applier here (:class:`~notees_gtk.data.errors.PlacementError`), so a
+corrupt local row stays repairable via the restore-epoch wipe instead of
+wedging a table rebuild.
 """
 
 from __future__ import annotations
@@ -32,15 +42,22 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate
 
-from notees_gtk.core.protocol.clock import Hlc, compare_hlc
+from notees_gtk.core.protocol.content import parse_content_ast, plaintext_excerpt
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.data.errors import (
+    CycleError,
+    MoveGuardError,
+    NotFoundError,
+    PlacementError,
+    UnsupportedCarrierError,
+)
 
 __all__ = ["LocalStore", "NodeRow"]
 
 _log = logging.getLogger(__name__)
 
 #: Latest schema version applied to the database (see ``_MIGRATIONS``).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -52,13 +69,21 @@ _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _SNAPSHOT_TABLES = frozenset({"node"})
 
 #: Snapshot node columns copied verbatim (client cache column → server column).
+#: v2 derived schema: same names, same polarity (``is_active`` is active on
+#: both sides now); ``updated_at`` falls back to an empty string literal and
+#: the LWW columns seed the row baseline when the snapshot carries them.
 _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "id": "id",
     "workspace_id": "workspace_id",
     "parent_id": "parent_id",
+    "node_type": "node_type",
+    "class_ids": "class_ids",
+    "name": "name",
     "icon": "icon",
     "color": "color",
     "content": "content",
+    "created_at": "created_at",
+    "is_active": "is_active",
 }
 
 
@@ -70,26 +95,18 @@ def _quote_ident(name: str) -> str:
 
 
 def _snapshot_select_exprs(remote_columns: set[str]) -> dict[str, str]:
-    """Map client cache columns to snapshot SELECT expressions.
-
-    Columns the snapshot lacks are skipped, except ``updated_at``: the client
-    cache column is ``NOT NULL`` with no default, so it falls back to an empty
-    string literal. Beyond verbatim copies this maps the server's names onto
-    the client cache: ``kind`` → ``node_type`` and ``active`` → ``archived``
-    with inverted polarity (server ``active=1`` is client ``archived=0``).
-    """
+    """Map client cache columns to snapshot SELECT expressions (v2 schema)."""
     exprs: dict[str, str] = {}
     for target, source in _SNAPSHOT_VERBATIM_COLUMNS.items():
         if source in remote_columns:
             exprs[target] = _quote_ident(source)
-    if "kind" in remote_columns:
-        exprs["node_type"] = _quote_ident("kind")
-    if "active" in remote_columns:
-        exprs["archived"] = f"1 - {_quote_ident('active')}"
     if "updated_at" in remote_columns:
         exprs["updated_at"] = f"COALESCE({_quote_ident('updated_at')}, '')"
     else:
         exprs["updated_at"] = "''"
+    for column in ("hlc_physical", "hlc_logical", "actor_id"):
+        if column in remote_columns:
+            exprs[column] = _quote_ident(column)
     return exprs
 
 
@@ -100,25 +117,30 @@ class NodeRow:
     Attributes:
         id: Node id (uuid7).
         workspace_id: Workspace the node belongs to.
-        parent_id: Parent node id, or ``None`` for roots.
-        node_type: Node kind from ``node.create`` (``page``/``block``/...).
-        name: Placeholder for future search integration; always ``''`` today.
+        parent_id: Parent node id, or ``None`` for roots (legal for pages only).
+        node_type: ``page`` | ``block`` | ``class``.
+        name: Stored display name, or ``None`` when never set.
+        class_ids: OR-Set class membership projected from ``class_member_set``.
         icon: Emoji/icon string or ``None``.
         color: Color string or ``None``.
-        archived: Whether the node is archived (hidden from default listings).
-        content: Raw content mirror string (JSON AST or plaintext); unwrapped
-            on render by the UI layer.
+        is_active: False once the node (soft-)deleted; the trash table keeps
+            the deletion record.
+        content: Serialized flat token array (JSON); ``None`` when the node
+            never carried content.
+        content_plain: Plaintext derived by the applier (FTS/sidebar excerpt).
     """
 
     id: str
     workspace_id: str
     parent_id: str | None
     node_type: str
-    name: str
+    name: str | None
+    class_ids: tuple[str, ...]
     icon: str | None
     color: str | None
-    archived: bool
+    is_active: bool
     content: str | None
+    content_plain: str
 
 
 def _now_iso() -> str:
@@ -132,12 +154,7 @@ def _envelope_ts(env: RelayEnvelope) -> str:
 
 
 def _content_to_string(value: Any) -> str | None:
-    """Normalize a ``content`` payload carrier to its stored string form.
-
-    Strings are the serialized AST JSON (or bare plaintext) and are stored
-    verbatim; legacy AST lists/dicts are serialized to JSON. ``None`` means
-    "no content carried".
-    """
+    """Serialize a carried ``contentAst`` list to its stored string form."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -182,14 +199,23 @@ class LocalStore:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._appliers: dict[str, Callable[[RelayEnvelope], bool]] = {
-            "node.create": self._apply_create,
-            "node.delete": self._apply_delete,
-            "node.move": self._apply_move,
-            "node.updateContent": self._apply_update_content,
-            "node.updateIcon": self._apply_update_icon,
-            "node.updateColor": self._apply_update_color,
-            "node.archive": self._apply_archive,
-            "node.restore": self._apply_restore,
+            "object.create": self._apply_object_create,
+            "object.update": self._apply_object_update,
+            "object.delete": self._apply_object_delete,
+            "object.move": self._apply_object_move,
+            "class.create": self._apply_class_create,
+            "class.update": self._apply_class_update,
+            "class.delete": self._apply_class_delete,
+            "class.setExtends": self._apply_class_set_extends,
+            "propertySchema.create": self._apply_property_schema_create,
+            "propertySchema.update": self._apply_property_schema_update,
+            "propertySchema.delete": self._apply_property_schema_delete,
+            "property.set": self._apply_property_set,
+            "property.unset": self._apply_property_unset,
+            "asset.attach": self._apply_asset_attach,
+            "asset.detach": self._apply_asset_detach,
+            "collection.member.add": lambda env: self._apply_collection_member(env, present=1, add_wins=True),
+            "collection.member.remove": lambda env: self._apply_collection_member(env, present=0, add_wins=False),
         }
         self._migrate()
 
@@ -224,17 +250,19 @@ class LocalStore:
     def enqueue(self, env: RelayEnvelope) -> None:
         """Append an envelope to the relay outbox for later submission.
 
-        The null-content guard mirrors the mobile producer: a
-        ``node.updateContent`` without ``content`` would be rejected by the
-        server with 422 and quarantined, so it is skipped here and logged.
+        The producer-side guard mirrors the server-side payload validation: an
+        ``object.update`` carrying no writable field (empty payload beyond
+        ``objectId``, or all-``None`` fields) would be rejected with 422 and
+        quarantined, so it is skipped here and logged.
         """
-        if env.op_type == "node.updateContent" and env.payload.get("content") is None:
-            _log.warning("Skipping enqueue of %s: node.updateContent carries no content", env.id)
-            return
+        if env.op_type == "object.update":
+            writable = [key for key, value in env.payload.items() if key != "objectId" and value is not None]
+            if not writable:
+                _log.warning("Skipping enqueue of %s: object.update carries no writable field", env.id)
+                return
         with self._conn:
             self._conn.execute(
-                "INSERT INTO relay_outbox (envelope_json, workspace_id, state, created_at)"
-                " VALUES (?, ?, 'pending', ?)",
+                "INSERT INTO relay_outbox (envelope_json, workspace_id, state, created_at) VALUES (?, ?, 'pending', ?)",
                 (json.dumps(env.model_dump(mode="json", by_alias=True)), env.workspace_id, _now_iso()),
             )
 
@@ -242,8 +270,7 @@ class LocalStore:
     def pending_outbox(self, workspace_id: str, limit: int = 100) -> list[RelayEnvelope]:
         """Return up to ``limit`` pending envelopes for a workspace, oldest first."""
         rows = self._conn.execute(
-            "SELECT envelope_json FROM relay_outbox"
-            " WHERE workspace_id = ? AND state = 'pending' ORDER BY id LIMIT ?",
+            "SELECT envelope_json FROM relay_outbox WHERE workspace_id = ? AND state = 'pending' ORDER BY id LIMIT ?",
             (workspace_id, limit),
         ).fetchall()
         return [RelayEnvelope.model_validate(json.loads(raw)) for (raw,) in rows]
@@ -320,12 +347,29 @@ class LocalStore:
     @_synchronized
     def wipe(self, workspace_id: str) -> None:
         """Delete every piece of local state for a workspace (all tables)."""
+        node_ids = [
+            row[0] for row in self._conn.execute("SELECT id FROM nodes WHERE workspace_id = ?", (workspace_id,))
+        ]
         with self._conn:
-            self._conn.execute(
-                "DELETE FROM node_content_hlc"
-                " WHERE node_id IN (SELECT id FROM nodes WHERE workspace_id = ?)",
-                (workspace_id,),
-            )
+            if node_ids:
+                placeholders = ", ".join("?" for _ in node_ids)
+                self._conn.execute(
+                    f"DELETE FROM node_child_order WHERE parent_id IN ({placeholders}) OR child_id IN ({placeholders})",
+                    [*node_ids, *node_ids],
+                )
+                for table in (
+                    "class_member_set",
+                    "property_value",
+                    "property_value_tombstone",
+                    "node_asset",
+                ):
+                    self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", node_ids)
+                self._conn.execute(
+                    f"DELETE FROM collection_member"
+                    f" WHERE collection_id IN ({placeholders}) OR object_id IN ({placeholders})",
+                    [*node_ids, *node_ids],
+                )
+                self._conn.execute(f"DELETE FROM trash WHERE node_id IN ({placeholders})", node_ids)
             self._conn.execute("DELETE FROM nodes WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_outbox WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_operations WHERE workspace_id = ?", (workspace_id,))
@@ -338,14 +382,15 @@ class LocalStore:
         """Apply one remote envelope to the local cache.
 
         The envelope id is recorded in ``relay_operations`` first, making the
-        apply idempotent across catch-up/live overlap. Returns ``True`` when a
-        known applier mutated (or explicitly consumed) the envelope,
-        ``False`` for dedupe hits, unknown op types (logged and skipped), and
-        LWW/null-content skips.
+        apply idempotent across catch-up/live overlap. A guard violation
+        (cycle close, move guard, placement) raises the corresponding typed
+        error and rolls the whole apply back — including the dedupe record, so
+        the envelope can be retried after a wipe/resync. Returns ``True`` when
+        an applier mutated state, ``False`` for dedupe hits, unknown op types
+        (logged and skipped), and LWW/re-create drops.
         """
         cursor = self._conn.execute(
-            "INSERT OR IGNORE INTO relay_operations (op_id, workspace_id, seq, applied_at)"
-            " VALUES (?, ?, NULL, ?)",
+            "INSERT OR IGNORE INTO relay_operations (op_id, workspace_id, seq, applied_at) VALUES (?, ?, NULL, ?)",
             (env.id, env.workspace_id, _now_iso()),
         )
         if cursor.rowcount == 0:
@@ -358,165 +403,803 @@ class LocalStore:
         with self._conn:
             return applier(env)
 
-    def _apply_create(self, env: RelayEnvelope) -> bool:
+    # ------------------------------------------------------------- applier utils
+
+    def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
+        row: tuple[Any, ...] | None = self._conn.execute(
+            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
+            " content, content_plain, hlc_physical, hlc_logical, actor_id"
+            " FROM nodes WHERE workspace_id = ? AND id = ?",
+            (workspace_id, node_id),
+        ).fetchone()
+        return row
+
+    def _require_node(self, workspace_id: str, node_id: str, op_type: str) -> tuple[Any, ...]:
+        row = self._node_row(workspace_id, node_id)
+        if row is None:
+            raise NotFoundError(f"{op_type}: node {node_id} does not exist", op_type)
+        return row
+
+    @staticmethod
+    def _incoming_wins(
+        env: RelayEnvelope, stored_hlc_physical: Any, stored_hlc_logical: Any, stored_actor: Any
+    ) -> bool:
+        """Row-level LWW: incoming ``(hlc, actor)`` must beat the stored tuple."""
+        incoming = (env.hlc.physical, env.hlc.logical, env.actor_id)
+        stored = (int(stored_hlc_physical), int(stored_hlc_logical), stored_actor or "")
+        return incoming > stored
+
+    def _subtree_ids(self, workspace_id: str, node_id: str) -> list[str]:
+        rows = self._conn.execute(
+            """WITH RECURSIVE subtree(id) AS (
+                 SELECT id FROM nodes WHERE workspace_id = ? AND id = ?
+                 UNION ALL
+                 SELECT n.id FROM subtree s JOIN nodes n ON n.parent_id = s.id
+                 WHERE n.workspace_id = ?
+               )
+               SELECT id FROM subtree ORDER BY id""",
+            (workspace_id, node_id, workspace_id),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def _check_parent_allowed(self, workspace_id: str, parent_id: str, op_type: str) -> tuple[Any, ...]:
+        """Shared placement guard for object.create/object.move: the parent must
+        exist and a class may never parent (classes are tree-external)."""
+        parent = self._node_row(workspace_id, parent_id)
+        if parent is None:
+            raise NotFoundError(f"{op_type}: parent {parent_id} does not exist", op_type)
+        if parent[3] == "class":
+            raise MoveGuardError(
+                f"{op_type}: node {parent_id} is a class; classes are tree-external and cannot have children",
+                op_type,
+            )
+        return parent
+
+    @staticmethod
+    def _check_placement(node_type: str, parent_id: str | None, op_type: str) -> None:
+        """Placement CHECK equivalents (the server enforces them as CHECK
+        constraints on its derived schema): a block must have a parent, a
+        class must not."""
+        if node_type == "block" and parent_id is None:
+            raise PlacementError(f"{op_type}: a block must have a parent", op_type)
+        if node_type == "class" and parent_id is not None:
+            raise PlacementError(f"{op_type}: a class is tree-external and must be parentless", op_type)
+
+    # ------------------------------------------------------------------ object.*
+
+    def _apply_object_create(self, env: RelayEnvelope) -> bool:
+        op_type = "object.create"
         payload = env.payload
-        node_id = str(payload["nodeId"])
-        content = _content_to_string(payload.get("content"))
-        write_content = content is not None and self._content_hlc_allows(node_id, env.hlc)
+        object_id = str(payload["objectId"])
+        parent_id = payload.get("parentId")
+        parent_id = str(parent_id) if parent_id is not None else None
+        class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
+        node_type = str(payload.get("nodeType") or ("page" if parent_id is None else "block"))
+        ts = _envelope_ts(env)
+
+        # First create wins for duplicate node ids (v1 INSERT OR IGNORE): a
+        # re-create must not touch the TREE — the earlier half-apply added a
+        # second child_order row under the new parent while node.parent_id
+        # stayed stale, rendering the node under TWO parents. The one
+        # exception is the classIds OR-Set seed below, the convergence carrier
+        # for concurrent creates (it cannot move the node).
+        for class_id in class_ids:
+            self._class_member_upsert(object_id, class_id, env)
+        if self._node_row(env.workspace_id, object_id) is not None:
+            if class_ids:
+                self._recompute_class_ids(object_id)
+            return False
+
+        self._check_placement(node_type, parent_id, op_type)
+        if parent_id is not None:
+            self._check_parent_allowed(env.workspace_id, parent_id, op_type)
+
+        content_ast = payload.get("contentAst")
+        content = _content_to_string(content_ast) if content_ast is not None else "[]"
+        content_plain = plaintext_excerpt(parse_content_ast(content)) if content is not None else ""
         with self._conn:
             self._conn.execute(
-                """
-                INSERT INTO nodes
-                    (workspace_id, id, parent_id, node_type, name, icon, color, archived, content, updated_at)
-                VALUES (?, ?, ?, ?, '', ?, ?, 0, ?, ?)
-                ON CONFLICT(workspace_id, id) DO UPDATE SET
-                    parent_id = excluded.parent_id,
-                    node_type = excluded.node_type,
-                    icon = excluded.icon,
-                    color = excluded.color,
-                    content = COALESCE(excluded.content, nodes.content),
-                    updated_at = excluded.updated_at
-                """,
+                """INSERT INTO nodes
+                     (workspace_id, id, parent_id, node_type, name, class_ids, content, content_plain,
+                      icon, color, is_active, created_at, updated_at, created_by, updated_by,
+                      hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
-                    node_id,
-                    payload.get("parentId"),
-                    str(payload.get("kind") or ""),
-                    payload.get("icon"),
-                    payload.get("color"),
-                    content if write_content else None,
+                    object_id,
+                    parent_id,
+                    node_type,
+                    payload.get("name"),
+                    content,
+                    content_plain,
+                    ts,
+                    ts,
+                    env.actor_id,
+                    env.actor_id,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+            self._recompute_class_ids(object_id)
+            if parent_id is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
+                    (parent_id, object_id, self._next_child_position(parent_id)),
+                )
+        return True
+
+    def _apply_object_update(self, env: RelayEnvelope) -> bool:
+        op_type = "object.update"
+        payload = env.payload
+        object_id = str(payload["objectId"])
+        row = self._require_node(env.workspace_id, object_id, op_type)
+
+        if payload.get("contentDeltaB64") is not None and payload.get("contentAst") is None:
+            raise UnsupportedCarrierError(
+                f"{op_type}: contentDeltaB64 (canonical CRDT carrier) needs the Yjs port;"
+                " reapply with the contentAst readable carrier",
+                op_type,
+            )
+
+        # Row-level last-write-wins: lower or equal (hlc, actor) writes drop whole.
+        if not self._incoming_wins(env, row[11], row[12], row[13]):
+            return False
+
+        node_type = str(payload.get("nodeType")) if payload.get("nodeType") is not None else None
+        if node_type is not None:
+            # Flipping block<->page / declaring a class must respect placement
+            # against the node's CURRENT parent (an update never moves the node).
+            self._check_placement(node_type, row[2], op_type)
+
+        sets: list[str] = []
+        values: list[Any] = []
+        if node_type is not None:
+            sets.append("node_type = ?")
+            values.append(node_type)
+        if payload.get("name") is not None:
+            sets.append("name = ?")
+            values.append(payload["name"])
+        if payload.get("icon") is not None:
+            sets.append("icon = ?")
+            values.append(payload["icon"])
+        if payload.get("color") is not None:
+            sets.append("color = ?")
+            values.append(payload["color"])
+        content_plain: str | None = None
+        if payload.get("contentAst") is not None:
+            content = _content_to_string(payload["contentAst"])
+            sets.append("content = ?")
+            values.append(content)
+            content_plain = plaintext_excerpt(parse_content_ast(content))
+            sets.append("content_plain = ?")
+            values.append(content_plain)
+        sets.append("updated_at = ?")
+        values.append(_envelope_ts(env))
+        sets.append("updated_by = ?")
+        values.append(env.actor_id)
+        sets.append("hlc_physical = ?")
+        values.append(env.hlc.physical)
+        sets.append("hlc_logical = ?")
+        values.append(env.hlc.logical)
+        sets.append("actor_id = ?")
+        values.append(env.actor_id)
+        values.extend([env.workspace_id, object_id])
+        with self._conn:
+            self._conn.execute(f"UPDATE nodes SET {', '.join(sets)} WHERE workspace_id = ? AND id = ?", values)
+        return True
+
+    def _apply_object_delete(self, env: RelayEnvelope) -> bool:
+        op_type = "object.delete"
+        object_id = str(env.payload["objectId"])
+        self._require_node(env.workspace_id, object_id, op_type)
+        permanent = bool(env.payload.get("permanent"))
+        ts = _envelope_ts(env)
+        ids = self._subtree_ids(env.workspace_id, object_id)
+        placeholders = ", ".join("?" for _ in ids)
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, ?)",
+                (object_id, ts, 1 if permanent else 0),
+            )
+            if not permanent:
+                # Soft delete: trash the whole subtree (restore is whole-tree),
+                # keep the tree rows for restore.
+                self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
+                return True
+            # Permanent delete: hard-remove the subtree and every derived row.
+            self._conn.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", ids)
+            self._conn.execute(
+                f"DELETE FROM node_child_order WHERE parent_id IN ({placeholders}) OR child_id IN ({placeholders})",
+                [*ids, *ids],
+            )
+            for table in (
+                "class_member_set",
+                "property_value",
+                "property_value_tombstone",
+                "node_asset",
+            ):
+                self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", ids)
+            self._conn.execute(
+                f"DELETE FROM collection_member"
+                f" WHERE collection_id IN ({placeholders}) OR object_id IN ({placeholders})",
+                [*ids, *ids],
+            )
+            self._conn.execute(
+                f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
+            )
+        return True
+
+    def _apply_object_move(self, env: RelayEnvelope) -> bool:
+        op_type = "object.move"
+        payload = env.payload
+        object_id = str(payload["objectId"])
+        row = self._require_node(env.workspace_id, object_id, op_type)
+        parent_id = payload.get("parentId")
+        parent_id = str(parent_id) if parent_id is not None else None
+        after_id = payload.get("afterId")
+        after_id = str(after_id) if after_id is not None else None
+
+        if parent_id is not None:
+            self._check_parent_allowed(env.workspace_id, parent_id, op_type)
+            if parent_id in self._subtree_ids(env.workspace_id, object_id):
+                raise MoveGuardError(
+                    f"{op_type}: cannot move node {object_id} under {parent_id}, which is in its own subtree",
+                    op_type,
+                )
+        self._check_placement(str(row[3]), parent_id, op_type)
+
+        # Parent/position are row-level LWW by envelope (hlc, actor): the whole
+        # move publishes or drops — a position write never outlives a newer
+        # parent write and vice versa.
+        if not self._incoming_wins(env, row[11], row[12], row[13]):
+            return False
+
+        with self._conn:
+            self._conn.execute(
+                """UPDATE nodes SET parent_id = ?, updated_at = ?, updated_by = ?,
+                       hlc_physical = ?, hlc_logical = ?, actor_id = ?
+                   WHERE workspace_id = ? AND id = ?""",
+                (
+                    parent_id,
+                    _envelope_ts(env),
+                    env.actor_id,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                    env.workspace_id,
+                    object_id,
+                ),
+            )
+            # Carry the child_order row with the parent: delete the old one
+            # first — without it the node renders under BOTH parents.
+            self._conn.execute("DELETE FROM node_child_order WHERE child_id = ?", (object_id,))
+            if parent_id is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
+                    (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id)),
+                )
+        return True
+
+    # ---------------------------------------------------------------- child order
+
+    def _next_child_position(self, parent_id: str) -> str:
+        row = self._conn.execute(
+            "SELECT position FROM node_child_order WHERE parent_id = ? ORDER BY position DESC LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+        return f"{row[0]}a" if row is not None else "a"
+
+    def _allocate_child_position(self, parent_id: str, child_id: str, after_id: str | None) -> str:
+        """Fractional position for ``child_id`` under ``parent_id``: sibling
+        midpoint after ``afterId``, append-at-end when afterId is last, and a
+        defensive plain append when afterId is not a current sibling."""
+        if after_id is not None:
+            after = self._conn.execute(
+                "SELECT position FROM node_child_order WHERE parent_id = ? AND child_id = ?",
+                (parent_id, after_id),
+            ).fetchone()
+            if after is not None:
+                next_row = self._conn.execute(
+                    """SELECT position FROM node_child_order
+                       WHERE parent_id = ? AND child_id != ? AND position > ?
+                       ORDER BY position ASC LIMIT 1""",
+                    (parent_id, child_id, after[0]),
+                ).fetchone()
+                if next_row is not None:
+                    return _midpoint_between(str(after[0]), str(next_row[0]))
+                return self._next_child_position(parent_id)
+        return self._next_child_position(parent_id)
+
+    # -------------------------------------------------------------------- class.*
+
+    def _class_member_upsert(self, node_id: str, class_id: str, env: RelayEnvelope) -> None:
+        self._conn.execute(
+            """INSERT INTO class_member_set (node_id, class_id, present, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(node_id, class_id) DO UPDATE SET
+                 present = 1, hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id > COALESCE(actor_id, ''))""",
+            (node_id, class_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+
+    def _recompute_class_ids(self, node_id: str) -> None:
+        rows = self._conn.execute(
+            "SELECT class_id FROM class_member_set WHERE node_id = ? AND present = 1 ORDER BY class_id",
+            (node_id,),
+        ).fetchall()
+        class_ids = [str(row[0]) for row in rows]
+        self._conn.execute("UPDATE nodes SET class_ids = ? WHERE id = ?", (json.dumps(class_ids), node_id))
+
+    def _upsert_class_node(
+        self,
+        env: RelayEnvelope,
+        class_id: str,
+        fields: dict[str, Any],
+    ) -> None:
+        """The class node (node_type='class') is the structural authority for
+        the class_list read model; the registry row carries class-only config.
+        Node fields update only when the envelope wins the row-level LWW."""
+        ts = _envelope_ts(env)
+        with self._conn:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO nodes
+                     (workspace_id, id, parent_id, node_type, class_ids, name, content, content_plain,
+                      is_active, created_at, updated_at, created_by, updated_by,
+                      hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, NULL, 'class', '[]', ?, '[]', '', 1, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    env.workspace_id,
+                    class_id,
+                    fields.get("name"),
+                    ts,
+                    ts,
+                    env.actor_id,
+                    env.actor_id,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+            sets: list[str] = []
+            values: list[Any] = []
+            for column in ("name", "icon", "color"):
+                if fields.get(column) is not None:
+                    sets.append(f"{column} = ?")
+                    values.append(fields[column])
+            if not sets:
+                return
+            sets.extend(("updated_at = ?", "updated_by = ?", "hlc_physical = ?", "hlc_logical = ?", "actor_id = ?"))
+            values.extend((ts, env.actor_id, env.hlc.physical, env.hlc.logical, env.actor_id))
+            values.extend(
+                (
+                    env.workspace_id,
+                    class_id,
+                    env.hlc.physical,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                )
+            )
+            self._conn.execute(
+                f"""UPDATE nodes SET {", ".join(sets)}
+                    WHERE workspace_id = ? AND id = ? AND (
+                      ? > hlc_physical
+                      OR (? = hlc_physical AND ? > hlc_logical)
+                      OR (? = hlc_physical AND ? = hlc_logical AND ? > COALESCE(actor_id, ''))
+                    )""",
+                values,
+            )
+
+    def _apply_class_create(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        class_id = str(payload["classId"])
+        ts = _envelope_ts(env)
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO class (id, workspace_id, name, icon, color, description, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name, icon = excluded.icon, color = excluded.color,
+                     description = excluded.description, active = 1, updated_at = excluded.updated_at""",
+                (class_id, env.workspace_id, payload.get("name"), payload.get("icon"), payload.get("color"), ts, ts),
+            )
+        self._upsert_class_node(
+            env, class_id, {"name": payload.get("name"), "icon": payload.get("icon"), "color": payload.get("color")}
+        )
+        return True
+
+    def _apply_class_update(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        class_id = str(payload["classId"])
+        with self._conn:
+            sets: list[str] = []
+            values: list[Any] = []
+            for column in ("name", "icon", "color", "description"):
+                if payload.get(column) is not None:
+                    sets.append(f"{column} = ?")
+                    values.append(payload[column])
+            if not sets:
+                return False
+            sets.append("updated_at = ?")
+            values.extend((_envelope_ts(env), class_id))
+            self._conn.execute(f"UPDATE class SET {', '.join(sets)} WHERE id = ?", values)
+        self._upsert_class_node(
+            env, class_id, {"name": payload.get("name"), "icon": payload.get("icon"), "color": payload.get("color")}
+        )
+        return True
+
+    def _apply_class_delete(self, env: RelayEnvelope) -> bool:
+        class_id = str(env.payload["classId"])
+        ts = _envelope_ts(env)
+        with self._conn:
+            self._conn.execute("UPDATE class SET active = 0, updated_at = ? WHERE id = ?", (ts, class_id))
+            self._conn.execute(
+                "UPDATE nodes SET is_active = 0, updated_at = ? WHERE workspace_id = ? AND id = ?",
+                (ts, env.workspace_id, class_id),
+            )
+        return True
+
+    def _apply_class_set_extends(self, env: RelayEnvelope) -> bool:
+        op_type = "class.setExtends"
+        payload = env.payload
+        class_id = str(payload["classId"])
+        parent_ids = [str(parent) for parent in (payload.get("parentClassIds") or [])]
+        self._require_node(env.workspace_id, class_id, op_type)
+
+        for parent_id in parent_ids:
+            self._require_node(env.workspace_id, parent_id, op_type)
+            if parent_id == class_id:
+                raise CycleError(f"{op_type}: class {class_id} cannot extend itself", op_type)
+            # A cycle forms when the class is already an ancestor of one of its
+            # new parents. The check runs against the pre-write closure, so
+            # multi-hop cycles across several parents are covered too.
+            cycle = self._conn.execute(
+                "SELECT 1 FROM class_hierarchy WHERE class_id = ? AND ancestor_id = ? LIMIT 1",
+                (parent_id, class_id),
+            ).fetchone()
+            if cycle is not None:
+                raise CycleError(
+                    f"{op_type}: class {class_id} is already an ancestor of {parent_id}; extends would cycle",
+                    op_type,
+                )
+
+        with self._conn:
+            # Replace semantics: the payload array IS the class's full parent
+            # set — drop every previous edge, then insert the new ones. An
+            # empty array detaches all parents.
+            self._conn.execute("DELETE FROM class_extends WHERE class_id = ?", (class_id,))
+            for parent_id in parent_ids:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO class_extends (class_id, parent_class_id) VALUES (?, ?)",
+                    (class_id, parent_id),
+                )
+            self._conn.execute("UPDATE class SET updated_at = ? WHERE id = ?", (_envelope_ts(env), class_id))
+            self._rebuild_class_hierarchy()
+        return True
+
+    def _rebuild_class_hierarchy(self) -> None:
+        """Full, deterministic rebuild of the class_hierarchy closure from the
+        class_extends edge set (m2m). Rows are inserted per class in sorted id
+        order with sorted ancestor order, so replay converges to identical
+        bytes. Historical cycles terminate via the visited set."""
+        classes = [str(row[0]) for row in self._conn.execute("SELECT id FROM class WHERE active = 1 ORDER BY id")]
+        edges = self._conn.execute(
+            "SELECT class_id, parent_class_id FROM class_extends ORDER BY class_id, parent_class_id"
+        ).fetchall()
+        parents_by_id: dict[str, list[str]] = {}
+        for class_id, parent_id in edges:
+            parents_by_id.setdefault(str(class_id), []).append(str(parent_id))
+        self._conn.execute("DELETE FROM class_hierarchy")
+        for class_id in classes:
+            ancestors: set[str] = set()
+            visited = {class_id}
+            queue = list(parents_by_id.get(class_id, []))
+            while queue:
+                cursor = queue.pop(0)
+                if cursor in visited:
+                    continue
+                visited.add(cursor)
+                ancestors.add(cursor)
+                queue.extend(parents_by_id.get(cursor, []))
+            self._conn.execute(
+                "INSERT OR IGNORE INTO class_hierarchy (class_id, ancestor_id) VALUES (?, ?)", (class_id, class_id)
+            )
+            for ancestor_id in sorted(ancestors):
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO class_hierarchy (class_id, ancestor_id) VALUES (?, ?)",
+                    (class_id, ancestor_id),
+                )
+
+    # ------------------------------------------------------------- propertySchema.*
+
+    def _apply_property_schema_create(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        ts = _envelope_ts(env)
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO property_schema
+                     (id, workspace_id, name, type, multi, scope, options, target_class_filter,
+                      active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name, type = excluded.type, multi = excluded.multi,
+                     scope = excluded.scope, options = excluded.options,
+                     target_class_filter = excluded.target_class_filter,
+                     active = 1, updated_at = excluded.updated_at""",
+                (
+                    str(payload["propertySchemaId"]),
+                    env.workspace_id,
+                    payload.get("name"),
+                    payload.get("type"),
+                    1 if payload.get("multi") else 0,
+                    payload.get("scope") or "global",
+                    json.dumps(payload.get("options") or []),
+                    json.dumps(payload["targetClassFilter"]) if payload.get("targetClassFilter") is not None else None,
+                    ts,
+                    ts,
+                ),
+            )
+        return True
+
+    def _apply_property_schema_update(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        with self._conn:
+            sets: list[str] = []
+            values: list[Any] = []
+            if payload.get("name") is not None:
+                sets.append("name = ?")
+                values.append(payload["name"])
+            if payload.get("options") is not None:
+                sets.append("options = ?")
+                values.append(json.dumps(payload["options"]))
+            if not sets:
+                return False
+            sets.append("updated_at = ?")
+            values.extend((_envelope_ts(env), str(payload["propertySchemaId"])))
+            self._conn.execute(f"UPDATE property_schema SET {', '.join(sets)} WHERE id = ?", values)
+        return True
+
+    def _apply_property_schema_delete(self, env: RelayEnvelope) -> bool:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE property_schema SET active = 0, updated_at = ? WHERE id = ?",
+                (_envelope_ts(env), str(env.payload["propertySchemaId"])),
+            )
+        return True
+
+    # ---------------------------------------------------------------- property.*
+
+    @staticmethod
+    def _property_slot(env: RelayEnvelope) -> tuple[str, str, int]:
+        payload = env.payload
+        return (str(payload["objectId"]), str(payload["propertySchemaId"]), int(payload.get("idx") or 0))
+
+    def _apply_property_set(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        node_id, schema_id, idx = self._property_slot(env)
+
+        # A tombstone with a winning (>=) (hlc, actor) blocks the write.
+        tombstone = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM property_value_tombstone"
+            " WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
+            (node_id, schema_id, idx),
+        ).fetchone()
+        if tombstone is not None and not self._incoming_wins(env, tombstone[0], tombstone[1], tombstone[2]):
+            return False
+
+        existing = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM property_value"
+            " WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
+            (node_id, schema_id, idx),
+        ).fetchone()
+        value_json = json.dumps(payload.get("value"), ensure_ascii=False)
+        metadata_json = (
+            json.dumps(payload["metadata"], ensure_ascii=False) if payload.get("metadata") is not None else None
+        )
+        with self._conn:
+            if existing is None:
+                self._conn.execute(
+                    """INSERT INTO property_value
+                         (id, node_id, property_schema_id, value, idx, metadata,
+                          hlc_physical, hlc_logical, actor_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"{node_id}:{schema_id}:{idx}",
+                        node_id,
+                        schema_id,
+                        value_json,
+                        idx,
+                        metadata_json,
+                        env.hlc.physical,
+                        env.hlc.logical,
+                        env.actor_id,
+                    ),
+                )
+            elif self._incoming_wins(env, existing[0], existing[1], existing[2]):
+                self._conn.execute(
+                    """UPDATE property_value SET value = ?, metadata = ?,
+                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
+                       WHERE node_id = ? AND property_schema_id = ? AND idx = ?""",
+                    (
+                        value_json,
+                        metadata_json,
+                        env.hlc.physical,
+                        env.hlc.logical,
+                        env.actor_id,
+                        node_id,
+                        schema_id,
+                        idx,
+                    ),
+                )
+            else:
+                return False
+        return True
+
+    def _apply_property_unset(self, env: RelayEnvelope) -> bool:
+        node_id, schema_id, idx = self._property_slot(env)
+        with self._conn:
+            # Upsert the tombstone only when the incoming write wins the slot.
+            self._conn.execute(
+                """INSERT INTO property_value_tombstone
+                     (node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(node_id, property_schema_id, idx) DO UPDATE SET
+                     hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                     actor_id = excluded.actor_id
+                   WHERE excluded.hlc_physical > hlc_physical
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                          AND excluded.actor_id > COALESCE(actor_id, ''))""",
+                (node_id, schema_id, idx, env.hlc.physical, env.hlc.logical, env.actor_id),
+            )
+            existing = self._conn.execute(
+                "SELECT hlc_physical, hlc_logical, actor_id FROM property_value"
+                " WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
+                (node_id, schema_id, idx),
+            ).fetchone()
+            if existing is not None and self._incoming_wins(env, existing[0], existing[1], existing[2]):
+                self._conn.execute(
+                    "DELETE FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
+                    (node_id, schema_id, idx),
+                )
+        return True
+
+    # --------------------------------------------------------------------- asset.*
+
+    def _apply_asset_attach(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO node_asset (node_id, asset_id, hash, mime_type, size, original_name, uploaded_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(node_id, asset_id) DO UPDATE SET
+                     hash = excluded.hash, mime_type = excluded.mime_type, size = excluded.size,
+                     original_name = excluded.original_name, uploaded_at = excluded.uploaded_at""",
+                (
+                    str(payload["objectId"]),
+                    str(payload["assetId"]),
+                    payload.get("hash"),
+                    payload.get("mimeType"),
+                    int(payload.get("size") or 0),
+                    payload.get("originalName"),
                     _envelope_ts(env),
                 ),
             )
-            if write_content:
-                self._set_content_hlc(node_id, env.hlc)
         return True
 
-    def _apply_delete(self, env: RelayEnvelope) -> bool:
-        node_id = str(env.payload["nodeId"])
-        with self._conn:
-            self._conn.execute("DELETE FROM nodes WHERE workspace_id = ? AND id = ?", (env.workspace_id, node_id))
-            self._conn.execute("DELETE FROM node_content_hlc WHERE node_id = ?", (node_id,))
-        return True
-
-    def _apply_move(self, env: RelayEnvelope) -> bool:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE nodes SET parent_id = ? WHERE workspace_id = ? AND id = ?",
-                (env.payload.get("newParentId"), env.workspace_id, str(env.payload["nodeId"])),
-            )
-        return True
-
-    def _apply_update_icon(self, env: RelayEnvelope) -> bool:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE nodes SET icon = ? WHERE workspace_id = ? AND id = ?",
-                (env.payload.get("icon"), env.workspace_id, str(env.payload["nodeId"])),
-            )
-        return True
-
-    def _apply_update_color(self, env: RelayEnvelope) -> bool:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE nodes SET color = ? WHERE workspace_id = ? AND id = ?",
-                (env.payload.get("color"), env.workspace_id, str(env.payload["nodeId"])),
-            )
-        return True
-
-    def _apply_archive(self, env: RelayEnvelope) -> bool:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE nodes SET archived = 1 WHERE workspace_id = ? AND id = ?",
-                (env.workspace_id, str(env.payload["nodeId"])),
-            )
-        return True
-
-    def _apply_restore(self, env: RelayEnvelope) -> bool:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE nodes SET archived = 0 WHERE workspace_id = ? AND id = ?",
-                (env.workspace_id, str(env.payload["nodeId"])),
-            )
-        return True
-
-    def _apply_update_content(self, env: RelayEnvelope) -> bool:
+    def _apply_asset_detach(self, env: RelayEnvelope) -> bool:
         payload = env.payload
-        node_id = str(payload["nodeId"])
-        content = _content_to_string(payload.get("content"))
-        if content is None:
-            # The server rejects these on submit (422); be lenient on apply.
-            return False
-        if not self._content_hlc_allows(node_id, env.hlc):
-            return False
         with self._conn:
             self._conn.execute(
-                "UPDATE nodes SET content = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
-                (content, _envelope_ts(env), env.workspace_id, node_id),
+                "DELETE FROM node_asset WHERE node_id = ? AND asset_id = ?",
+                (str(payload["objectId"]), str(payload["assetId"])),
             )
-            self._set_content_hlc(node_id, env.hlc)
         return True
 
-    def _content_hlc(self, node_id: str) -> Hlc | None:
-        row = self._conn.execute(
-            "SELECT physical, logical FROM node_content_hlc WHERE node_id = ?", (node_id,)
-        ).fetchone()
-        return Hlc(physical=int(row[0]), logical=int(row[1])) if row is not None else None
+    # --------------------------------------------------------------- collections
 
-    def _content_hlc_allows(self, node_id: str, incoming: Hlc) -> bool:
-        """Gate content writes last-write-wins: incoming must beat the stored HLC."""
-        stored = self._content_hlc(node_id)
-        return stored is None or compare_hlc(incoming, stored) > 0
-
-    def _set_content_hlc(self, node_id: str, hlc: Hlc) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO node_content_hlc (node_id, physical, logical) VALUES (?, ?, ?)",
-            (node_id, hlc.physical, hlc.logical),
-        )
+    def _apply_collection_member(self, env: RelayEnvelope, *, present: int, add_wins: bool) -> bool:
+        payload = env.payload
+        # OR-Set add-wins: an add with an equal (hlc, actor) to a remove still
+        # wins, so the remove's WHERE is strictly-greater while the add's is >=.
+        actor_comparator = ">=" if add_wins else ">"
+        with self._conn:
+            self._conn.execute(
+                f"""INSERT INTO collection_member
+                     (collection_id, object_id, present, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(collection_id, object_id) DO UPDATE SET
+                     present = excluded.present, hlc_physical = excluded.hlc_physical,
+                     hlc_logical = excluded.hlc_logical, actor_id = excluded.actor_id
+                   WHERE excluded.hlc_physical > hlc_physical
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                          AND excluded.actor_id {actor_comparator} COALESCE(actor_id, ''))""",
+                (
+                    str(payload["collectionId"]),
+                    str(payload["objectId"]),
+                    present,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+        return True
 
     # -------------------------------------------------------------- node cache
 
     @_synchronized
-    def nodes(self, workspace_id: str, parent_id: str | None = None, include_archived: bool = False) -> list[NodeRow]:
+    def nodes(self, workspace_id: str, parent_id: str | None = None, include_inactive: bool = False) -> list[NodeRow]:
         """List cached node rows, optionally filtered by parent.
 
         ``parent_id=None`` applies no parent filter (all nodes in the
-        workspace); pass a string to list one parent's children. Archived
-        nodes are excluded unless ``include_archived`` is set.
+        workspace); pass a string to list one parent's children (unordered —
+        use :meth:`children` for child-order positions). Soft-deleted nodes are
+        excluded unless ``include_inactive`` is set.
         """
         sql = (
-            "SELECT id, workspace_id, parent_id, node_type, name, icon, color, archived, content"
-            " FROM nodes WHERE workspace_id = ?"
+            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
+            " content, content_plain FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
         if parent_id is not None:
             sql += " AND parent_id = ?"
             params.append(parent_id)
-        if not include_archived:
-            sql += " AND archived = 0"
+        if not include_inactive:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
         return [self._to_node_row(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    @_synchronized
+    def children(self, workspace_id: str, parent_id: str) -> list[NodeRow]:
+        """Direct children in child-order position order (the outliner read)."""
+        rows = self._conn.execute(
+            """SELECT n.id, n.workspace_id, n.parent_id, n.node_type, n.name, n.class_ids, n.icon, n.color,
+                      n.is_active, n.content, n.content_plain
+               FROM nodes n
+               JOIN node_child_order o ON o.child_id = n.id
+               WHERE n.workspace_id = ? AND o.parent_id = ?
+               ORDER BY o.position""",
+            (workspace_id, parent_id),
+        ).fetchall()
+        return [self._to_node_row(row) for row in rows]
 
     @_synchronized
     def node(self, workspace_id: str, node_id: str) -> NodeRow | None:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, node_type, name, icon, color, archived, content"
-            " FROM nodes WHERE workspace_id = ? AND id = ?",
+            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
+            " content, content_plain FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
         return self._to_node_row(row) if row is not None else None
 
     @staticmethod
     def _to_node_row(row: tuple[Any, ...]) -> NodeRow:
+        raw_class_ids = row[5]
+        try:
+            class_ids = tuple(str(item) for item in json.loads(raw_class_ids)) if raw_class_ids else ()
+        except (TypeError, ValueError):
+            class_ids = ()
         return NodeRow(
             id=str(row[0]),
             workspace_id=str(row[1]),
             parent_id=row[2],
             node_type=str(row[3]),
-            name=str(row[4]),
-            icon=row[5],
-            color=row[6],
-            archived=bool(row[7]),
-            content=row[8],
+            name=row[4],
+            class_ids=class_ids,
+            icon=row[6],
+            color=row[7],
+            is_active=bool(row[8]),
+            content=row[9],
+            content_plain=str(row[10] or ""),
         )
 
     # ---------------------------------------------------------------- snapshots
@@ -525,12 +1208,11 @@ class LocalStore:
     def restore_snapshot(self, blob: bytes, *, workspace_id: str) -> bool:
         """Restore nodes from a downloaded snapshot blob (serialized derived DB).
 
-        The blob is a serialized copy of the server's derived database, whose
-        node table is ``node`` (singular) with server-side column names:
-        ``kind`` maps to ``node_type`` and ``active`` to ``archived`` with
-        inverted polarity (server ``active=1`` is client ``archived=0``), and
-        the content-LWW columns ``hlc_physical``/``hlc_logical`` seed the
-        client's ``node_content_hlc`` baseline when present. The table is
+        The blob is a serialized copy of the server's v2 derived database,
+        whose node table is ``node`` (singular) with the v2 column names
+        (``node_type``, ``is_active`` — same polarity as the cache, ``class_ids``,
+        and the row-LWW columns ``hlc_physical``/``hlc_logical``/``actor_id``
+        which seed the cache's LWW baseline when present). The table is
         discovered from ``snapshot_src.sqlite_master`` but restricted to a
         small allowlist, and every interpolated identifier is validated
         against a strict pattern. Snapshot columns the mapping needs but the
@@ -569,18 +1251,17 @@ class LocalStore:
                 params = (workspace_id,)
             with self._conn:
                 self._conn.execute(f"INSERT OR REPLACE INTO nodes ({columns}) {select}", params)
-            if {"hlc_physical", "hlc_logical"} <= remote_columns:
-                seed = (
-                    "INSERT OR REPLACE INTO node_content_hlc (node_id, physical, logical)"
-                    f" SELECT {_quote_ident('id')}, {_quote_ident('hlc_physical')}, {_quote_ident('hlc_logical')}"
-                    f" FROM snapshot_src.{_quote_ident(table)}"
-                )
-                seed_params: tuple[Any, ...] = ()
-                if "workspace_id" in remote_columns:
-                    seed += f" WHERE {_quote_ident('workspace_id')} = ?"
-                    seed_params = (workspace_id,)
-                with self._conn:
-                    self._conn.execute(seed, seed_params)
+                # The v2 server snapshot has no plaintext cache column (the
+                # server derives FTS text); derive the client cache's excerpt
+                # for the restored rows.
+                restored = self._conn.execute(
+                    "SELECT id, content FROM nodes WHERE workspace_id = ?", (workspace_id,)
+                ).fetchall()
+                for node_id, content in restored:
+                    self._conn.execute(
+                        "UPDATE nodes SET content_plain = ? WHERE id = ?",
+                        (plaintext_excerpt(parse_content_ast(content)), node_id),
+                    )
             return True
         except (sqlite3.Error, ValueError) as exc:
             _log.warning("Snapshot restore failed: %s", exc)
@@ -608,6 +1289,31 @@ class LocalStore:
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
+
+
+def _midpoint_between(lo: str, hi: str) -> str:
+    """Lexicographic midpoint of two fractional position strings: the shortest
+    string strictly greater than ``lo`` and strictly less than ``hi``
+    (precondition lo < hi, ASCII). Boundary chars use '`' (one below 'a') as
+    the floor and '{' (one above 'z') as the ceil, so distinct positions
+    always have room. Deterministic — no random suffix — so
+    wipe -> replay -> byte-identical."""
+    index = 0
+    while index < len(lo) and index < len(hi) and lo[index] == hi[index]:
+        index += 1
+    prefix = lo[:index]
+    lo_rest = lo[index:]
+    hi_rest = hi[index:]
+    lo_code = ord(lo_rest[0]) if lo_rest else 0x60
+    hi_code = ord(hi_rest[0]) if hi_rest else 0x7B
+    if lo_code + 1 < hi_code:
+        return prefix + chr((lo_code + 1 + hi_code - 1) // 2)
+    if not lo_rest:
+        # lo is a prefix of hi and hi continues at the lowest digit: squeeze
+        # one char below hi's next digit.
+        return prefix + chr(hi_code - 1)
+    # Adjacent boundary chars: keep lo's digit (which is < hi's) and descend.
+    return prefix + lo_rest[0] + _midpoint_between(lo_rest[1:], hi_rest[1:])
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -660,8 +1366,189 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "relay_outbox", "attempts", "INTEGER NOT NULL DEFAULT 0")
 
 
+_NODES_V2_DDL = """
+CREATE TABLE IF NOT EXISTS nodes (
+    workspace_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    parent_id TEXT,
+    node_type TEXT NOT NULL DEFAULT 'block'
+        CHECK (node_type IN ('page', 'block', 'class')),
+    name TEXT,
+    class_ids TEXT NOT NULL DEFAULT '[]',
+    icon TEXT,
+    color TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    content TEXT,
+    content_plain TEXT NOT NULL DEFAULT '',
+    created_at TEXT,
+    updated_at TEXT NOT NULL,
+    created_by TEXT,
+    updated_by TEXT,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (workspace_id, id)
+);
+"""
+
+_AUX_V2_DDL = """
+CREATE TABLE IF NOT EXISTS node_child_order (
+    parent_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    position TEXT NOT NULL,
+    PRIMARY KEY (parent_id, child_id)
+);
+CREATE INDEX IF NOT EXISTS idx_node_child_order_parent ON node_child_order (parent_id);
+
+-- OR-Set of class assignments; the applier projects present rows into
+-- node.class_ids (add-wins, LWW per (node_id, class_id) by (hlc, actor)).
+CREATE TABLE IF NOT EXISTS class_member_set (
+    node_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    present INTEGER NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (node_id, class_id)
+);
+CREATE INDEX IF NOT EXISTS idx_class_member_set_class ON class_member_set (class_id);
+
+-- Direct extends edges (m2m; class.setExtends replaces the full row set).
+CREATE TABLE IF NOT EXISTS class_extends (
+    class_id TEXT NOT NULL,
+    parent_class_id TEXT NOT NULL,
+    PRIMARY KEY (class_id, parent_class_id)
+);
+
+-- Transitive closure of class extends, applier-maintained, self-row included.
+CREATE TABLE IF NOT EXISTS class_hierarchy (
+    class_id TEXT NOT NULL,
+    ancestor_id TEXT NOT NULL,
+    PRIMARY KEY (class_id, ancestor_id)
+);
+
+-- Class registry rows (name/icon/color/description); the node row
+-- (node_type='class') is the structural authority.
+CREATE TABLE IF NOT EXISTS class (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    icon TEXT,
+    color TEXT,
+    description TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS property_schema (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    multi INTEGER NOT NULL DEFAULT 0,
+    scope TEXT NOT NULL DEFAULT 'global',
+    options TEXT NOT NULL DEFAULT '[]',
+    target_class_filter TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Property values: LWW per (node, schema, idx); tombstone wins over live.
+CREATE TABLE IF NOT EXISTS property_value (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    property_schema_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    idx INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    UNIQUE (node_id, property_schema_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_property_value_node ON property_value (node_id);
+
+CREATE TABLE IF NOT EXISTS property_value_tombstone (
+    node_id TEXT NOT NULL,
+    property_schema_id TEXT NOT NULL,
+    idx INTEGER NOT NULL DEFAULT 0,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (node_id, property_schema_id, idx)
+);
+
+CREATE TABLE IF NOT EXISTS node_asset (
+    node_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    original_name TEXT NOT NULL DEFAULT '',
+    uploaded_at TEXT,
+    PRIMARY KEY (node_id, asset_id)
+);
+
+-- OR-Set membership for collection nodes (add-wins per member pair).
+CREATE TABLE IF NOT EXISTS collection_member (
+    collection_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    present INTEGER NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (collection_id, object_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_member_object ON collection_member (object_id);
+
+-- Soft-delete retention; is_permanent distinguishes trash rows recorded for
+-- retention cleanup before a hard delete from plain soft deletes.
+CREATE TABLE IF NOT EXISTS trash (
+    node_id TEXT PRIMARY KEY,
+    deleted_at TEXT NOT NULL,
+    is_permanent INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """Reshape the client cache to the v2 model (guarded, data-preserving).
+
+    The ``nodes`` mirror is rebuilt at the v2 column names (``is_active``
+    replacing ``archived``, plus ``class_ids``/``content_plain`` and the
+    row-LWW columns), the v1 ``node_content_hlc`` watermark is dropped (its
+    job is done by the row-LWW columns), and the v2 auxiliary tables
+    (child_order, OR-Sets, class registry/extends/closure, property
+    registry/values/tombstones, assets, collections, trash) are created.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    if "is_active" in columns:
+        return  # already at the v2 shape (guarded re-run)
+    conn.execute("ALTER TABLE nodes RENAME TO nodes_legacy")
+    conn.executescript(_NODES_V2_DDL + _AUX_V2_DDL)
+    legacy = {row[1] for row in conn.execute("PRAGMA table_info(nodes_legacy)")}
+    copy_exprs: dict[str, str] = {}
+    for column in ("id", "workspace_id", "parent_id", "node_type", "name", "icon", "color", "content", "updated_at"):
+        if column in legacy:
+            copy_exprs[column] = _quote_ident(column)
+    if "archived" in legacy:
+        copy_exprs["is_active"] = f"1 - {_quote_ident('archived')}"
+    copy_exprs.setdefault("is_active", "1")
+    copy_exprs.setdefault("class_ids", "'[]'")
+    copy_exprs.setdefault("content_plain", "''")
+    copy_exprs.setdefault("hlc_physical", "0")
+    copy_exprs.setdefault("hlc_logical", "0")
+    columns_sql = ", ".join(_quote_ident(name) for name in copy_exprs)
+    conn.execute(f"INSERT INTO nodes ({columns_sql}) SELECT {', '.join(copy_exprs.values())} FROM nodes_legacy")
+    conn.execute("DROP TABLE nodes_legacy")
+    conn.execute("DROP TABLE IF EXISTS node_content_hlc")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
 )

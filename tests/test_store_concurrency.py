@@ -28,11 +28,7 @@ APPLIED_NODES = 150
 
 
 def make_envelope(op_type: str, payload: dict[str, object], *, logical: int) -> RelayEnvelope:
-    """Build a minimal valid envelope with a distinct HLC for ordering tests.
-
-    # v2-port: compat — v1 op types persist until the Phase C applier rewrite;
-    # the v2 envelope model accepts any non-empty op type.
-    """
+    """Build a minimal valid envelope with a distinct HLC for ordering tests."""
     return RelayEnvelope(
         protocolVersion=PROTOCOL_VERSION,
         workspaceId=WS,
@@ -56,11 +52,11 @@ def test_concurrent_enqueue_and_apply(tmp_path: Path) -> None:
     store = LocalStore(tmp_path / "threads.db")
 
     enqueue_envs = [
-        make_envelope("node.create", {"nodeId": f"n-{index}", "kind": "page"}, logical=index)
+        make_envelope("object.create", {"objectId": f"n-{index}", "nodeType": "page"}, logical=index)
         for index in range(ENQUEUE_THREADS * ENQUEUES_PER_THREAD)
     ]
     apply_envs = [
-        make_envelope("node.create", {"nodeId": f"a-{index}", "kind": "page"}, logical=10_000 + index)
+        make_envelope("object.create", {"objectId": f"a-{index}", "nodeType": "page"}, logical=10_000 + index)
         for index in range(APPLIED_NODES)
     ]
 

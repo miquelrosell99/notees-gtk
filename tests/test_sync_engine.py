@@ -51,12 +51,7 @@ def make_env(
     actor: str = ACTOR_A,
     affected: tuple[str, ...] = (),
 ) -> RelayEnvelope:
-    """Build a minimal valid envelope for engine tests.
-
-    # v2-port: compat — helpers construct envelopes with v1 op types/payloads
-    (the store appliers are Phase C); the v2 envelope model accepts any
-    non-empty op type, and the relay rejects unknown ops at ingest.
-    """
+    """Build a minimal valid v2 envelope for engine tests."""
     return RelayEnvelope(
         id=new_uuid7(),
         protocolVersion=PROTOCOL_VERSION,
@@ -75,30 +70,28 @@ def create_env(
     node_id: str,
     *,
     parent_id: str | None = None,
-    kind: str = "page",
+    node_type: str = "page",
     content: object = None,
     hlc: tuple[int, int] = (1, 0),
     actor: str = ACTOR_A,
     **extra: object,
 ) -> RelayEnvelope:
-    """Build a ``node.create`` envelope; pass ``content`` to include initial content."""
+    """Build an ``object.create`` envelope; ``content`` may be a token list or a bare string."""
     payload: dict[str, object] = {
-        "nodeId": node_id,
-        "kind": kind,
+        "objectId": node_id,
+        "nodeType": node_type,
         "parentId": parent_id,
-        "classIds": [],
-        "icon": None,
-        "color": None,
     }
     payload.update(extra)
     if content is not None:
-        payload["content"] = content
-    return make_env("node.create", payload, hlc=hlc, actor=actor, affected=(node_id,))
+        payload["contentAst"] = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    return make_env("object.create", payload, hlc=hlc, actor=actor, affected=(node_id,))
 
 
 def content_env(node_id: str, content: object, *, hlc: tuple[int, int], actor: str = ACTOR_A) -> RelayEnvelope:
-    """Build a ``node.updateContent`` envelope."""
-    return make_env("node.updateContent", {"nodeId": node_id, "content": content}, hlc=hlc, actor=actor)
+    """Build an ``object.update`` content envelope (token list or bare string)."""
+    tokens = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    return make_env("object.update", {"objectId": node_id, "contentAst": tokens}, hlc=hlc, actor=actor, affected=(node_id,))
 
 
 def _no_http(request: httpx.Request) -> httpx.Response:
@@ -229,7 +222,7 @@ class TestPush:
         result = make_engine(relay, store).push()
         assert result.sent == 1
         row = store.node(WS, "n1")
-        assert row is not None and row.content == "hello"
+        assert row is not None and row.content_plain == "hello"
 
     def test_whole_chunk_ack_despite_saved_ids_omitting_duplicates(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
@@ -342,7 +335,7 @@ class TestPull:
         result = make_engine(relay, store).pull()
         assert result.applied == 0  # catch-up overlap deduped by op id
         assert len(store.nodes(WS)) == 1
-        assert store.node(WS, "n1").content == "hi"
+        assert store.node(WS, "n1").content_plain == "hi"
 
     def test_pull_applies_newest_content_and_skips_stale_lww(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
@@ -353,7 +346,7 @@ class TestPull:
         result = make_engine(relay, store).pull()
         assert result.applied == 2  # create + newer content; stale skipped
         row = store.node(WS, "n1")
-        assert row is not None and row.content == "newer"
+        assert row is not None and row.content_plain == "newer"
 
     def test_pull_empty_page_keeps_cursor(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
@@ -372,9 +365,16 @@ class TestSyncConvergence:
         engine_a = make_engine(relay, store_a, actor=ACTOR_A)
         engine_b = make_engine(relay, store_b, actor=ACTOR_B)
 
-        store_a.enqueue(create_env("root", kind="page", icon="📄"))
-        store_a.enqueue(create_env("child", kind="block", parent_id="root"))
-        store_a.enqueue(content_env("root", '[{"type":"text","text":"Hello"}]', hlc=(5, 0)))
+        store_a.enqueue(create_env("root"))
+        store_a.enqueue(create_env("child", node_type="block", parent_id="root"))
+        store_a.enqueue(
+            make_env(
+                "object.update",
+                {"objectId": "root", "icon": "📄", "contentAst": [{"type": "text", "text": "Hello"}]},
+                hlc=(5, 0),
+                affected=("root",),
+            )
+        )
         assert engine_a.push() == PushResult(sent=3, quarantined=0)
 
         pulled = engine_b.pull()
@@ -382,7 +382,7 @@ class TestSyncConvergence:
         assert pulled.cursor == 3
         assert store_b.node(WS, "root") is not None and store_b.node(WS, "root").icon == "📄"
         assert store_b.node(WS, "child") is not None and store_b.node(WS, "child").parent_id == "root"
-        assert store_b.node(WS, "root").content == '[{"type":"text","text":"Hello"}]'
+        assert store_b.node(WS, "root").content_plain == "Hello"
 
         # The catch-up echo of A's own pushed ops must not double-apply anywhere.
         assert engine_a.pull().applied == 0
@@ -394,7 +394,7 @@ class TestSyncConvergence:
         engine_a.sync()
         row_a = store_a.node(WS, "root")
         row_b = store_b.node(WS, "root")
-        assert row_a is not None and row_a.content == "v2"
+        assert row_a is not None and row_a.content_plain == "v2"
         assert row_a == row_b
 
 
@@ -408,7 +408,7 @@ class TestSync:
         assert store.pending_outbox(WS) == []
         assert store.node(WS, "mine") is not None
         row = store.node(WS, "theirs")
-        assert row is not None and row.content == "remote text"
+        assert row is not None and row.content_plain == "remote text"
         assert store.cursor(WS) == 3
 
 
@@ -429,14 +429,14 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
             [
-                {"id": "n1", "workspace_id": WS, "kind": "page", "content": "one", "updated_at": None},
-                {"id": "n2", "workspace_id": WS, "kind": "block", "content": "two", "updated_at": None},
+                {"id": "n1", "workspace_id": WS, "node_type": "page", "content": "one", "updated_at": None},
+                {"id": "n2", "workspace_id": WS, "node_type": "block", "parent_id": "n1", "content": "two", "updated_at": None},
             ]
         )
         relay.snapshot_up_to_seq = 42
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is True
-        rows = store.nodes(WS, include_archived=True)
+        rows = store.nodes(WS, include_inactive=True)
         assert sorted(row.id for row in rows) == ["n1", "n2"]
         assert store.node(WS, "n1").content == "one"
         assert store.cursor(WS) == 42
@@ -448,7 +448,7 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.restore_epoch = 7
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": "fresh", "workspace_id": WS, "kind": "page", "content": "restored", "updated_at": None}]
+            [{"id": "fresh", "workspace_id": WS, "node_type": "page", "content": "restored", "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
         store.apply_remote(create_env("stale-local"))
@@ -470,13 +470,13 @@ class TestSnapshotRestore:
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is False
         row = store.node(WS, "local")
-        assert row is not None and row.content == "kept"
+        assert row is not None and row.content_plain == "kept"
         assert store.cursor(WS) == 5
 
     def test_snapshot_older_than_cursor_is_skipped(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": "n1", "workspace_id": WS, "kind": "page", "updated_at": None}]
+            [{"id": "n1", "workspace_id": WS, "node_type": "page", "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
         store.set_cursor(WS, 100)

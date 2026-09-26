@@ -8,28 +8,33 @@ from datetime import datetime
 from typing import Any
 
 #: Verbatim copy of the server derived schema's ``node`` table
-#: (``app/core/derived/schema.py`` in the Notees backend). A snapshot blob is a
-#: serialized derived database, so snapshot fakes MUST be built from the real
-#: DDL — inventing a ``nodes``-plural table here once hid a restore bug that
-#: only surfaces against a real server.
+#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo). A snapshot
+#: blob is a serialized derived database, so snapshot fakes MUST be built from
+#: the real DDL — inventing a ``nodes``-plural table here once hid a restore
+#: bug that only surfaces against a real server.
 SERVER_NODE_DDL = """
 CREATE TABLE IF NOT EXISTS node (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('page', 'block')),
+    node_type TEXT NOT NULL DEFAULT 'block'
+        CHECK (node_type IN ('page', 'block', 'class')),
+    parent_id TEXT REFERENCES node(id),
     class_ids TEXT NOT NULL DEFAULT '[]',
-    parent_id TEXT,
+    name TEXT,
     content TEXT NOT NULL DEFAULT '[]',
     icon TEXT,
     color TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT,
     created_by TEXT,
     updated_by TEXT,
-    -- Server-only: used for last-write-wins content merging.
+    -- Server-only: used for last-write-wins merges.
     hlc_physical INTEGER NOT NULL DEFAULT 0,
-    hlc_logical INTEGER NOT NULL DEFAULT 0
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    CHECK (node_type <> 'block' OR parent_id IS NOT NULL),
+    CHECK (node_type <> 'class' OR parent_id IS NULL)
 )
 """
 
