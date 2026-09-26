@@ -1,10 +1,9 @@
 """Read-only rendering of :class:`PageView` records into GTK widgets.
 
-The heavy lifting (unwrap, block mapping, node-link resolution) lives in the
-pure :mod:`notees_gtk.ui.ast_render` module; this file only turns view
-records into labels: Pango markup for marked runs, monospace frames for code
-and math, checkboxes for todos, dimmed placeholders for whiteboard/query
-blocks.
+The heavy lifting (token parsing, mention/chip resolution) lives in the pure
+:mod:`notees_gtk.ui.ast_render` module; this file only turns view records into
+labels: Pango markup for marked runs and pills, monospace frames for math,
+dimmed placeholders for block-scale tokens (asset/embed/query/whiteboard).
 """
 
 from __future__ import annotations
@@ -18,44 +17,54 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
 from notees_gtk.ui.ast_render import (
-    CodeView,
-    HeadingView,
-    MathView,
+    ClassChipRun,
+    ExternalLinkRun,
+    HardBreakRun,
+    MathRun,
+    MentionRun,
     PageView,
-    ParagraphView,
     PlaceholderView,
+    QuoteView,
     TextRun,
-    TodoView,
+    TypedLinkRun,
 )
 
-__all__ = ["PageViewWidget", "runs_to_markup"]
-
-#: libadwaita title styles for heading levels 1–4; deeper levels reuse the
-#: level-4 style (libadwaita ships title-1 … title-4).
-_HEADING_STYLES = {1: "title-1", 2: "title-2", 3: "title-3"}
+__all__ = ["PageViewWidget", "run_markup", "runs_to_markup"]
 
 
-def runs_to_markup(runs: Iterable[TextRun]) -> str:
-    """Convert runs to Pango markup, honoring marks and node-link pills."""
-    parts: list[str] = []
-    for run in runs:
-        text = GLib.markup_escape_text(run.text, -1)
-        if run.node_link is not None:
-            text = f'<span foreground="#3584E4" underline="single">{text}</span>'
+def run_markup(run: object) -> str:
+    """Convert one inline view record to Pango markup."""
+    if isinstance(run, TextRun):
+        text = f"{GLib.markup_escape_text(run.text, -1)}"
         if "code" in run.marks:
             text = f"<tt>{text}</tt>"
         if "highlight" in run.marks:
             text = f'<span background="yellow" color="black">{text}</span>'
-        if "strikethrough" in run.marks:
+        if "strike" in run.marks:
             text = f"<s>{text}</s>"
-        if "underline" in run.marks:
-            text = f"<u>{text}</u>"
-        if "em" in run.marks:
+        if "italic" in run.marks:
             text = f"<i>{text}</i>"
-        if "strong" in run.marks:
+        if "bold" in run.marks:
             text = f"<b>{text}</b>"
-        parts.append(text)
-    return "".join(parts)
+        return text
+    if isinstance(run, MentionRun):
+        return f'<span foreground="#3584E4" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
+    if isinstance(run, ClassChipRun):
+        return f'<span background="#D3D3D3" color="black">{GLib.markup_escape_text(run.text, -1)}</span>'
+    if isinstance(run, TypedLinkRun):
+        return f"<u>{GLib.markup_escape_text(run.text, -1)}</u>"
+    if isinstance(run, ExternalLinkRun):
+        return f'<span foreground="#1B5FBF" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
+    if isinstance(run, MathRun):
+        return f"<tt>{GLib.markup_escape_text(run.expression, -1)}</tt>"
+    if isinstance(run, HardBreakRun):
+        return ""
+    return ""
+
+
+def runs_to_markup(runs: Iterable[object]) -> str:
+    """Convert a line's inline view records to one Pango markup string."""
+    return "".join(run_markup(run) for run in runs)
 
 
 class PageViewWidget(Gtk.Box):
@@ -65,7 +74,14 @@ class PageViewWidget(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self.append(scrolled)
-        self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=18, margin_bottom=18, margin_start=24, margin_end=24)
+        self._content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            margin_top=18,
+            margin_bottom=18,
+            margin_start=24,
+            margin_end=24,
+        )
         clamp = Adw.Clamp(maximum_size=860)
         clamp.set_child(self._content)
         scrolled.set_child(clamp)
@@ -82,45 +98,33 @@ class PageViewWidget(Gtk.Box):
             self._content.append(heading)
             self._content.append(Gtk.Separator())
 
-        for block in view.blocks:
-            self._content.append(self._block_widget(block))
+        line: list[object] = []
+        for item in view.items:
+            if isinstance(item, QuoteView):
+                self._flush_line(line)
+                label = Gtk.Label(xalign=0, wrap=True, use_markup=True, selectable=True)
+                label.set_markup(f"“{runs_to_markup(item.children)}”")
+                label.add_css_class("dim-label")
+                self._content.append(label)
+            elif isinstance(item, PlaceholderView):
+                self._flush_line(line)
+                self._content.append(self._placeholder_widget(item))
+            else:
+                line.append(item)
+        self._flush_line(line)
 
     # ----------------------------------------------------------------- private
 
-    def _block_widget(self, block: object) -> Gtk.Widget:
-        if isinstance(block, HeadingView):
-            label = Gtk.Label(xalign=0, wrap=True, use_markup=True)
-            label.set_markup(runs_to_markup(block.runs))
-            label.add_css_class(_HEADING_STYLES.get(block.level, "title-4"))
-            return label
-        if isinstance(block, ParagraphView):
-            label = Gtk.Label(xalign=0, wrap=True, use_markup=True, selectable=True)
-            label.set_markup(runs_to_markup(block.runs))
-            return label
-        if isinstance(block, TodoView):
-            box = Gtk.Box(spacing=6)
-            check = Gtk.CheckButton(active=block.checked, sensitive=False)
-            box.append(check)
-            label = Gtk.Label(xalign=0, wrap=True, use_markup=True, hexpand=True)
-            label.set_markup(runs_to_markup(block.runs))
-            box.append(label)
-            return box
-        if isinstance(block, CodeView):
-            label = Gtk.Label(label=block.text, xalign=0, wrap=True, selectable=True, use_markup=False)
-            label.add_css_class("monospace")
-            frame = Gtk.Frame()
-            frame.set_child(label)
-            label.set_margin_top(6)
-            label.set_margin_bottom(6)
-            label.set_margin_start(12)
-            label.set_margin_end(12)
-            return frame
-        if isinstance(block, MathView):
-            label = Gtk.Label(label=block.latex, xalign=0, wrap=True, selectable=True)
-            label.add_css_class("monospace")
-            return label
-        if isinstance(block, PlaceholderView):
-            label = Gtk.Label(label=f"[{block.kind}]", xalign=0)
-            label.add_css_class("dim-label")
-            return label
-        return Gtk.Label(label=f"[{type(block).__name__}]", xalign=0)
+    def _flush_line(self, line: list[object]) -> None:
+        """Render the buffered inline records as one wrapped paragraph."""
+        if not line:
+            return
+        label = Gtk.Label(xalign=0, wrap=True, use_markup=True, selectable=True)
+        label.set_markup(runs_to_markup(line))
+        self._content.append(label)
+        line.clear()
+
+    def _placeholder_widget(self, block: PlaceholderView) -> Gtk.Widget:
+        label = Gtk.Label(label=f"[{block.kind}]", xalign=0)
+        label.add_css_class("dim-label")
+        return label

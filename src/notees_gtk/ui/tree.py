@@ -24,11 +24,15 @@ __all__ = ["NodeTreeSidebar", "node_display_name"]
 
 
 def node_display_name(row: NodeRow) -> str:
-    """Derive the sidebar label from the node's content AST (first line).
+    """Derive the sidebar label from the derived plaintext excerpt.
 
-    Node links fall back to label → target UUID inside ``ast_to_plaintext``,
-    never an "…" placeholder; empty content renders as "Untitled".
+    The store derives ``content_plain`` when content ops apply (and on
+    snapshot restore), so the sidebar needs no AST walk; the renderer's
+    plaintext stays the fallback for rows that predate the excerpt (or carry
+    legacy plaintext). Empty content renders as "Untitled".
     """
+    if row.content_plain:
+        return row.content_plain.strip() or "Untitled"
     if not row.content:
         return "Untitled"
     first_line = ast_to_plaintext(row.content).split("\n", 1)[0].strip()

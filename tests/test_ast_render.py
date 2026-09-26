@@ -1,8 +1,10 @@
-"""Tests for the pure AST renderer used by the GTK UI (``notees_gtk.ui.ast_render``).
+"""Tests for the v2 token-stream renderer (``notees_gtk.ui.ast_render``).
 
-Covers the CRDT wrapper unwrap port, block/inline mapping to view records,
-``node_link`` resolution order (resolver → label → target UUID, never "…"),
-plain-text seeding for the editor, and the paragraph rebuild used on save.
+Covers the SCHEMA.md Content grammar mapping to view records — text runs
+with v2 marks, hard_break, mention (displayText → resolved name → raw id),
+class_chip, typed_link (underlined verb mark), external_link, math, quote
+(the only nested token), block tokens as labeled placeholders — plus the
+plaintext excerpt derivation and the editor's plaintext→token mapping.
 """
 
 from __future__ import annotations
@@ -11,331 +13,230 @@ import json
 
 import pytest
 
+from notees_gtk.core.protocol.content import tokens_from_plaintext
 from notees_gtk.ui import ast_render
 from notees_gtk.ui.ast_render import (
-    CodeView,
-    HeadingView,
-    MathView,
+    ClassChipRun,
+    ExternalLinkRun,
+    HardBreakRun,
+    MathRun,
+    MentionRun,
     PageView,
-    ParagraphView,
     PlaceholderView,
+    QuoteView,
     TextRun,
-    TodoView,
+    TypedLinkRun,
 )
-
-INNER_DOC = [{"type": "paragraph", "children": [{"type": "text", "text": "Hello"}]}]
-INNER_JSON = json.dumps(INNER_DOC)
 
 
 def doc_json(doc: object) -> str:
-    """Serialize a document the way the derived ``content`` column stores it."""
+    """Serialize a token array the way the derived ``content`` column stores it."""
     return json.dumps(doc, ensure_ascii=False)
-
-
-# --------------------------------------------------------------------- unwrap
-
-
-def test_unwrap_bare_text_wrapper() -> None:
-    wrapped = [{"type": "text", "text": INNER_JSON}]
-    assert ast_render.unwrap(wrapped) == INNER_DOC
-
-
-def test_unwrap_paragraph_wrapped() -> None:
-    wrapped = [{"type": "paragraph", "children": [{"type": "text", "text": INNER_JSON}]}]
-    assert ast_render.unwrap(wrapped) == INNER_DOC
-
-
-def test_unwrap_already_unwrapped_multi_block() -> None:
-    doc = [
-        {"type": "paragraph", "children": [{"type": "text", "text": "A"}]},
-        {"type": "heading", "level": 1, "children": [{"type": "text", "text": "B"}]},
-    ]
-    assert ast_render.unwrap(doc) == doc
-
-
-def test_unwrap_single_block_with_two_children_is_not_a_wrapper() -> None:
-    doc = [
-        {
-            "type": "paragraph",
-            "children": [
-                {"type": "text", "text": INNER_JSON},
-                {"type": "text", "text": " more"},
-            ],
-        }
-    ]
-    assert ast_render.unwrap(doc) == doc
-
-
-def test_unwrap_single_non_text_block_is_not_a_wrapper() -> None:
-    doc = [{"type": "code", "text": INNER_JSON}]
-    assert ast_render.unwrap(doc) == doc
-
-
-def test_unwrap_garbage_inner_text_passthrough() -> None:
-    doc = [{"type": "text", "text": "this is not json"}]
-    assert ast_render.unwrap(doc) == doc
-
-
-def test_unwrap_inner_json_not_a_document_passthrough() -> None:
-    for inner in ("42", '{"type": "paragraph"}', "[1, 2, 3]", json.dumps([{"text": "no type"}])):
-        doc = [{"type": "text", "text": inner}]
-        assert ast_render.unwrap(doc) == doc, inner
-
-
-def test_unwrap_inner_empty_document_passthrough() -> None:
-    doc = [{"type": "text", "text": "[]"}]
-    assert ast_render.unwrap(doc) == doc
 
 
 # ---------------------------------------------------------------- ast_to_view
 
 
-def test_view_none_is_empty() -> None:
-    assert ast_render.ast_to_view(None) == PageView(blocks=())
+def test_view_none_and_empty_are_empty() -> None:
+    assert ast_render.ast_to_view(None) == PageView(items=())
+    assert ast_render.ast_to_view("") == PageView(items=())
 
 
-def test_view_empty_string_is_empty() -> None:
-    assert ast_render.ast_to_view("") == PageView(blocks=())
-
-
-def test_view_plaintext_string_becomes_paragraph() -> None:
-    """Non-JSON content (legacy plaintext) renders as a single paragraph."""
+def test_view_legacy_plaintext_becomes_text_run() -> None:
+    """Non-JSON content (legacy plaintext) renders as a single text run."""
     view = ast_render.ast_to_view("just some words")
-    assert view == PageView(blocks=(ParagraphView(runs=(TextRun(text="just some words"),)),))
+    assert view == PageView(items=(TextRun(text="just some words"),))
 
 
-def test_view_wrapped_string_content_is_unwrapped() -> None:
-    wrapped = doc_json([{"type": "paragraph", "children": [{"type": "text", "text": INNER_JSON}]}])
-    view = ast_render.ast_to_view(wrapped)
-    assert view == PageView(blocks=(ParagraphView(runs=(TextRun(text="Hello"),)),))
+def test_view_text_run_with_v2_marks() -> None:
+    doc = [{"type": "text", "text": "bold and code", "marks": ["bold", "code"]}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TextRun(text="bold and code", marks=frozenset({"bold", "code"})),))
 
 
-def test_view_heading() -> None:
-    view = ast_render.ast_to_view(doc_json([{"type": "heading", "level": 2, "children": [{"type": "text", "text": "Title"}]}]))
-    assert view == PageView(
-        blocks=(HeadingView(level=2, runs=(TextRun(text="Title"),)),)
-    )
+def test_view_ignores_unknown_marks() -> None:
+    doc = [{"type": "text", "text": "x", "marks": ["blink", "bold"]}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TextRun(text="x", marks=frozenset({"bold"})),))
 
 
-def test_view_todo_checked_and_unchecked() -> None:
-    doc = [
-        {"type": "todo", "checked": True, "children": [{"type": "text", "text": "done"}]},
-        {"type": "todo", "checked": False, "children": [{"type": "text", "text": "todo"}]},
-    ]
-    view = ast_render.ast_to_view(doc)
-    assert view.blocks == (
-        TodoView(checked=True, runs=(TextRun(text="done"),)),
-        TodoView(checked=False, runs=(TextRun(text="todo"),)),
-    )
+def test_view_hard_break_is_a_line_marker() -> None:
+    doc = [{"type": "text", "text": "a"}, {"type": "hard_break"}, {"type": "text", "text": "b"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TextRun(text="a"), HardBreakRun(), TextRun(text="b")))
 
 
-def test_view_code_block() -> None:
-    view = ast_render.ast_to_view(doc_json([{"type": "code", "text": "print('hi')"}]))
-    assert view == PageView(blocks=(CodeView(text="print('hi')"),))
+def test_view_typed_link_is_underlined_mark() -> None:
+    doc = [{"type": "text", "text": "Kuhn "}, {"type": "typed_link", "verb": "cites", "text": "cites"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TextRun(text="Kuhn "), TypedLinkRun(verb="cites", text="cites")))
 
 
-def test_view_math_block() -> None:
-    view = ast_render.ast_to_view(doc_json([{"type": "math", "expression": "e^{i\\pi}"}]))
-    assert view == PageView(blocks=(MathView(latex="e^{i\\pi}"),))
+def test_view_typed_link_verb_may_bind_a_property_schema() -> None:
+    doc = [{"type": "typed_link", "verb": {"propertySchemaId": "sch-1"}, "text": "authored"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TypedLinkRun(verb="sch-1", text="authored"),))
 
 
-def test_view_whiteboard_and_query_are_placeholders() -> None:
-    doc = [{"type": "whiteboard", "data": {}}, {"type": "query", "data": {}}]
-    view = ast_render.ast_to_view(doc)
-    assert view.blocks == (PlaceholderView(kind="whiteboard"), PlaceholderView(kind="query"))
+def test_view_mention_display_text_wins() -> None:
+    doc = [{"type": "mention", "targetNodeId": "target-1", "text": "captured", "displayText": "the Republic"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(MentionRun(target_id="target-1", text="the Republic"),))
 
 
-def test_view_unknown_block_is_unsupported_placeholder() -> None:
-    view = ast_render.ast_to_view(doc_json([{"type": "spreadsheet", "data": {}}]))
-    assert view.blocks == (PlaceholderView(kind="unsupported"),)
+def test_view_mention_resolves_current_name() -> None:
+    doc = [{"type": "mention", "targetNodeId": "target-1", "text": "captured"}]
+    view = ast_render.ast_to_view(doc_json(doc), resolve_name=lambda target: f"name({target})")
+    assert view == PageView(items=(MentionRun(target_id="target-1", text="name(target-1)"),))
 
 
-def test_view_marks_accumulate_through_nesting() -> None:
-    doc = [
-        {
-            "type": "paragraph",
-            "children": [
-                {
-                    "type": "strong",
-                    "children": [
-                        {"type": "text", "text": "bold"},
-                        {"type": "em", "children": [{"type": "text", "text": " both"}]},
-                        {"type": "code", "text": "mono"},
-                        {"type": "strikethrough", "children": [{"type": "text", "text": "gone"}]},
-                        {"type": "highlight", "children": [{"type": "text", "text": "mark"}]},
-                    ],
-                }
-            ],
-        }
-    ]
-    (block,) = ast_render.ast_to_view(doc).blocks
-    assert isinstance(block, ParagraphView)
-    runs = {run.text: run.marks for run in block.runs}
-    assert runs["bold"] == frozenset({"strong"})
-    assert runs[" both"] == frozenset({"strong", "em"})
-    assert runs["mono"] == frozenset({"strong", "code"})
-    assert runs["gone"] == frozenset({"strong", "strikethrough"})
-    assert runs["mark"] == frozenset({"strong", "highlight"})
+def test_view_mention_falls_back_to_raw_id_not_captured_text() -> None:
+    """Fork 4: broken targets render the raw id; captured text is non-authoritative."""
+    doc = [{"type": "mention", "targetNodeId": "dead-1", "text": "captured"}]
+    view = ast_render.ast_to_view(doc_json(doc))  # no resolver at all
+    assert view == PageView(items=(MentionRun(target_id="dead-1", text="dead-1"),))
 
 
-def test_view_external_link_flattens_children() -> None:
-    doc = [
-        {
-            "type": "paragraph",
-            "children": [
-                {"type": "external_link", "url": "https://example.com", "children": [{"type": "text", "text": "site"}]},
-            ],
-        }
-    ]
-    (block,) = ast_render.ast_to_view(doc).blocks
-    assert isinstance(block, ParagraphView)
-    assert block.runs == (TextRun(text="site"),)
-
-
-def test_view_hard_break_is_newline_run() -> None:
-    doc = [
-        {
-            "type": "paragraph",
-            "children": [
-                {"type": "text", "text": "a"},
-                {"type": "hard_break"},
-                {"type": "text", "text": "b"},
-            ],
-        }
-    ]
-    (block,) = ast_render.ast_to_view(doc).blocks
-    assert isinstance(block, ParagraphView)
-    assert [run.text for run in block.runs] == ["a", "\n", "b"]
-
-
-# ------------------------------------------------------------- node_link pills
-
-
-def test_node_link_resolved_via_store_lookup() -> None:
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid"}]}]
-    (block,) = ast_render.ast_to_view(doc, resolve_name=lambda target: f"name({target})").blocks
-    assert isinstance(block, ParagraphView)
-    (run,) = block.runs
-    assert run.text == "name(target-uuid)"
-    assert run.node_link is not None
-    assert run.node_link.target_id == "target-uuid"
-
-
-def test_node_link_falls_back_to_label() -> None:
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid", "label": "My Label"}]}]
-    view = ast_render.ast_to_view(doc, resolve_name=lambda _target: "")
-    (block,) = view.blocks
-    assert isinstance(block, ParagraphView)
-    assert block.runs[0].text == "My Label"
-
-
-def test_node_link_falls_back_to_target_uuid() -> None:
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid"}]}]
-    view = ast_render.ast_to_view(doc)  # no resolver at all
-    (block,) = view.blocks
-    assert isinstance(block, ParagraphView)
-    assert block.runs[0].text == "target-uuid"
-
-
-def test_node_link_link_id_splits_recovery_target() -> None:
-    """``link_id`` is ``targetUuid:linkUuid``; the first segment is recovery metadata."""
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid:link-uuid", "label": "L"}]}]
-    view = ast_render.ast_to_view(doc, resolve_name=lambda target: f"name({target})")
-    (block,) = view.blocks
-    assert isinstance(block, ParagraphView)
-    (run,) = block.runs
-    assert run.text == "name(target-uuid)"
-    assert run.node_link is not None
-    assert run.node_link.target_id == "target-uuid"
-    assert run.node_link.label == "L"
-
-
-def test_node_link_resolver_error_still_renders() -> None:
+def test_view_mention_resolver_error_still_renders() -> None:
     def boom(_target: str) -> str:
         raise RuntimeError("store exploded")
 
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid", "label": "L"}]}]
-    (block,) = ast_render.ast_to_view(doc, resolve_name=boom).blocks
-    assert isinstance(block, ParagraphView)
-    assert block.runs[0].text == "L"
+    doc = [{"type": "mention", "targetNodeId": "t-1", "text": "captured"}]
+    view = ast_render.ast_to_view(doc_json(doc), resolve_name=boom)
+    assert view == PageView(items=(MentionRun(target_id="t-1", text="t-1"),))
 
 
-def test_node_link_broken_link_behaves_like_node_link() -> None:
-    doc = [{"type": "paragraph", "children": [{"type": "broken_link", "link_id": "dead-uuid", "label": "Ghost"}]}]
-    (block,) = ast_render.ast_to_view(doc).blocks
-    assert isinstance(block, ParagraphView)
-    assert block.runs[0].text == "Ghost"
+def test_view_class_chip_resolves_class_name() -> None:
+    doc = [{"type": "class_chip", "classId": "class-1"}]
+    view = ast_render.ast_to_view(doc_json(doc), resolve_name=lambda target: f"class({target})")
+    assert view == PageView(items=(ClassChipRun(class_id="class-1", text="class(class-1)"),))
+
+
+def test_view_class_chip_display_text_and_raw_id_fallback() -> None:
+    doc = [{"type": "class_chip", "classId": "class-1", "displayText": "One-off"}]
+    assert ast_render.ast_to_view(doc_json(doc)) == PageView(items=(ClassChipRun(class_id="class-1", text="One-off"),))
+    plain = [{"type": "class_chip", "classId": "class-9"}]
+    assert ast_render.ast_to_view(doc_json(plain)) == PageView(
+        items=(ClassChipRun(class_id="class-9", text="class-9"),)
+    )
+
+
+def test_view_external_link() -> None:
+    doc = [{"type": "external_link", "href": "https://example.com", "text": "site"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(ExternalLinkRun(href="https://example.com", text="site"),))
+
+
+def test_view_math() -> None:
+    doc = [{"type": "math", "expression": "e^{i\\pi}"}]
+    assert ast_render.ast_to_view(doc_json(doc)) == PageView(items=(MathRun(expression="e^{i\\pi}"),))
+
+
+def test_view_quote_is_the_only_nested_token() -> None:
+    doc = [
+        {
+            "type": "quote",
+            "children": [
+                {"type": "text", "text": "quoted "},
+                {"type": "mention", "targetNodeId": "t-1", "text": "captured"},
+                {"type": "typed_link", "verb": "cites", "text": "cites"},
+            ],
+        }
+    ]
+    view = ast_render.ast_to_view(doc_json(doc), resolve_name=lambda _t: "Resolved")
+    assert view == PageView(
+        items=(
+            QuoteView(
+                children=(
+                    TextRun(text="quoted "),
+                    MentionRun(target_id="t-1", text="Resolved"),
+                    TypedLinkRun(verb="cites", text="cites"),
+                )
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        {"type": "asset_ref", "assetId": "a-1"},
+        {"type": "embed_ref", "nodeId": "n-1"},
+        {"type": "query", "queryAst": {}},
+        {"type": "whiteboard", "layout": {}},
+    ],
+)
+def test_view_block_tokens_are_labeled_placeholders(token: object) -> None:
+    view = ast_render.ast_to_view(doc_json([token]))
+    assert view == PageView(items=(PlaceholderView(kind=str(token["type"])),))
+
+
+def test_view_unknown_token_is_unsupported_placeholder() -> None:
+    view = ast_render.ast_to_view(doc_json([{"type": "spreadsheet", "data": {}}]))
+    assert view == PageView(items=(PlaceholderView(kind="unsupported"),))
 
 
 # ------------------------------------------------------------ ast_to_plaintext
 
 
-def test_plaintext_joins_blocks_with_newlines() -> None:
+def test_plaintext_is_the_v2_excerpt() -> None:
     doc = [
-        {"type": "paragraph", "children": [{"type": "text", "text": "one"}]},
-        {"type": "paragraph", "children": [{"type": "text", "text": "two"}]},
+        {"type": "text", "text": "Kuhn "},
+        {"type": "typed_link", "verb": "cites", "text": "cites"},
+        {"type": "text", "text": " earlier work on "},
+        {"type": "mention", "targetNodeId": "t-1", "text": "The Structure"},
+        {"type": "hard_break"},
+        {"type": "math", "expression": "a^2"},
+        {"type": "quote", "children": [{"type": "text", "text": "nested quote"}]},
+        {"type": "asset_ref", "assetId": "a-1"},  # block tokens are silent
     ]
-    assert ast_render.ast_to_plaintext(doc_json(doc)) == "one\ntwo"
+    assert ast_render.ast_to_plaintext(doc_json(doc)) == "Kuhn cites earlier work on The Structure a^2 nested quote"
 
 
-def test_plaintext_todos() -> None:
-    doc = [
-        {"type": "todo", "checked": True, "children": [{"type": "text", "text": "done"}]},
-        {"type": "todo", "checked": False, "children": [{"type": "text", "text": "later"}]},
-    ]
-    assert ast_render.ast_to_plaintext(doc) == "- [x] done\n- [ ] later"
+def test_plaintext_mention_prefers_display_text() -> None:
+    doc = [{"type": "mention", "targetNodeId": "t-1", "text": "captured", "displayText": "the Republic"}]
+    assert ast_render.ast_to_plaintext(doc_json(doc)) == "the Republic"
 
 
-def test_plaintext_headings() -> None:
-    doc = [
-        {"type": "heading", "level": 1, "children": [{"type": "text", "text": "H1"}]},
-        {"type": "heading", "level": 3, "children": [{"type": "text", "text": "H3"}]},
-    ]
-    assert ast_render.ast_to_plaintext(doc) == "# H1\n### H3"
+def test_plaintext_collapses_whitespace() -> None:
+    doc = [{"type": "text", "text": "  a \n b  "}]
+    assert ast_render.ast_to_plaintext(doc_json(doc)) == "a b"
 
 
-def test_plaintext_code_and_math_are_literal() -> None:
-    doc = [{"type": "code", "text": "x = 1"}, {"type": "math", "expression": "a^2"}]
-    assert ast_render.ast_to_plaintext(doc) == "x = 1\na^2"
-
-
-def test_plaintext_unwraps_first() -> None:
-    wrapped = doc_json([{"type": "text", "text": INNER_JSON}])
-    assert ast_render.ast_to_plaintext(wrapped) == "Hello"
-
-
-def test_plaintext_placeholders_are_bracketed() -> None:
-    doc = [{"type": "whiteboard", "data": {}}, {"type": "query", "data": {}}]
-    assert ast_render.ast_to_plaintext(doc) == "[whiteboard]\n[query]"
-
-
-def test_plaintext_none_and_garbage() -> None:
+def test_plaintext_none_and_legacy() -> None:
     assert ast_render.ast_to_plaintext(None) == ""
     assert ast_render.ast_to_plaintext("not json") == "not json"
 
 
-def test_plaintext_node_link_falls_back_without_resolver() -> None:
-    doc = [{"type": "paragraph", "children": [{"type": "node_link", "link_id": "target-uuid", "label": "L"}]}]
-    assert ast_render.ast_to_plaintext(doc) == "L"
+# ------------------------------------------------- tokens_from_plaintext (editor)
 
 
-# ------------------------------------------------- editor save (paragraph AST)
-
-
-def test_paragraphs_from_plaintext() -> None:
-    ast = ast_render.paragraphs_from_plaintext("one\ntwo\n\nthree")
-    assert ast == [
-        {"type": "paragraph", "children": [{"type": "text", "text": "one"}]},
-        {"type": "paragraph", "children": [{"type": "text", "text": "two"}]},
-        {"type": "paragraph", "children": [{"type": "text", "text": ""}]},
-        {"type": "paragraph", "children": [{"type": "text", "text": "three"}]},
+def test_tokens_from_plaintext_maps_lines_with_hard_breaks() -> None:
+    tokens = tokens_from_plaintext("one\ntwo\n\nthree")
+    assert tokens == [
+        {"type": "text", "text": "one"},
+        {"type": "hard_break"},
+        {"type": "text", "text": "two"},
+        {"type": "hard_break"},
+        {"type": "text", "text": ""},
+        {"type": "hard_break"},
+        {"type": "text", "text": "three"},
     ]
 
 
-def test_paragraphs_from_plaintext_empty_is_single_empty_paragraph() -> None:
-    assert ast_render.paragraphs_from_plaintext("") == [
-        {"type": "paragraph", "children": [{"type": "text", "text": ""}]}
-    ]
+def test_tokens_from_plaintext_single_line() -> None:
+    assert tokens_from_plaintext("solo") == [{"type": "text", "text": "solo"}]
+
+
+def test_tokens_from_plaintext_empty_is_empty_stream() -> None:
+    assert tokens_from_plaintext("") == []
+
+
+def test_tokens_from_plaintext_round_trips_through_plaintext() -> None:
+    text = "first line\nsecond line"
+    tokens = tokens_from_plaintext(text)
+    # The excerpt collapses the hard_break to a single space (v2 excerpt rules).
+    assert ast_render.ast_to_plaintext(json.dumps(tokens)) == "first line second line"
 
 
 # ------------------------------------------------------------------ UI smoke

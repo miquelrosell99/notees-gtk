@@ -1,407 +1,264 @@
-"""Pure AST → view-record renderer for the GTK UI.
+"""Pure token-stream → view-record renderer for the GTK UI (v2 content grammar).
 
 Headless-testable by design: no GTK imports here (the UI smoke test in
-``tests/test_ast_render.py`` guards the ``gi`` import separately). Mirrors the
-frontend contract:
+``tests/test_ast_render.py`` guards the ``gi`` import separately).
 
-- always unwrap the CRDT storage wrapper before parsing
-  (port of ``unwrapCrdtContentAst``, ``frontend/src/lib/astBuilder.ts:561``);
-- a ``node_link`` resolves via store lookup, falls back to the link label,
-  then to the target UUID from ``link_id`` — never an "…" placeholder
-  (``skills/notees/rules/coding-standards.md``).
+SCHEMA.md's Content grammar is normative: a block node's content is ONE flat,
+ordered token array — there are no block-level segments, and rendering defines
+presentation. Resolution rules implemented here:
 
-Block shapes follow ``frontend/src/types/ast.ts`` (paragraph, heading,
-whiteboard, query) plus the block-level ``todo``/``code``/``math`` forms the
-GTK client renders as first-class views.
+- ``mention``: ``displayText`` wins, then the resolver's current target name
+  (auto-rename free), then the raw target id — never an "…" placeholder;
+  the captured ``text`` is non-authoritative (Fork 4);
+- ``class_chip``: render-only (Fork 3) — ``displayText`` ?? resolved class
+  name ?? raw class id; inserting/deleting a chip never mutates ``class_ids``;
+- ``typed_link``: a mark on the prose word (01-knowledge-model.md §9) — the
+  marked word renders underlined, the verb is carried for tooltips/metadata;
+- block-scale tokens (``asset_ref``/``embed_ref``/``query``/``whiteboard``)
+  render as labeled placeholders until the GTK client grows real views.
+
+Plaintext (editor seed, sidebar names) is the v2 excerpt derivation
+(:func:`notees_gtk.core.protocol.content.plaintext_excerpt`) — derived, never
+stored as truth.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from notees_gtk.core.protocol.content import parse_content_ast, plaintext_excerpt
+
 __all__ = [
-    "BlockView",
-    "CodeView",
-    "HeadingView",
-    "MathView",
-    "NodeLinkRef",
+    "ClassChipRun",
+    "ExternalLinkRun",
+    "HardBreakRun",
+    "InlineView",
+    "MathRun",
+    "MentionRun",
+    "PageItem",
     "PageView",
-    "ParagraphView",
     "PlaceholderView",
+    "QuoteView",
     "TextRun",
-    "TodoView",
+    "TypedLinkRun",
     "ast_to_plaintext",
     "ast_to_view",
-    "paragraphs_from_plaintext",
-    "unwrap",
 ]
 
-#: Mark names understood by the renderer (``ast.ts`` mark nodes plus the
-#: inline ``code`` leaf, which is rendered as a marked run).
-_MARK_NAMES: frozenset[str] = frozenset({"strong", "em", "strikethrough", "highlight", "underline"})
-
-#: Placeholder kinds emitted for blocks the plain-text MVP cannot render.
-_PLACEHOLDER_WHITEBOARD = "whiteboard"
-_PLACEHOLDER_QUERY = "query"
-_PLACEHOLDER_UNSUPPORTED = "unsupported"
-
-#: Node-name resolver supplied by the UI layer: maps a target node id to its
-#: display name. A falsy return means "unresolvable" and triggers the
-#: label → target-UUID fallback.
+#: Node-name resolver supplied by the UI layer: maps a target node id (mention
+#: target or class id) to its display name. A falsy return means
+#: "unresolvable" and triggers the raw-id fallback.
 type NameResolver = Callable[[str], str | None]
 
+#: v2 mark names (content-mark.ts MARKS): attributes on text runs, not nodes.
+_VALID_MARKS: frozenset[str] = frozenset({"bold", "italic", "strike", "highlight", "code"})
 
-@dataclass(frozen=True)
-class NodeLinkRef:
-    """Resolved display target of a ``node_link`` inline.
-
-    Attributes:
-        target_id: Target node UUID (first segment of the AST ``link_id``,
-            which has the form ``targetUuid:linkUuid``).
-        label: Custom label stored inline in the AST, if any.
-    """
-
-    target_id: str
-    label: str | None = None
+#: Block-scale tokens rendered as labeled placeholders (no GTK views yet).
+_PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"asset_ref", "embed_ref", "query", "whiteboard"})
 
 
 @dataclass(frozen=True)
 class TextRun:
-    """One inline run of a paragraph/heading/todo view.
-
-    Attributes:
-        text: Plain display text (already resolved for node links).
-        marks: Active mark names (strong/em/strikethrough/highlight/code).
-        node_link: Present when this run is a node-link pill.
-    """
+    """One marked (or plain) text run."""
 
     text: str
     marks: frozenset[str] = frozenset()
-    node_link: NodeLinkRef | None = None
 
 
 @dataclass(frozen=True)
-class HeadingView:
-    """Heading block; ``level`` is clamped to 1–6."""
-
-    level: int
-    runs: tuple[TextRun, ...] = ()
+class HardBreakRun:
+    """Shift+enter line jump inside a block — flushes the rendered line."""
 
 
 @dataclass(frozen=True)
-class ParagraphView:
-    """Paragraph block as inline runs."""
+class MentionRun:
+    """Mention pill: ``displayText`` ?? resolved name ?? raw target id."""
 
-    runs: tuple[TextRun, ...] = ()
-
-
-@dataclass(frozen=True)
-class TodoView:
-    """Task block with a checked flag."""
-
-    checked: bool
-    runs: tuple[TextRun, ...] = ()
-
-
-@dataclass(frozen=True)
-class CodeView:
-    """Literal code block."""
-
+    target_id: str
     text: str
 
 
 @dataclass(frozen=True)
-class MathView:
-    """Block math; ``latex`` is the source without delimiters."""
+class ClassChipRun:
+    """Class chip (render-only reference to a class node)."""
 
-    latex: str
+    class_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class TypedLinkRun:
+    """The marked word of a typed link; ``verb`` may be a free string or a
+    property-schema id (create-and-bind gesture)."""
+
+    verb: str
+    text: str
+
+
+@dataclass(frozen=True)
+class ExternalLinkRun:
+    href: str
+    text: str
+
+
+@dataclass(frozen=True)
+class MathRun:
+    expression: str
+
+
+#: One inline-scale view record (everything that can sit in a rendered line).
+type InlineView = TextRun | HardBreakRun | MentionRun | ClassChipRun | TypedLinkRun | ExternalLinkRun | MathRun
+
+
+@dataclass(frozen=True)
+class QuoteView:
+    """The only nested token: a quote contains inline tokens."""
+
+    children: tuple[InlineView, ...] = ()
 
 
 @dataclass(frozen=True)
 class PlaceholderView:
-    """Non-text block the MVP cannot render (whiteboard/query/unknown)."""
+    """Block-scale token the GTK client renders as a labeled placeholder."""
 
     kind: str
 
 
+#: Anything :class:`PageView` can hold at top level.
+type PageItem = InlineView | QuoteView | PlaceholderView
+
+
 @dataclass(frozen=True)
 class PageView:
-    """Immutable render-ready projection of one node's content AST."""
+    """Immutable render-ready projection of one node's content token array."""
 
-    blocks: tuple[BlockView, ...] = ()
-
-
-type BlockView = HeadingView | ParagraphView | TodoView | CodeView | MathView | PlaceholderView
+    items: tuple[PageItem, ...] = ()
 
 
-# --------------------------------------------------------------------- unwrap
+# --------------------------------------------------------------------- helpers
 
 
-def _is_text_node(node: Any) -> bool:
-    """Port of ``isTextNode``: an object ``{type: 'text', text: str}``."""
-    return (
-        isinstance(node, Mapping)
-        and node.get("type") == "text"
-        and isinstance(node.get("text"), str)
-    )
-
-
-def _try_parse_document_json(text: str) -> list[Any] | None:
-    """Parse a JSON document, requiring a non-empty array of typed objects."""
+def _resolve(resolver: NameResolver | None, node_id: str) -> str | None:
+    """Run the UI-supplied name lookup; a failing store must never break rendering."""
+    if not node_id or resolver is None:
+        return None
     try:
-        parsed = json.loads(text)
-    except ValueError:
+        return resolver(node_id)
+    except Exception:  # noqa: BLE001 — a failing store lookup must never break rendering
         return None
-    if not isinstance(parsed, list):
+
+
+def _mention_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tuple[str, str]:
+    target_id = str(token.get("targetNodeId") or "")
+    display = token.get("displayText")
+    if isinstance(display, str) and display:
+        return target_id, display
+    resolved = _resolve(resolver, target_id)
+    # Fork 4: broken targets render the raw id; captured ``text`` is
+    # non-authoritative and never surfaces when the target is unresolvable.
+    return target_id, resolved or target_id
+
+
+def _class_chip_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tuple[str, str]:
+    class_id = str(token.get("classId") or "")
+    display = token.get("displayText")
+    if isinstance(display, str) and display:
+        return class_id, display
+    return class_id, _resolve(resolver, class_id) or class_id
+
+
+def _verb_string(raw: Any) -> str:
+    """Typed-link verb: free string or ``{propertySchemaId}`` binding."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, Mapping):
+        return str(raw.get("propertySchemaId") or "")
+    return ""
+
+
+def _inline_view(token: Any, resolver: NameResolver | None) -> InlineView | None:
+    if not isinstance(token, Mapping):
         return None
-    if any(not isinstance(item, Mapping) or "type" not in item for item in parsed):
-        return None
-    return parsed
-
-
-def unwrap(ast: Sequence[Any]) -> list[Any]:
-    """Undo the CRDT text-update storage wrapper (port of ``unwrapCrdtContentAst``).
-
-    The inline editor serializes the real AST to JSON and stores that string
-    inside the node's text CRDT, so the mirrored ``content`` column can be
-    ``[{type: 'text', text: '[<real AST>]'}]`` (or the paragraph-wrapped
-    equivalent). Returns the inner AST when the wrapper is detected;
-    otherwise returns the input unchanged.
-    """
-    if len(ast) != 1:
-        return list(ast)
-    block = ast[0]
-    wrapped_text: str | None = None
-    if _is_text_node(block):
-        wrapped_text = block["text"]
-    elif (
-        isinstance(block, Mapping)
-        and block.get("type") == "paragraph"
-        and isinstance(block.get("children"), list)
-        and len(block["children"]) == 1
-        and _is_text_node(block["children"][0])
-    ):
-        wrapped_text = block["children"][0]["text"]
-    if wrapped_text is None:
-        return list(ast)
-    inner = _try_parse_document_json(wrapped_text)
-    if inner:
-        return inner
-    return list(ast)
-
-
-# --------------------------------------------------------------------- parsing
-
-
-def _parse_document(ast_json: str | Sequence[Any] | None) -> list[Any]:
-    """Normalize stored content (JSON string or parsed list) to a raw AST list.
-
-    Legacy plaintext content that is not a JSON array of typed blocks is
-    rendered as a single paragraph carrying the raw string (mirroring
-    ``nodeNameToText``'s fallback, which avoids treating JSON objects/arrays
-    as display text).
-    """
-    if ast_json is None:
-        return []
-    if isinstance(ast_json, str):
-        text = ast_json.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(ast_json)
-        except ValueError:
-            return [_plaintext_block(ast_json)]
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, (int, float, bool)):
-            return [_plaintext_block(ast_json)]
-        return [_plaintext_block(ast_json)] if not text.startswith(("{", "[")) else []
-    if isinstance(ast_json, Sequence):
-        return list(ast_json)
-    return []
-
-
-def _plaintext_block(text: str) -> dict[str, Any]:
-    return {"type": "paragraph", "children": [{"type": "text", "text": text}]}
-
-
-# --------------------------------------------------------------------- inlines
-
-
-def _resolve_node_link_text(target_id: str, label: str | None, resolve_name: NameResolver | None) -> str:
-    """Apply the display fallback chain: store lookup → label → target UUID."""
-    if target_id and resolve_name is not None:
-        try:
-            resolved = resolve_name(target_id)
-        except Exception:  # noqa: BLE001 — a failing store lookup must never break rendering
-            resolved = None
-        if resolved:
-            return resolved
-    if label:
-        return label
-    return target_id
-
-
-def _node_link_run(node: Mapping[str, Any], marks: frozenset[str], resolve_name: NameResolver | None) -> TextRun:
-    link_id = node.get("link_id")
-    link_id = link_id if isinstance(link_id, str) else ""
-    raw_label = node.get("label")
-    label = raw_label if isinstance(raw_label, str) and raw_label else None
-    # link_id has the form ``targetUuid:linkUuid``; the first segment is the
-    # recovery target.
-    target_id = link_id.split(":", 1)[0] if ":" in link_id else link_id
-    text = _resolve_node_link_text(target_id, label, resolve_name)
-    return TextRun(text=text, marks=marks, node_link=NodeLinkRef(target_id=target_id, label=label))
-
-
-def _inline_runs(nodes: Any, marks: frozenset[str], resolve_name: NameResolver | None) -> list[TextRun]:
-    """Map an inline-node list to runs, accumulating marks through nesting."""
-    if not isinstance(nodes, list):
-        return []
-    runs: list[TextRun] = []
-    for node in nodes:
-        if not isinstance(node, Mapping):
-            continue
-        ntype = node.get("type")
-        if ntype == "text":
-            runs.append(TextRun(text=str(node.get("text", "")), marks=marks))
-        elif ntype == "hard_break":
-            runs.append(TextRun(text="\n", marks=marks))
-        elif ntype == "code":
-            runs.append(TextRun(text=str(node.get("text", "")), marks=marks | {"code"}))
-        elif ntype == "math":
-            runs.append(TextRun(text=str(node.get("expression", "")), marks=marks))
-        elif ntype in ("node_link", "broken_link"):
-            runs.append(_node_link_run(node, marks, resolve_name))
-        elif ntype == "date_range":
-            raw_label = node.get("label")
-            label = raw_label if isinstance(raw_label, str) and raw_label else None
-            text = label or f"{node.get('start', '')} – {node.get('end', '')}"
-            runs.append(TextRun(text=text, marks=marks))
-        elif ntype == "external_link":
-            children = node.get("children")
-            if isinstance(children, list):
-                runs.extend(_inline_runs(children, marks, resolve_name))
-            else:
-                runs.append(TextRun(text=str(node.get("url", "")), marks=marks))
-        elif ntype in _MARK_NAMES:
-            runs.extend(_inline_runs(node.get("children"), marks | {str(ntype)}, resolve_name))
-        else:
-            # Unknown inline: keep any literal text so nothing is dropped.
-            leftover = node.get("text")
-            if leftover is not None:
-                runs.append(TextRun(text=str(leftover), marks=marks))
-    return runs
-
-
-# ---------------------------------------------------------------------- blocks
-
-
-def _children(block: Mapping[str, Any]) -> Any:
-    return block.get("children")
-
-
-def _heading_level(raw: Any) -> int:
-    try:
-        level = int(raw)
-    except (TypeError, ValueError):
-        return 1
-    return min(max(level, 1), 6)
-
-
-def _block_view(block: Any, resolve_name: NameResolver | None) -> BlockView:
-    if not isinstance(block, Mapping):
-        return PlaceholderView(kind=_PLACEHOLDER_UNSUPPORTED)
-    btype = block.get("type")
-    if btype == "paragraph":
-        return ParagraphView(runs=tuple(_inline_runs(_children(block), frozenset(), resolve_name)))
-    if btype == "heading":
-        return HeadingView(
-            level=_heading_level(block.get("level")),
-            runs=tuple(_inline_runs(_children(block), frozenset(), resolve_name)),
+    ttype = token.get("type")
+    if ttype == "text":
+        raw_marks = token.get("marks")
+        marks = (
+            frozenset(str(mark) for mark in raw_marks if str(mark) in _VALID_MARKS)
+            if isinstance(raw_marks, list)
+            else frozenset()
         )
-    if btype == "todo":
-        return TodoView(
-            checked=bool(block.get("checked")),
-            runs=tuple(_inline_runs(_children(block), frozenset(), resolve_name)),
-        )
-    if btype == "code":
-        return CodeView(text=str(block.get("text", "")))
-    if btype == "math":
-        return MathView(latex=str(block.get("expression", "")))
-    if btype == "whiteboard":
-        return PlaceholderView(kind=_PLACEHOLDER_WHITEBOARD)
-    if btype == "query":
-        return PlaceholderView(kind=_PLACEHOLDER_QUERY)
-    return PlaceholderView(kind=_PLACEHOLDER_UNSUPPORTED)
+        return TextRun(text=str(token.get("text", "")), marks=marks)
+    if ttype == "hard_break":
+        return HardBreakRun()
+    if ttype == "mention":
+        target_id, text = _mention_text(token, resolver)
+        return MentionRun(target_id=target_id, text=text)
+    if ttype == "class_chip":
+        class_id, text = _class_chip_text(token, resolver)
+        return ClassChipRun(class_id=class_id, text=text)
+    if ttype == "typed_link":
+        return TypedLinkRun(verb=_verb_string(token.get("verb")), text=str(token.get("text", "")))
+    if ttype == "external_link":
+        return ExternalLinkRun(href=str(token.get("href", "")), text=str(token.get("text", "")))
+    if ttype == "math":
+        return MathRun(expression=str(token.get("expression", "")))
+    return None
+
+
+def _page_item(token: Any, resolver: NameResolver | None) -> PageItem:
+    if not isinstance(token, Mapping):
+        return PlaceholderView(kind="unsupported")
+    ttype = token.get("type")
+    if ttype == "quote":
+        children = token.get("children")
+        inner: list[InlineView] = []
+        if isinstance(children, list):
+            for child in children:
+                view = _inline_view(child, resolver)
+                if view is not None:
+                    inner.append(view)
+        return QuoteView(children=tuple(inner))
+    if ttype in _PLACEHOLDER_TOKENS:
+        return PlaceholderView(kind=str(ttype))
+    inline = _inline_view(token, resolver)
+    if inline is not None:
+        return inline
+    return PlaceholderView(kind="unsupported")
 
 
 # ------------------------------------------------------------------ public API
 
 
 def ast_to_view(
-    ast_json: str | list[Any] | None,
+    ast_json: str | Sequence[Any] | None,
     resolve_name: NameResolver | None = None,
 ) -> PageView:
     """Render stored content into an immutable :class:`PageView`.
 
     Args:
-        ast_json: Raw ``content`` mirror (JSON string or parsed list), ``None``
-            for empty content.
-        resolve_name: Optional store-backed lookup of a target node id to its
-            display name, used for node-link pills.
+        ast_json: Raw ``content`` mirror (serialized token JSON or parsed
+            list), ``None`` for empty content; legacy plaintext renders as a
+            single text run.
+        resolve_name: Optional store-backed lookup of a node id to its display
+            name, used for mention pills and class chips.
     """
-    doc = unwrap(_parse_document(ast_json))
-    blocks = tuple(_block_view(block, resolve_name) for block in doc)
-    return PageView(blocks=blocks)
+    tokens = parse_content_ast(ast_json)
+    return PageView(items=tuple(_page_item(token, resolve_name) for token in tokens))
 
 
 def ast_to_plaintext(
-    ast_json: str | list[Any] | None,
+    ast_json: str | Sequence[Any] | None,
     resolve_name: NameResolver | None = None,
 ) -> str:
     """Flatten content to plain text (editor seed; sidebar names).
 
-    Blocks are joined with newlines; todos become ``- [x] ``/``- [ ] `` and
-    headings ``"#" * level + " "`` prefixes. Non-text blocks render as
-    bracketed placeholders (``[whiteboard]``) so nothing silently disappears.
+    This is the v2 excerpt derivation (``plainTextExcerpt``): text and
+    typed-link runs contribute their text, mentions their ``displayText``
+    (captured text when absent), math its expression, quotes recurse, and
+    ``hard_break`` becomes a space; whitespace collapses to single spaces.
+    ``resolve_name`` is accepted for call-site compatibility and unused —
+    plaintext is a derivation of stored content, not of current names.
     """
-    doc = unwrap(_parse_document(ast_json))
-    lines: list[str] = []
-    for block in doc:
-        if not isinstance(block, Mapping):
-            continue
-        btype = block.get("type")
-        if btype == "paragraph":
-            lines.append("".join(run.text for run in _inline_runs(_children(block), frozenset(), resolve_name)))
-        elif btype == "heading":
-            prefix = "#" * _heading_level(block.get("level")) + " "
-            text = "".join(run.text for run in _inline_runs(_children(block), frozenset(), resolve_name))
-            lines.append(prefix + text)
-        elif btype == "todo":
-            prefix = "- [x] " if block.get("checked") else "- [ ] "
-            text = "".join(run.text for run in _inline_runs(_children(block), frozenset(), resolve_name))
-            lines.append(prefix + text)
-        elif btype == "code":
-            lines.append(str(block.get("text", "")))
-        elif btype == "math":
-            lines.append(str(block.get("expression", "")))
-        elif btype == "whiteboard":
-            lines.append("[whiteboard]")
-        elif btype == "query":
-            lines.append("[query]")
-    return "\n".join(lines)
-
-
-def paragraphs_from_plaintext(text: str) -> list[dict[str, Any]]:
-    """Rebuild the paragraph-per-line AST stored on editor save.
-
-    This is the honest MVP round-trip: the plain-text editor form cannot
-    express marks or node links, so every line becomes one paragraph with a
-    single text child (mirroring the Flutter client's non-CRDT form).
-    """
-    lines = text.split("\n")
-    return [{"type": "paragraph", "children": [{"type": "text", "text": line}]} for line in lines]
+    return plaintext_excerpt(parse_content_ast(ast_json))

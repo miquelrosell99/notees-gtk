@@ -1,12 +1,14 @@
 """Plain-text editor for node content (the honest MVP round-trip).
 
-The read-only view renders the rich AST; editing goes through a plain-text
-``Gtk.TextView`` seeded with :func:`ast_to_plaintext` — the same non-CRDT
-form the Flutter client uses. Saving rebuilds the paragraph AST, enqueues an
-``object.update`` envelope, applies it optimistically to the local
-mirror (so the read-only view re-rendered on toggle-off already shows the new
-content; op-id dedupe makes the server echo harmless), and hands off to the
-window, which runs the sync engine on a worker thread.
+The read-only view renders the v2 token stream; editing goes through a
+plain-text ``Gtk.TextView`` seeded with :func:`ast_to_plaintext` — the same
+non-CRDT form the Flutter client uses. Saving maps the buffer back to the flat
+token array (:func:`tokens_from_plaintext`: one ``text`` run per source line,
+``hard_break`` between lines), enqueues an ``object.update`` envelope, applies
+it optimistically to the local mirror (so the read-only view re-rendered on
+toggle-off already shows the new content; op-id dedupe makes the server echo
+harmless), and hands off to the window, which runs the sync engine on a worker
+thread.
 """
 
 from __future__ import annotations
@@ -20,10 +22,10 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from notees_gtk.core.protocol.clock import Clock
+from notees_gtk.core.protocol.content import tokens_from_plaintext
 from notees_gtk.core.protocol.models import new_envelope
 from notees_gtk.data.store import LocalStore
 from notees_gtk.ui import config_store
-from notees_gtk.ui.ast_render import paragraphs_from_plaintext
 
 __all__ = ["EditorView"]
 
@@ -91,13 +93,12 @@ class EditorView(Gtk.Box):
             return
         buffer = self._text_view.get_buffer()
         text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
-        ast = paragraphs_from_plaintext(text)
         envelope = new_envelope(
             workspace_id=self._workspace_id,
             actor_id=self._actor_id,
-            device_id=config_store.ensure_device_id(),  # v2-port: compat — provenance until Phase C reworks producers
-            op_type="object.update",  # v2-port: compat — was node.updateContent (Phase C reworks appliers)
-            payload={"objectId": self._node_id, "contentAst": ast},
+            device_id=config_store.ensure_device_id(),
+            op_type="object.update",
+            payload={"objectId": self._node_id, "contentAst": tokens_from_plaintext(text)},
             clock=self._clock,
         )
         self._store.enqueue(envelope)
@@ -106,7 +107,8 @@ class EditorView(Gtk.Box):
         # alone only writes the outbox; the mirror would update on server
         # echo). This runs synchronously on the main thread before ``on_saved``
         # returns, so it strictly precedes the toggle-triggered refresh.
-        # Op-id dedupe makes the later server echo a no-op, and the LWW gate
-        # uses this envelope's fresh HLC, so the echo cannot regress content.
+        # Op-id dedupe makes the later server echo a no-op, and the row-level
+        # LWW gate uses this envelope's fresh HLC, so the echo cannot regress
+        # content.
         self._store.apply_remote(envelope)
         self._on_saved(self._node_id)
