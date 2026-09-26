@@ -1,0 +1,85 @@
+{
+  "comment": "Fail-loud cycle gate for m2m extends (SCHEMA.md: cycles fail loud). The PREFIX applies cleanly: Root and Leaf are created, then Leaf extends [Root]. The FINAL TWO envelopes each close a cycle and MUST throw CycleError on apply: Root extends [Leaf] makes Root its own ancestor across multiple hops (Root <- Leaf <- Root), Root extends [Root] is the self-parent case. Kept as its own fixture — and excluded from the store suite's all-fixtures replay set — precisely because applying it must throw.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000109",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000d1"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:06.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d1",
+        "name": "Root"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010a",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000d2"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:06.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d2",
+        "name": "Leaf"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010b",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000d2"],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:06.600Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d2",
+        "parentClassIds": ["0192a000-0000-7000-8000-0000000000d1"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010c",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200006700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000d1"],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:06.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d1",
+        "parentClassIds": ["0192a000-0000-7000-8000-0000000000d2"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010d",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200006800, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000d1"],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:06.800Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d1",
+        "parentClassIds": ["0192a000-0000-7000-8000-0000000000d1"]
+      }
+    }
+  ]
+}

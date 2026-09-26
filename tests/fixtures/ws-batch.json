@@ -1,0 +1,27 @@
+{
+  "type": "batch",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-0000000000f1",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "gtk-device-0001",
+      "client": "gtk",
+      "hlc": {
+        "physical": 1727200000000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000010"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:00.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000010",
+        "nodeType": "page",
+        "classIds": []
+      }
+    }
+  ]
+}

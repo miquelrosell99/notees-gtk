@@ -13,7 +13,7 @@ from conftest import make_server_snapshot
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
-from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.protocol.models import PROTOCOL_VERSION, RelayEnvelope
 from notees_gtk.data.store import LocalStore, NodeRow
 
 WS_A = "ws-a"
@@ -36,14 +36,20 @@ def make_env(
     actor_id: str = ACTOR,
     affected: tuple[str, ...] = (),
 ) -> RelayEnvelope:
-    """Build a minimal valid envelope for store tests."""
+    """Build a minimal valid envelope for store tests.
+
+    # v2-port: compat — v1 op types/payloads persist until the Phase C applier
+    rewrite; the v2 envelope model accepts any non-empty op type.
+    """
     return RelayEnvelope(
         id=env_id or new_uuid7(),
-        workspace_id=workspace_id,
-        actor_id=actor_id,
+        protocolVersion=PROTOCOL_VERSION,
+        workspaceId=workspace_id,
+        actorId=actor_id,
+        deviceId="store-test-device",
         hlc=Hlc(physical=hlc[0], logical=hlc[1]),
-        affected_node_ids=list(affected),
-        op_type=op_type,
+        affectedNodeIds=list(affected),
+        opType=op_type,
         payload=payload,
         timestamp=BASE_TS,
     )

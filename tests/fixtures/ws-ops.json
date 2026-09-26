@@ -1,28 +1,35 @@
 {
   "type": "ops",
-  "protocolVersion": 2,
+  "wsProtocolVersion": 2,
   "envelopes": [
     {
-      "id": "018f3c5e-9a1b-7c2d-8e4f-6a5b4c3d2e1f",
-      "protocolVersion": 1,
-      "workspaceId": "018f3c5e-0000-7000-8000-000000000001",
-      "actorId": "018f3c5e-0000-7000-8000-0000000000aa",
+      "id": "0192a000-0000-7000-8000-0000000000f1",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
       "hlc": {
-        "physical": 1755000000000,
-        "logical": 3
+        "physical": 1727200003000,
+        "logical": 1
       },
       "affectedNodeIds": [
-        "018f3c5e-0000-7000-8000-0000000000bb"
+        "0192a000-0000-7000-8000-000000000010"
       ],
-      "opType": "node.create",
-      "timestamp": "2026-08-22T12:00:00Z",
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:03.000Z",
       "payload": {
-        "nodeId": "018f3c5e-0000-7000-8000-0000000000bb",
-        "kind": "page"
+        "objectId": "0192a000-0000-7000-8000-000000000010",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Kuhn cites earlier work."
+          }
+        ]
       }
     }
   ],
   "seqs": {
-    "018f3c5e-9a1b-7c2d-8e4f-6a5b4c3d2e1f": 4127
+    "0192a000-0000-7000-8000-0000000000f1": 4127
   }
 }

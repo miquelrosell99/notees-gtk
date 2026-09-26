@@ -10,14 +10,16 @@ exceptions.
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from notees_gtk.core.protocol.clock import Hlc
-from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.protocol.models import PROTOCOL_VERSION, RelayEnvelope
 from notees_gtk.data.store import LocalStore
 
 WS = "ws-threads"
 ACTOR = "actor-threads"
+BASE_TS = datetime(2026, 1, 1, tzinfo=UTC)
 
 ENQUEUE_THREADS = 8
 ENQUEUES_PER_THREAD = 200
@@ -26,13 +28,20 @@ APPLIED_NODES = 150
 
 
 def make_envelope(op_type: str, payload: dict[str, object], *, logical: int) -> RelayEnvelope:
-    """Build a minimal valid envelope with a distinct HLC for ordering tests."""
+    """Build a minimal valid envelope with a distinct HLC for ordering tests.
+
+    # v2-port: compat — v1 op types persist until the Phase C applier rewrite;
+    # the v2 envelope model accepts any non-empty op type.
+    """
     return RelayEnvelope(
-        workspace_id=WS,
-        actor_id=ACTOR,
+        protocolVersion=PROTOCOL_VERSION,
+        workspaceId=WS,
+        actorId=ACTOR,
+        deviceId="threads-test-device",
         hlc=Hlc(physical=1, logical=logical),
-        op_type=op_type,
+        opType=op_type,
         payload=payload,
+        timestamp=BASE_TS,
     )
 
 

@@ -177,7 +177,9 @@ class NoteesClient:
             after_seq: Exclusive seq cursor; ``0`` fetches from the beginning.
             limit: Page size, clamped server-side to [1, 10,000].
         """
-        body = CatchUpRequest(workspace_id=workspace_id, after_seq=after_seq, limit=limit).model_dump(mode="json")
+        body = CatchUpRequest(workspace_id=workspace_id, after_seq=after_seq, limit=limit).model_dump(
+            mode="json", by_alias=True
+        )
         data = self._post_json("/api/relay/catch-up", body)
         return CatchUpPaginatedResponse.model_validate(data)
 

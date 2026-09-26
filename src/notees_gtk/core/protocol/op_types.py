@@ -1,4 +1,11 @@
-"""Known operation types for the relay sync protocol (SPEC §3)."""
+"""Known operation types for the relay sync protocol (v2).
+
+Mirrors ``v2/packages/protocol/src/op-types.ts`` (the M1 op registry): exactly
+these 16 op types have payload schemas server-side. The envelope schema itself
+accepts any non-empty ``opType`` string (see ``envelope.ts``); unknown op types
+are rejected at relay ingest with ``validation_failed`` (422). Producers should
+stick to this registry — that 422 maps to the quarantine path.
+"""
 
 from __future__ import annotations
 
@@ -6,63 +13,28 @@ __all__ = ["KNOWN_OP_TYPES"]
 
 KNOWN_OP_TYPES: frozenset[str] = frozenset(
     [
-        # Structural
-        "node.create",
-        "node.delete",
-        "node.move",
-        "node.updateContent",
-        "node.updateIcon",
-        "node.updateColor",
-        "node.addAlias",
-        "node.removeAlias",
-        "node.archive",
-        "node.restore",
-        "node.permanentDelete",
-        "node.convert",
-        "class.assign",
-        "class.unassign",
-        # Properties
-        "property.set",
-        "property.unset",
-        # Schema
-        "propertySchema.create",
-        "propertySchema.update",
-        "propertySchema.delete",
-        "classPropertyEdge.create",
-        "classPropertyEdge.update",
-        "classPropertyEdge.delete",
-        "classPropertyEdge.reorder",
+        # Objects
+        "object.create",
+        "object.update",
+        "object.delete",
+        "object.move",
+        # Classes
         "class.create",
         "class.update",
         "class.delete",
         "class.setExtends",
-        # NodeViews
-        "nodeView.create",
-        "nodeView.update",
-        "nodeView.delete",
-        "nodeView.reorder",
-        # Tasks
-        "task.recordCompletion",
-        "task.deleteCompletion",
-        "task.setRecurrence",
-        "task.deleteRecurrence",
+        # Property schemas
+        "propertySchema.create",
+        "propertySchema.update",
+        "propertySchema.delete",
+        # Properties
+        "property.set",
+        "property.unset",
         # Assets
-        "asset.upload",
-        "asset.delete",
-        # Activity
-        "activity.record",
-        "activity.delete",
-        "link.click",
-        # Shares
-        "share.public.create",
-        "share.public.revoke",
-        "share.user.grant",
-        "share.user.revoke",
-        # User preferences
-        "user.favorite.add",
-        "user.favorite.remove",
-        "user.favorite.reorder",
-        # Plugins
-        "plugin.op",
+        "asset.attach",
+        "asset.detach",
+        # Collections (membership only — collections are nodes)
+        "collection.member.add",
+        "collection.member.remove",
     ]
 )

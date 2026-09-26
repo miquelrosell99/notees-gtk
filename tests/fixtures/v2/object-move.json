@@ -1,0 +1,108 @@
+{
+  "comment": "object.move (outliner reparenting + ordering): page P with blocks A, B, C. Move 1 takes C under A (append at end of A's order); move 2 reorders B within P immediately after A. Envelopes apply in sequence: after the replay P = [A, B] and A = [C]. parentId null is only legal for pages (placement CHECKs); afterId places the node after that sibling (sibling-midpoint fractional position, else append); parent/position are LWW by envelope HLC.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000109",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000020"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000020",
+        "nodeType": "page",
+        "name": "Move Fixture",
+        "contentAst": [],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010a",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000021"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000021",
+        "parentId": "0192a000-0000-7000-8000-000000000020",
+        "contentAst": [{ "type": "text", "text": "A" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010b",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000022"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000022",
+        "parentId": "0192a000-0000-7000-8000-000000000020",
+        "contentAst": [{ "type": "text", "text": "B" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010c",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000023"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000023",
+        "parentId": "0192a000-0000-7000-8000-000000000020",
+        "contentAst": [{ "type": "text", "text": "C" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010d",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000023"],
+      "opType": "object.move",
+      "timestamp": "2026-09-24T12:00:07.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000023",
+        "parentId": "0192a000-0000-7000-8000-000000000021"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000010e",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000022"],
+      "opType": "object.move",
+      "timestamp": "2026-09-24T12:00:07.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000022",
+        "parentId": "0192a000-0000-7000-8000-000000000020",
+        "afterId": "0192a000-0000-7000-8000-000000000021"
+      }
+    }
+  ]
+}

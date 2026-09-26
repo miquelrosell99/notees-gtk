@@ -1,0 +1,43 @@
+{
+  "comment": "Acceptance scenario formerly covered by relation-concurrent-create.json: two devices write the same property slot concurrently. Model v2 convergence (01 §12): LWW by HLC for property values — the phone's op (higher HLC) wins; the laptop's value is discarded. No merge, no tie.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000103",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200005000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000011"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:05.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000011",
+        "propertySchemaId": "0192a000-0000-7000-8000-0000000000a1",
+        "value": { "nodeId": "0192a000-0000-7000-8000-000000000030" },
+        "idx": 0,
+        "metadata": { "since": "1962" }
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000104",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200005500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000011"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:05.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000011",
+        "propertySchemaId": "0192a000-0000-7000-8000-0000000000a1",
+        "value": { "nodeId": "0192a000-0000-7000-8000-000000000031" },
+        "idx": 0,
+        "metadata": { "since": "1963" }
+      }
+    }
+  ]
+}

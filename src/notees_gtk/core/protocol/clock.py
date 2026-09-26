@@ -22,7 +22,7 @@ class Hlc(BaseModel):
         logical: Monotonic counter used to break ties when physical times are equal.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     physical: int = Field(ge=0)
     logical: int = Field(ge=0)

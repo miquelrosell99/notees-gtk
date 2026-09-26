@@ -1,4 +1,5 @@
 {
+  "comment": "Acceptance scenario formerly covered by relation-create.json: a typed association with a locator. Model v2 (01-knowledge-model.md §9): the verb is a MARK on the prose word — nothing inserted. candidateSpans is RECORD, DON'T RESOLVE data for the M2 target-resolution design. contentAst is the flat token stream (SCHEMA.md Content grammar).",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000101",
@@ -7,38 +8,24 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": {
-        "physical": 1727200002000,
-        "logical": 0
-      },
-      "affectedNodeIds": [
-        "0192a000-0000-7000-8000-000000000010"
-      ],
+      "hlc": { "physical": 1727200002000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000010"],
       "opType": "object.update",
       "timestamp": "2026-09-24T12:00:02.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000010",
         "contentAst": [
-          {
-            "type": "text",
-            "text": "Kuhn "
-          },
+          { "type": "text", "text": "Kuhn " },
           {
             "type": "typed_link",
             "verb": "cites",
             "text": "cites",
             "metadata": {
               "locator": "p. 42",
-              "candidateSpans": [
-                "tok_3",
-                "tok_7"
-              ]
+              "candidateSpans": ["tok_3", "tok_7"]
             }
           },
-          {
-            "type": "text",
-            "text": " earlier work on "
-          },
+          { "type": "text", "text": " earlier work on " },
           {
             "type": "mention",
             "targetNodeId": "0192a000-0000-7000-8000-000000000011",
@@ -47,9 +34,5 @@
         ]
       }
     }
-  ],
-  "nextAfterSeq": null,
-  "hasMore": false,
-  "restoreEpoch": 0,
-  "totalRemaining": 1
+  ]
 }

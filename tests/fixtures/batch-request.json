@@ -1,41 +1,77 @@
 {
   "envelopes": [
     {
-      "id": "018f0000-0000-7000-8000-000000000101",
-      "protocolVersion": 1,
-      "workspaceId": "018f0000-0000-7000-8000-000000000001",
-      "actorId": "018f0000-0000-7000-8000-0000000000aa",
+      "id": "0192a000-0000-7000-8000-0000000000f2",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
       "hlc": {
-        "physical": 1767225600000,
+        "physical": 1727200001000,
         "logical": 0
       },
       "affectedNodeIds": [
-        "018f0000-0000-7000-8000-0000000000b1"
+        "0192a000-0000-7000-8000-000000000011"
       ],
-      "opType": "node.updateContent",
-      "timestamp": "2026-01-01T00:00:00Z",
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:01.000Z",
       "payload": {
-        "nodeId": "018f0000-0000-7000-8000-0000000000b1",
-        "content": "<p>Hello</p>"
+        "objectId": "0192a000-0000-7000-8000-000000000011",
+        "nodeType": "page",
+        "classIds": [
+          "00000000-0000-0000-0001-000000000025"
+        ],
+        "name": "The Structure of Scientific Revolutions",
+        "contentAst": [],
+        "parentId": null
       }
     },
     {
-      "id": "018f0000-0000-7000-8000-000000000102",
-      "protocolVersion": 1,
-      "workspaceId": "018f0000-0000-7000-8000-000000000001",
-      "actorId": "018f0000-0000-7000-8000-0000000000aa",
+      "id": "0192a000-0000-7000-8000-000000000101",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
       "hlc": {
-        "physical": 1767225600000,
-        "logical": 1
+        "physical": 1727200002000,
+        "logical": 0
       },
       "affectedNodeIds": [
-        "018f0000-0000-7000-8000-0000000000b1"
+        "0192a000-0000-7000-8000-000000000010"
       ],
-      "opType": "node.updateContent",
-      "timestamp": "2026-01-01T00:00:00Z",
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:02.000Z",
       "payload": {
-        "nodeId": "018f0000-0000-7000-8000-0000000000b1",
-        "content": "<p>Hello world</p>"
+        "objectId": "0192a000-0000-7000-8000-000000000010",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Kuhn "
+          },
+          {
+            "type": "typed_link",
+            "verb": "cites",
+            "text": "cites",
+            "metadata": {
+              "locator": "p. 42",
+              "candidateSpans": [
+                "tok_3",
+                "tok_7"
+              ]
+            }
+          },
+          {
+            "type": "text",
+            "text": " earlier work on "
+          },
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-000000000011",
+            "text": "The Structure of Scientific Revolutions"
+          }
+        ]
       }
     }
   ]

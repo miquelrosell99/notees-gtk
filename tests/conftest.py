@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import typing
+from datetime import datetime
 from typing import Any
 
 #: Verbatim copy of the server derived schema's ``node`` table
@@ -48,3 +50,19 @@ def make_server_snapshot(rows: list[dict[str, Any]]) -> bytes:
     blob = conn.serialize()
     conn.close()
     return blob
+
+
+def normalize_json(value: typing.Any, key: str | None = None) -> typing.Any:
+    """Reduce a decoded JSON doc to comparable values.
+
+    ``timestamp`` strings become timezone-aware datetimes so comparisons are
+    instant-based: pydantic serializes ``...06.400Z`` as ``...06.400000Z`` and
+    trims ``.000`` — same moment, different bytes.
+    """
+    if isinstance(value, dict):
+        return {k: normalize_json(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_json(v) for v in value]
+    if key == "timestamp" and isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value

@@ -28,7 +28,12 @@ from notees_gtk.core.api import (
 )
 from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
-from notees_gtk.core.protocol.models import CatchUpPaginatedResponse, RelayEnvelope, new_envelope
+from notees_gtk.core.protocol.models import (
+    PROTOCOL_VERSION,
+    CatchUpPaginatedResponse,
+    RelayEnvelope,
+    new_envelope,
+)
 from notees_gtk.core.sync import PushResult, SyncEngine
 from notees_gtk.data.store import LocalStore
 
@@ -46,14 +51,21 @@ def make_env(
     actor: str = ACTOR_A,
     affected: tuple[str, ...] = (),
 ) -> RelayEnvelope:
-    """Build a minimal valid envelope for engine tests."""
+    """Build a minimal valid envelope for engine tests.
+
+    # v2-port: compat — helpers construct envelopes with v1 op types/payloads
+    (the store appliers are Phase C); the v2 envelope model accepts any
+    non-empty op type, and the relay rejects unknown ops at ingest.
+    """
     return RelayEnvelope(
         id=new_uuid7(),
-        workspace_id=WS,
-        actor_id=actor,
+        protocolVersion=PROTOCOL_VERSION,
+        workspaceId=WS,
+        actorId=actor,
+        deviceId="engine-test-device",
         hlc=Hlc(physical=hlc[0], logical=hlc[1]),
-        affected_node_ids=list(affected),
-        op_type=op_type,
+        affectedNodeIds=list(affected),
+        opType=op_type,
         payload=payload,
         timestamp=BASE_TS,
     )
@@ -493,8 +505,9 @@ class TestClockMerge:
         stamped = new_envelope(
             workspace_id=WS,
             actor_id=ACTOR_A,
-            op_type="node.updateContent",
-            payload={"nodeId": "remote-node", "content": "local edit"},
+            device_id="device-under-test",
+            op_type="object.update",
+            payload={"objectId": "remote-node", "contentAst": []},
             clock=clock,
         )
         assert (stamped.hlc.physical, stamped.hlc.logical) > future
@@ -510,8 +523,9 @@ class TestClockMerge:
         stamped = new_envelope(
             workspace_id=WS,
             actor_id=ACTOR_A,
-            op_type="node.updateContent",
-            payload={"nodeId": "a", "content": "x"},
+            device_id="device-under-test",
+            op_type="object.update",
+            payload={"objectId": "a", "contentAst": []},
             clock=clock,
         )
         assert (stamped.hlc.physical, stamped.hlc.logical) > (10**15, 5)

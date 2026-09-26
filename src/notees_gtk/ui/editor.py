@@ -2,8 +2,8 @@
 
 The read-only view renders the rich AST; editing goes through a plain-text
 ``Gtk.TextView`` seeded with :func:`ast_to_plaintext` — the same non-CRDT
-form the Flutter client uses. Saving rebuilds the paragraph AST, enqueues a
-``node.updateContent`` envelope, applies it optimistically to the local
+form the Flutter client uses. Saving rebuilds the paragraph AST, enqueues an
+``object.update`` envelope, applies it optimistically to the local
 mirror (so the read-only view re-rendered on toggle-off already shows the new
 content; op-id dedupe makes the server echo harmless), and hands off to the
 window, which runs the sync engine on a worker thread.
@@ -11,7 +11,6 @@ window, which runs the sync engine on a worker thread.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 
 import gi
@@ -23,13 +22,14 @@ from gi.repository import Gtk
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.models import new_envelope
 from notees_gtk.data.store import LocalStore
+from notees_gtk.ui import config_store
 from notees_gtk.ui.ast_render import paragraphs_from_plaintext
 
 __all__ = ["EditorView"]
 
 
 class EditorView(Gtk.Box):
-    """Text view + save action producing ``node.updateContent`` envelopes."""
+    """Text view + save action producing ``object.update`` envelopes."""
 
     def __init__(
         self,
@@ -50,7 +50,11 @@ class EditorView(Gtk.Box):
 
         header = Gtk.Box(spacing=6, margin_start=6, margin_end=6, margin_top=6)
         self.append(header)
-        hint = Gtk.Label(label="Plain-text editing — rich formatting is preserved in the read-only view only.", xalign=0, hexpand=True)
+        hint = Gtk.Label(
+            label="Plain-text editing — rich formatting is preserved in the read-only view only.",
+            xalign=0,
+            hexpand=True,
+        )
         hint.add_css_class("dim-label")
         header.append(hint)
         save_button = Gtk.Button(label="Save", halign=Gtk.Align.END)
@@ -60,7 +64,9 @@ class EditorView(Gtk.Box):
 
         scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self.append(scrolled)
-        self._text_view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD, top_margin=12, bottom_margin=12, left_margin=12, right_margin=12)
+        self._text_view = Gtk.TextView(
+            wrap_mode=Gtk.WrapMode.WORD, top_margin=12, bottom_margin=12, left_margin=12, right_margin=12
+        )
         scrolled.set_child(self._text_view)
 
     # ------------------------------------------------------------------ public
@@ -89,8 +95,9 @@ class EditorView(Gtk.Box):
         envelope = new_envelope(
             workspace_id=self._workspace_id,
             actor_id=self._actor_id,
-            op_type="node.updateContent",
-            payload={"nodeId": self._node_id, "content": json.dumps(ast)},
+            device_id=config_store.ensure_device_id(),  # v2-port: compat — provenance until Phase C reworks producers
+            op_type="object.update",  # v2-port: compat — was node.updateContent (Phase C reworks appliers)
+            payload={"objectId": self._node_id, "contentAst": ast},
             clock=self._clock,
         )
         self._store.enqueue(envelope)

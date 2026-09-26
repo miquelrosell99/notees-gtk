@@ -1,7 +1,11 @@
 """Unit tests for the Hybrid Logical Clock implementation.
 
-Ports the advance/update matrix from ``tests/core/test_clock.py`` in the
-Notees backend; semantics must stay identical to ``app/core/clock.py``.
+Semantics verified against ``v2/packages/protocol/src/hlc.ts`` (the v2 norm):
+``advance``/``now`` reset the logical counter when physical time moves ahead
+and increment it otherwise; ``update`` merges a received HLC as
+``max(physicalTime, last, received)`` with the logical counter resolved per
+branch. Tests below pin the advance/update matrix so the Python port cannot
+drift from the TypeScript reference.
 """
 
 from __future__ import annotations
@@ -136,3 +140,59 @@ class TestClockDeviceId:
     def test_device_id_is_stored(self) -> None:
         clock = Clock("device-a")
         assert clock.device_id == "device-a"
+
+
+class TestHlcTsParity:
+    """Direct port of the branch matrix in ``hlc.ts`` Clock.update/now.
+
+    physical = max(physicalTime, last.physical, received.physical); the
+    logical component then resolves by which operand(s) won the max.
+    """
+
+    @pytest.mark.parametrize(
+        ("last", "received", "physical_time", "expected"),
+        [
+            # physical == last.physical == received.physical → max logical + 1
+            ((100, 5), (100, 3), 100, (100, 6)),
+            ((100, 5), (100, 9), 90, (100, 10)),
+            # physical == last.physical only → last logical + 1
+            ((200, 5), (100, 3), 150, (200, 6)),
+            ((200, 5), (100, 3), 200, (200, 6)),
+            # physical == received.physical only → received logical + 1
+            ((100, 5), (200, 3), 150, (200, 4)),
+            ((100, 5), (150, 9), 120, (150, 10)),
+            # fresh physical time beats both → logical resets to 0
+            ((100, 5), (150, 3), 200, (200, 0)),
+            ((100, 5), (50, 3), 200, (200, 0)),
+        ],
+    )
+    def test_update_branch_matrix(
+        self,
+        last: tuple[int, int],
+        received: tuple[int, int],
+        physical_time: int,
+        expected: tuple[int, int],
+    ) -> None:
+        clock = Clock("device-a")
+        # Seed ``last`` exactly: the first advance sets (last.physical, 0),
+        # each same-tick advance bumps the logical component by one.
+        clock.advance(last[0])
+        for _ in range(last[1]):
+            clock.advance(last[0])
+        result = clock.update(Hlc(physical=received[0], logical=received[1]), physical_time=physical_time)
+        assert result == Hlc(physical=expected[0], logical=expected[1])
+
+    @pytest.mark.parametrize(
+        ("seed", "physical_time", "expected"),
+        [
+            ((0, 0), 10, (10, 0)),  # ahead → reset
+            ((10, 3), 10, (10, 4)),  # equal → increment
+            ((10, 3), 5, (10, 4)),  # behind → increment
+        ],
+    )
+    def test_now_matrix(self, seed: tuple[int, int], physical_time: int, expected: tuple[int, int]) -> None:
+        clock = Clock("device-a")
+        clock.advance(seed[0])
+        for _ in range(seed[1]):
+            clock.advance(seed[0])
+        assert clock.advance(physical_time) == Hlc(physical=expected[0], logical=expected[1])

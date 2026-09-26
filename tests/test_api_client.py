@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
+from conftest import normalize_json
 
 from notees_gtk.core.api import (
     MAX_BATCH_SIZE,
@@ -249,7 +250,7 @@ class TestSubmitBatch:
 
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/relay/batch"
-            assert _json_body(request) == fixture
+            assert normalize_json(_json_body(request)) == normalize_json(fixture)
             return httpx.Response(200, json={"saved_count": 2, "saved_ids": saved_ids})
 
         client, _ = _make_client(_router({("POST", "/api/relay/batch"): handler}))
@@ -278,11 +279,14 @@ class TestSubmitBatch:
 
     def test_oversized_envelope_rejected_before_wire(self) -> None:
         env = RelayEnvelope(
-            workspace_id=WORKSPACE_ID,
-            actor_id=ACTOR_ID,
+            protocolVersion=2,
+            workspaceId=WORKSPACE_ID,
+            actorId=ACTOR_ID,
+            deviceId="api-test-device",
             hlc={"physical": 0, "logical": 0},
-            op_type="node.create",
+            opType="object.create",
             payload={"blob": "x" * (MAX_ENVELOPE_SIZE_BYTES + 1)},
+            timestamp="2026-01-01T00:00:00Z",
         )
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -298,6 +302,7 @@ class TestCatchUp:
     def test_parses_fixture_response(self) -> None:
         fixture_request = json.loads((FIXTURES / "catch-up-request.json").read_text())
         fixture_response = json.loads((FIXTURES / "catch-up-response.json").read_text())
+        workspace_id = fixture_request["workspaceId"]
 
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/relay/catch-up"
@@ -305,10 +310,10 @@ class TestCatchUp:
             return httpx.Response(200, json=fixture_response)
 
         client, _ = _make_client(_router({("POST", "/api/relay/catch-up"): handler}))
-        page = client.catch_up(WORKSPACE_ID, after_seq=42, limit=1000)
+        page = client.catch_up(workspace_id, after_seq=42, limit=1000)
 
         assert isinstance(page, CatchUpPaginatedResponse)
-        assert [envelope.id for envelope in page.envelopes] == ["018f0000-0000-7000-8000-000000000102"]
+        assert [envelope.id for envelope in page.envelopes] == ["0192a000-0000-7000-8000-000000000101"]
         assert page.next_after_seq is None
         assert page.has_more is False
         assert page.restore_epoch == 0
@@ -316,8 +321,17 @@ class TestCatchUp:
 
     def test_defaults_to_cold_start_cursor(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            assert _json_body(request) == {"workspace_id": WORKSPACE_ID, "after_seq": 0, "limit": 1000}
-            return httpx.Response(200, json={"envelopes": [], "next_after_seq": None, "has_more": False, "restore_epoch": 0, "total_remaining": 0})
+            assert _json_body(request) == {"workspaceId": WORKSPACE_ID, "afterSeq": 0, "limit": 1000}
+            return httpx.Response(
+                200,
+                json={
+                    "envelopes": [],
+                    "nextAfterSeq": None,
+                    "hasMore": False,
+                    "restoreEpoch": 0,
+                    "totalRemaining": 0,
+                },
+            )
 
         client, _ = _make_client(_router({("POST", "/api/relay/catch-up"): handler}))
         page = client.catch_up(WORKSPACE_ID)
