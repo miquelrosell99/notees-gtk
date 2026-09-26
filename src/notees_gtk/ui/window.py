@@ -83,6 +83,9 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def _show_login(self, message: str | None = None) -> None:
         """Return to the login page (session expired or never authenticated)."""
+        engine = self._engine
+        if engine is not None:
+            engine.stop_realtime()
         self._engine = None
         self._client = None
         self._stack.set_visible_child_name("login")
@@ -161,8 +164,12 @@ class NoteesWindow(Adw.ApplicationWindow):
             return
         self._workspace_id = workspace_id
         self._editor.set_workspace(workspace_id)
+        old_engine = self._engine
+        if old_engine is not None:
+            old_engine.stop_realtime()
         actor_id = config_store.load_actor_id() or _ACTOR_FALLBACK
         engine = SyncEngine(client, store, actor_id=actor_id, workspace_id=workspace_id, clock=self._clock)
+        engine.start_realtime()
         self._engine = engine
         self._start_interval_sync()
 
@@ -199,7 +206,9 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._edit_toggle.set_active(False)
         engine = self._engine
         if engine is not None:
-            run_in_worker(engine.sync, on_done=lambda _result: self._after_save_sync(node_id), on_error=self._on_sync_error)
+            run_in_worker(
+                engine.sync, on_done=lambda _result: self._after_save_sync(node_id), on_error=self._on_sync_error
+            )
         else:
             self._show_node(node_id)
 

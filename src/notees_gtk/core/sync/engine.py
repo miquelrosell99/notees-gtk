@@ -9,24 +9,38 @@ network/5xx/429 failures retry within the same push on the backoff schedule
 Pull pages catch-up from the persisted seq cursor, persisting the cursor after
 every page so a mid-page crash only re-fetches the tail; op-id dedupe makes
 catch-up/live overlap harmless.
+
+Realtime (WIRE.md §2): :meth:`start_realtime` subscribes to the workspace's WS
+acceleration path. Live ``ops`` apply directly; ops arriving while a catch-up
+pull is in flight are buffered and drained when the pull finishes (op-id
+dedupe makes the overlap harmless — every envelope applies exactly once). A
+fresh ``hello`` after a reconnect advertises ``latest_seq``/``restore_epoch``:
+an epoch change wipes local state (the server was restored from backup), and a
+``latest_seq`` ahead of the cursor triggers a normal pull from the cursor.
+The socket is only an accelerator — the seq cursor stays the authoritative
+recovery mechanism.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from notees_gtk.core.api import (
+    HelloInfo,
     NetworkError,
     NoteesClient,
     QuarantinedError,
     RateLimitedError,
+    RealtimeClient,
     ServerError,
 )
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.data.errors import StoreError
 from notees_gtk.data.store import LocalStore
 
 __all__ = ["BACKOFF_SECONDS", "OUTBOX_CHUNK_SIZE", "PullResult", "PushResult", "SyncEngine"]
@@ -109,6 +123,13 @@ class SyncEngine:
         self._clock = clock if clock is not None else Clock(device_id=actor_id)
         self._sleeper = sleeper
         self._page_size = page_size
+        # Realtime state (start_realtime/stop_realtime). The lock serializes
+        # catch-up pulls (main thread or the WS reader thread after a
+        # reconnect hello) with live-ops buffering/application.
+        self._realtime: RealtimeClient | None = None
+        self._rt_lock = threading.RLock()
+        self._rt_buffer: list[tuple[list[RelayEnvelope], dict[str, int]]] = []
+        self._pull_in_flight = False
 
     # ------------------------------------------------------------------- push
 
@@ -141,7 +162,13 @@ class SyncEngine:
                 _log.warning("Giving up on outbox chunk of %d envelopes this round", len(chunk))
                 break
             for env in chunk:
-                self._store.apply_remote(env)
+                # Our own envelope was already server-accepted at this point;
+                # a local mirror apply that violates a guard (a bug, not a
+                # sync condition) must not stall the outbox forever.
+                try:
+                    self._store.apply_remote(env)
+                except StoreError as exc:
+                    _log.warning("Skipping local apply of %s (%s): %s", env.id, env.op_type, exc)
             self._store.mark_outbox_sent(ids)
             sent += len(chunk)
         return PushResult(sent=sent, quarantined=quarantined)
@@ -181,31 +208,159 @@ class SyncEngine:
         page's ``next_after_seq`` covers the tail and is adopted as the
         stored cursor; a page reporting no cursor progress breaks the loop
         instead of spinning on a misbehaving server.
+
+        A ``restore_epoch`` change on a catch-up response means the server was
+        restored from backup: local state is wiped, the epoch re-persisted,
+        and the pull restarts from seq 0. Envelopes whose application violates
+        a store guard (a cycle close, a move guard, ...) are logged and
+        skipped — one bad envelope must not stall the whole pull; its dedupe
+        record rolled back with the throw, so a retry after a wipe can still
+        apply it. Pulls are serialized with the realtime stream and any
+        buffered live ops are drained afterwards (op-id dedupe makes the
+        overlap harmless).
         """
         applied = 0
-        after = self._store.cursor(self._workspace_id)
-        while True:
-            page = self._client.catch_up(self._workspace_id, after_seq=after, limit=self._page_size)
-            for env in page.envelopes:
-                if self._store.apply_remote(env):
-                    applied += 1
-            if page.envelopes:
-                newest = max(page.envelopes, key=lambda env: (env.hlc.physical, env.hlc.logical)).hlc
-                self._clock.update(newest, _now_ms())
-            if page.next_after_seq is not None:
-                if page.next_after_seq <= after:
-                    _log.warning("Catch-up made no progress (next_after_seq=%s after seq %s); aborting pull", page.next_after_seq, after)
-                    break
-                after = page.next_after_seq
-                self._store.set_cursor(self._workspace_id, after)
-            if not page.has_more or page.next_after_seq is None:
-                break
-        return PullResult(applied=applied, cursor=after)
+        with self._rt_lock:
+            self._pull_in_flight = True
+            try:
+                after = self._store.cursor(self._workspace_id)
+                while True:
+                    page = self._client.catch_up(self._workspace_id, after_seq=after, limit=self._page_size)
+                    stored_epoch = self._store.stored_restore_epoch(self._workspace_id)
+                    if page.restore_epoch != stored_epoch:
+                        _log.warning(
+                            "Server restore_epoch changed %s → %s during catch-up; wiping local state",
+                            stored_epoch,
+                            page.restore_epoch,
+                        )
+                        self._store.wipe(self._workspace_id)
+                        self._store.set_restore_epoch(self._workspace_id, page.restore_epoch)
+                        after = 0
+                        continue  # The page came from an obsolete epoch; re-fetch from seq 0.
+                    for env in page.envelopes:
+                        applied += self._apply_guarded(env)
+                    if page.envelopes:
+                        newest = max(page.envelopes, key=lambda env: (env.hlc.physical, env.hlc.logical)).hlc
+                        self._clock.update(newest, _now_ms())
+                    if page.next_after_seq is not None:
+                        if page.next_after_seq <= after:
+                            _log.warning(
+                                "Catch-up made no progress (next_after_seq=%s after seq %s); aborting pull",
+                                page.next_after_seq,
+                                after,
+                            )
+                            break
+                        after = page.next_after_seq
+                        self._store.set_cursor(self._workspace_id, after)
+                    if not page.has_more or page.next_after_seq is None:
+                        break
+            finally:
+                self._pull_in_flight = False
+            applied += self._drain_rt_buffer_locked()
+        return PullResult(applied=applied, cursor=self._store.cursor(self._workspace_id))
+
+    def _apply_guarded(self, env: RelayEnvelope) -> int:
+        """Apply one envelope, quarantine-and-continue on store guard violations."""
+        try:
+            return 1 if self._store.apply_remote(env) else 0
+        except StoreError as exc:
+            _log.warning("Skipping envelope %s (%s): %s", env.id, env.op_type, exc)
+            return 0
 
     def sync(self) -> None:
         """Run one full sync round: push then pull."""
         self.push()
         self.pull()
+
+    # -------------------------------------------------------------- realtime
+
+    @property
+    def realtime_latest_seq(self) -> int | None:
+        """Highest server seq advertised by the last realtime hello (None when stopped)."""
+        return self._realtime.latest_seq if self._realtime is not None else None
+
+    @property
+    def realtime_restore_epoch(self) -> int | None:
+        """Restore epoch advertised by the last realtime hello (None when stopped)."""
+        return self._realtime.restore_epoch if self._realtime is not None else None
+
+    def start_realtime(self) -> None:
+        """Subscribe to the workspace's WS acceleration path (idempotent).
+
+        Runs until :meth:`stop_realtime`; reconnects after abnormal closes on
+        the client's backoff schedule.
+        """
+        if self._realtime is not None:
+            return
+        self._realtime = RealtimeClient(
+            self._client,
+            self._workspace_id,
+            on_hello=self._on_rt_hello,
+            on_ops=self._on_rt_ops,
+            on_ack=lambda saved_ids: _log.info("Realtime batch acked (%d ids)", len(saved_ids)),
+            on_error=lambda error: _log.warning("Realtime: %s", error),
+        )
+        self._realtime.start()
+
+    def stop_realtime(self) -> None:
+        """Unsubscribe and drain: clean close (code 1000), no reconnect."""
+        realtime = self._realtime
+        if realtime is None:
+            return
+        self._realtime = None
+        realtime.stop()
+        with self._rt_lock:
+            self._rt_buffer.clear()
+
+    def _on_rt_hello(self, info: HelloInfo) -> None:
+        """Fresh handshake (initial connect or reconnect).
+
+        A ``restore_epoch`` change means the server was restored from backup:
+        wipe local state and re-persist the epoch. When the advertised
+        ``latest_seq`` is ahead of the cursor, run the normal pull from the
+        cursor (idempotent overlap with anything buffered); otherwise drain
+        the buffer directly. Runs on the WS reader thread; the pull is
+        serialized with any in-flight pull via ``_rt_lock``.
+        """
+        if info.restore_epoch != self._store.stored_restore_epoch(self._workspace_id):
+            stored = self._store.stored_restore_epoch(self._workspace_id)
+            _log.warning("Realtime restore_epoch changed %s → %s; wiping local state", stored, info.restore_epoch)
+            self._store.wipe(self._workspace_id)
+            self._store.set_restore_epoch(self._workspace_id, info.restore_epoch)
+        if info.latest_seq > self._store.cursor(self._workspace_id):
+            self.pull()
+        else:
+            with self._rt_lock:
+                self._drain_rt_buffer_locked()
+
+    def _on_rt_ops(self, envelopes: list[RelayEnvelope], seqs: dict[str, int]) -> None:
+        """Live batch broadcast.
+
+        Applies directly unless a catch-up pull is in flight — the consumer
+        buffers while catching up and relies on op-id dedupe, so an envelope
+        that rode both paths applies exactly once (WIRE.md §2 overlap
+        discipline). The socket is an accelerator: the seq cursor stays
+        authoritative, so live ops deliberately do NOT advance it.
+        """
+        with self._rt_lock:
+            if self._pull_in_flight:
+                self._rt_buffer.append((envelopes, seqs))
+                return
+            for env in envelopes:
+                self._apply_guarded(env)
+
+    def _drain_rt_buffer_locked(self) -> int:
+        """Apply every buffered live frame (caller holds ``_rt_lock``).
+
+        Returns the number of envelopes newly applied; dedupe hits (the pull
+        already applied the envelope) count as 0.
+        """
+        applied = 0
+        while self._rt_buffer:
+            envelopes, _seqs = self._rt_buffer.pop(0)
+            for env in envelopes:
+                applied += self._apply_guarded(env)
+        return applied
 
     # --------------------------------------------------------------- snapshot
 

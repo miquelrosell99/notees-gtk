@@ -8,15 +8,14 @@ frames the client sends. Reconnect backoff is shortened to milliseconds.
 from __future__ import annotations
 
 import json
-import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from websockets.sync.server import ServerConnection, serve
+from conftest import WsRelayStub, wait_until
+from websockets.sync.server import ServerConnection
 
 from notees_gtk.core.api import (
     HelloInfo,
@@ -32,6 +31,11 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 WORKSPACE_ID = "ws-a"
 FAST_RECONNECT = (0.05, 0.1, 0.2)
 
+
+def _no_http(request: httpx.Request) -> httpx.Response:
+    raise AssertionError(f"unexpected HTTP request: {request.url}")
+
+
 HELLO = {"type": "hello", "wsProtocolVersion": 2, "restoreEpoch": 3, "latestSeq": 42}
 OPS = {
     "type": "ops",
@@ -39,85 +43,6 @@ OPS = {
     "envelopes": [json.loads((FIXTURES / "v2" / "envelope-minimal.json").read_text())],
     "seqs": {"0192a000-0000-7000-8000-0000000000f1": 43},
 }
-
-
-def _no_http(request: httpx.Request) -> httpx.Response:
-    raise AssertionError(f"unexpected HTTP request: {request.url}")
-
-
-class WsRelayStub:
-    """Scripted in-process relay: one thread accepts, one thread per connection."""
-
-    def __init__(self, on_connect: Callable[[ServerConnection, int], None] | None = None) -> None:
-        self._on_connect = on_connect
-        self.connections = 0
-        self.close_codes: list[int | None] = []
-        self.received: list[dict[str, Any]] = []
-        self._conns: set[ServerConnection] = set()
-        self._lock = threading.Lock()
-        self._server = None
-        self._thread: threading.Thread | None = None
-        self.port = 0
-
-    def __enter__(self) -> WsRelayStub:
-        self._server = serve(self._handler, "127.0.0.1", 0)
-        self.port = self._server.socket.getsockname()[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        assert self._server is not None
-        self._server.shutdown()
-
-    def _handler(self, conn: ServerConnection) -> None:
-        with self._lock:
-            self.connections += 1
-            index = self.connections
-            self._conns.add(conn)
-        try:
-            if self._on_connect is not None:
-                self._on_connect(conn, index)
-            for message in conn:  # Receive loop ends when the client closes.
-                try:
-                    decoded = json.loads(message)
-                except ValueError:
-                    decoded = {"malformed": message}
-                with self._lock:
-                    self.received.append(decoded)
-        finally:
-            with self._lock:
-                self._conns.discard(conn)
-                self.close_codes.append(conn.close_code)
-
-    # ------------------------------------------------------------- test API
-
-    def send_all(self, frame: dict[str, Any] | str) -> None:
-        payload = frame if isinstance(frame, str) else json.dumps(frame)
-        with self._lock:
-            targets = list(self._conns)
-        for conn in targets:
-            conn.send(payload)
-
-    def close_all(self, code: int = 1011) -> None:
-        """Abnormally close every current connection (client must reconnect)."""
-        with self._lock:
-            targets = list(self._conns)
-        for conn in targets:
-            conn.close(code=code)
-
-    def connection_count(self) -> int:
-        with self._lock:
-            return self.connections
-
-
-def wait_until(predicate: Callable[[], bool], timeout: float = 5.0, interval: float = 0.02) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return predicate()
 
 
 def make_client(stub: WsRelayStub, **callbacks: Any) -> RealtimeClient:

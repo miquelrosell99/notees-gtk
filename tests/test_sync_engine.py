@@ -8,13 +8,15 @@ asserted without waiting real seconds.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
-from conftest import make_server_snapshot
+from conftest import WsRelayStub, make_server_snapshot, wait_until
 
 from notees_gtk.core.api import (
     AuthenticationError,
@@ -91,7 +93,9 @@ def create_env(
 def content_env(node_id: str, content: object, *, hlc: tuple[int, int], actor: str = ACTOR_A) -> RelayEnvelope:
     """Build an ``object.update`` content envelope (token list or bare string)."""
     tokens = [{"type": "text", "text": content}] if isinstance(content, str) else content
-    return make_env("object.update", {"objectId": node_id, "contentAst": tokens}, hlc=hlc, actor=actor, affected=(node_id,))
+    return make_env(
+        "object.update", {"objectId": node_id, "contentAst": tokens}, hlc=hlc, actor=actor, affected=(node_id,)
+    )
 
 
 def _no_http(request: httpx.Request) -> httpx.Response:
@@ -105,8 +109,8 @@ class FakeRelayClient(NoteesClient):
     exceptions to raise on subsequent ``submit_batch`` calls (one per call).
     """
 
-    def __init__(self, workspace_id: str) -> None:
-        super().__init__("http://relay.fake", transport=httpx.MockTransport(_no_http))
+    def __init__(self, workspace_id: str, *, base_url: str = "http://relay.fake", api_key: str | None = None) -> None:
+        super().__init__(base_url, api_key=api_key, transport=httpx.MockTransport(_no_http))
         self.workspace_id = workspace_id
         self._ops: dict[str, tuple[int, RelayEnvelope]] = {}
         self._next_seq = 0
@@ -430,7 +434,14 @@ class TestSnapshotRestore:
         relay.snapshot_blob = make_server_snapshot(
             [
                 {"id": "n1", "workspace_id": WS, "node_type": "page", "content": "one", "updated_at": None},
-                {"id": "n2", "workspace_id": WS, "node_type": "block", "parent_id": "n1", "content": "two", "updated_at": None},
+                {
+                    "id": "n2",
+                    "workspace_id": WS,
+                    "node_type": "block",
+                    "parent_id": "n1",
+                    "content": "two",
+                    "updated_at": None,
+                },
             ]
         )
         relay.snapshot_up_to_seq = 42
@@ -557,3 +568,141 @@ class TestPullNoProgressGuard:
         assert relay.catch_up_calls == [0]  # exactly one call — no infinite loop
         assert result.cursor == 0
         assert store.cursor(WS) == 0
+
+
+# ---------------------------------------------------------------- realtime
+
+
+def _ops_frame(*envelopes: RelayEnvelope) -> dict[str, object]:
+    serialized = [env.model_dump(mode="json", by_alias=True) for env in envelopes]
+    return {"type": "ops", "wsProtocolVersion": 2, "envelopes": serialized, "seqs": {}}
+
+
+def _hello(restore_epoch: int, latest_seq: int) -> dict[str, object]:
+    return {"type": "hello", "wsProtocolVersion": 2, "restoreEpoch": restore_epoch, "latestSeq": latest_seq}
+
+
+class TestRealtime:
+    """Engine wiring for the WS acceleration path (in-process stub relay).
+
+    Each test uses ONE client for both paths: HTTP methods are the fake
+    relay's in-memory overrides; the WS subscription connects to the real
+    in-process stub server (via base_url + api_key).
+    """
+
+    def test_start_realtime_applies_remote_ops_frame_end_to_end(self, store: LocalStore, tmp_path: Path) -> None:
+        def on_connect(conn: object, _index: int) -> None:
+            conn.send(json.dumps(_hello(0, 0)))
+            conn.send(json.dumps(_ops_frame(create_env("live-node", content="live"))))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
+            engine = make_engine(relay, store)
+            engine.start_realtime()
+            try:
+                assert wait_until(lambda: store.node(WS, "live-node") is not None)
+                assert store.node(WS, "live-node").content_plain == "live"
+            finally:
+                engine.stop_realtime()
+            assert stub.close_codes == [1000]
+
+    def test_hello_with_newer_latest_seq_triggers_pull_from_cursor(self, store: LocalStore) -> None:
+        def on_connect(conn: object, _index: int) -> None:
+            conn.send(json.dumps(_hello(0, 1)))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
+            relay.receive_remote(create_env("pulled-node", content="via catch-up"))
+            engine = make_engine(relay, store)
+            engine.start_realtime()
+            try:
+                assert wait_until(lambda: store.node(WS, "pulled-node") is not None)
+                assert store.node(WS, "pulled-node").content_plain == "via catch-up"
+                assert relay.catch_up_calls == [0]  # the pull ran from the stored cursor
+            finally:
+                engine.stop_realtime()
+
+    def test_hello_restore_epoch_bump_wipes_and_pulls(self, store: LocalStore) -> None:
+        def on_connect(conn: object, _index: int) -> None:
+            conn.send(json.dumps(_hello(7, 1)))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
+            relay.restore_epoch = 7  # consistent with the hello the stub sends
+            relay.receive_remote(create_env("post-restore-node"))
+            store.apply_remote(create_env("stale-local"))
+            store.set_restore_epoch(WS, 0)
+            engine = make_engine(relay, store)
+            engine.start_realtime()
+            try:
+                assert wait_until(lambda: store.node(WS, "post-restore-node") is not None)
+                assert store.node(WS, "stale-local") is None  # wiped
+                assert store.stored_restore_epoch(WS) == 7
+                assert engine.realtime_restore_epoch == 7
+            finally:
+                engine.stop_realtime()
+
+    def test_buffer_during_pull_applies_envelope_exactly_once(self, store: LocalStore, tmp_path: Path) -> None:
+        """An ops frame arriving mid-catch-up buffers; the pull applies the same
+        envelope through the page and the drain dedupes — one relay_operations
+        row, one node."""
+
+        class RtRelay(FakeRelayClient):
+            def __init__(self, workspace_id: str, stub: WsRelayStub) -> None:
+                super().__init__(workspace_id, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
+                self._stub = stub
+                self.pushed_during_pull = False
+
+            def catch_up(self, workspace_id: str, after_seq: int = 0, limit: int = 1000) -> CatchUpPaginatedResponse:
+                if not self.pushed_during_pull:
+                    self.pushed_during_pull = True
+                    self._stub.send_all(_ops_frame(shared))  # same envelope, live path
+                return super().catch_up(workspace_id, after_seq=after_seq, limit=limit)
+
+        def on_connect(conn: object, _index: int) -> None:
+            conn.send(json.dumps(_hello(0, 1)))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            relay = RtRelay(WS, stub)
+            shared = create_env("overlap-node", content="once")
+            relay.receive_remote(shared)
+            engine = make_engine(relay, store)
+            engine.start_realtime()
+            try:
+                assert wait_until(lambda: store.node(WS, "overlap-node") is not None)
+                assert wait_until(lambda: relay.pushed_during_pull)
+                assert wait_until(lambda: not engine._pull_in_flight)  # pull + drain finished
+                with sqlite3.connect(tmp_path / "store.db") as raw:
+                    op_count = raw.execute("SELECT COUNT(*) FROM relay_operations").fetchone()[0]
+                assert op_count == 1  # catch-up applied it; the buffered copy deduped
+            finally:
+                engine.stop_realtime()
+
+    def test_stop_realtime_does_not_reconnect(self, store: LocalStore) -> None:
+        def on_connect(conn: object, _index: int) -> None:
+            conn.send(json.dumps(_hello(0, 0)))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
+            engine = make_engine(relay, store)
+            engine.start_realtime()
+            assert wait_until(lambda: stub.connection_count() == 1)
+            engine.stop_realtime()
+            time.sleep(0.5)  # beyond the fast reconnect schedule
+            assert stub.connection_count() == 1
+            assert engine.realtime_latest_seq is None
+
+    def test_pull_restore_epoch_change_wipes_and_repulls(self, store: LocalStore) -> None:
+        """A catch-up page advertising a new restore epoch wipes and restarts
+        from seq 0 (HTTP path — no realtime needed)."""
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env("post-epoch-node"))
+        relay.restore_epoch = 5
+        store.apply_remote(create_env("stale-local"))
+        store.set_restore_epoch(WS, 0)
+        store.set_cursor(WS, 9)
+        result = make_engine(relay, store).pull()
+        assert store.node(WS, "stale-local") is None  # wiped
+        assert store.node(WS, "post-epoch-node") is not None  # re-pulled from 0
+        assert store.stored_restore_epoch(WS) == 5
+        assert result.cursor == 1
