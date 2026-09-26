@@ -23,8 +23,10 @@ __all__ = [
     "default_config",
     "ensure_device_id",
     "load_actor_id",
+    "load_api_key",
     "load_config",
     "save_actor_id",
+    "save_api_key",
     "save_config",
 ]
 
@@ -81,18 +83,27 @@ def load_config() -> ClientConfig:
     fallback = default_config()
     server_url = raw.get("server_url")
     token = raw.get("token")
+    api_key = raw.get("api_key")
     stored_data_dir = raw.get("data_dir")
     return ClientConfig(
         server_url=server_url if isinstance(server_url, str) and server_url else fallback.server_url,
         data_dir=Path(stored_data_dir) if isinstance(stored_data_dir, str) and stored_data_dir else fallback.data_dir,
         token=token if isinstance(token, str) and token else None,
+        api_key=api_key if isinstance(api_key, str) and api_key else None,
     )
 
 
 def save_config(config: ClientConfig) -> None:
     """Persist ``config``, preserving keys written by other helpers."""
     raw = _read_raw()
-    raw.update({"server_url": config.server_url, "data_dir": str(config.data_dir), "token": config.token})
+    raw.update(
+        {
+            "server_url": config.server_url,
+            "data_dir": str(config.data_dir),
+            "token": config.token,
+            "api_key": config.api_key,
+        }
+    )
     _write_raw(raw)
 
 
@@ -106,6 +117,23 @@ def save_actor_id(actor_id: str) -> None:
 def load_actor_id() -> str | None:
     """Return the persisted actor id, or ``None`` when unknown."""
     value = _read_raw().get("actor_id")
+    return value if isinstance(value, str) and value else None
+
+
+def save_api_key(api_key: str) -> None:
+    """Persist the single-user API key used for v2 relay auth (``X-API-Key``).
+
+    The config file is written owner-only (0600) by :func:`_write_raw`; the
+    key is a secret and must never leave that protection.
+    """
+    raw = _read_raw()
+    raw["api_key"] = api_key
+    _write_raw(raw)
+
+
+def load_api_key() -> str | None:
+    """Return the persisted API key, or ``None`` when unconfigured."""
+    value = _read_raw().get("api_key")
     return value if isinstance(value, str) and value else None
 
 

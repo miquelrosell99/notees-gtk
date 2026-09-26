@@ -65,7 +65,9 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._login_view = LoginView(on_logged_in=self._on_logged_in)
         self._stack.add_named(self._login_view, "login")
 
-        if config.token:
+        if (
+            config.token or config.api_key
+        ):  # v2-port: compat — key-only config skips the login page until the M1 login UI lands
             self._build_main()
             self._stack.set_visible_child_name("main")
         else:
@@ -91,12 +93,13 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def _build_main(self) -> None:
         """Build the split view bound to the current config/client."""
-        assert self._config.token is not None  # login page shown otherwise
+        assert self._config.token is not None or self._config.api_key is not None  # login page shown otherwise
         old_main = self._stack.get_child_by_name("main")
         if old_main is not None:
             self._stack.remove(old_main)
         if self._client is None:
-            self._client = NoteesClient(self._config.server_url, token=self._config.token)
+            # v2-port: compat — API key (v2 relay auth) passes through; login-token path stays until the M1 login UI lands
+            self._client = NoteesClient(self._config.server_url, token=self._config.token, api_key=self._config.api_key)
         self._config.data_dir.mkdir(parents=True, exist_ok=True)
         if self._store is None:
             self._store = LocalStore(self._config.data_dir / "notees.db")

@@ -1,8 +1,9 @@
-"""Tests for the Notees REST API client.
+"""Tests for the Notees REST API client (relay protocol v2).
 
 All HTTP traffic is faked with ``httpx.MockTransport``: handlers assert the
-exact request path and body (per ``protocol/SPEC.md`` §4 and the Notees auth
-router) and never touch the network.
+exact request path, headers, and body (per ``v2/packages/protocol/WIRE.md``
+§1–3 for the relay and the Notees auth router for login) and never touch the
+network.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from conftest import normalize_json
 
 from notees_gtk.core.api import (
     MAX_BATCH_SIZE,
+    RELAY_V2_BASE,
     AuthenticationError,
     AuthResult,
     ForbiddenError,
@@ -25,13 +27,16 @@ from notees_gtk.core.api import (
     NoteesClient,
     QuarantinedError,
     RateLimitedError,
+    RelayStats,
     ServerError,
     SnapshotMeta,
+    SnapshotUploadResult,
     TwoFactorRequired,
     WorkspaceRef,
     classify_response,
 )
 from notees_gtk.core.api.errors import ApiError
+from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import (
     MAX_ENVELOPE_SIZE_BYTES,
     BatchRequest,
@@ -41,8 +46,8 @@ from notees_gtk.core.protocol.models import (
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BASE_URL = "https://notees.test"
-WORKSPACE_ID = "018f0000-0000-7000-8000-000000000001"
-ACTOR_ID = "018f0000-0000-7000-8000-0000000000aa"
+WORKSPACE_ID = "0192a000-0000-7000-8000-000000000001"
+ACTOR_ID = "0192a000-0000-7000-8000-000000000002"
 
 LOGIN_OK: dict[str, Any] = {
     "access_token": "at-1",
@@ -67,7 +72,7 @@ def _router(routes: dict[tuple[str, str], Handler]) -> Handler:
     return handler
 
 
-def _make_client(handler: Handler) -> tuple[NoteesClient, list[httpx.Request]]:
+def _make_client(handler: Handler, **kwargs: Any) -> tuple[NoteesClient, list[httpx.Request]]:
     """Build a client over MockTransport, recording every request sent."""
     requests: list[httpx.Request] = []
 
@@ -75,7 +80,7 @@ def _make_client(handler: Handler) -> tuple[NoteesClient, list[httpx.Request]]:
         requests.append(request)
         return handler(request)
 
-    return NoteesClient(BASE_URL, transport=httpx.MockTransport(recording)), requests
+    return NoteesClient(BASE_URL, transport=httpx.MockTransport(recording), **kwargs), requests
 
 
 def _batch_envelopes() -> list[RelayEnvelope]:
@@ -109,6 +114,54 @@ class TestBaseUrl:
         client = NoteesClient(BASE_URL, token="tok", transport=httpx.MockTransport(handler))
         client.list_workspaces()
         assert seen == ["Bearer tok"]
+
+
+class TestApiKeyAuth:
+    def test_api_key_sets_x_api_key_header(self) -> None:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("X-API-Key", ""))
+            return httpx.Response(
+                200,
+                json={
+                    "envelopeCount": 0,
+                    "snapshotCount": 0,
+                    "compactedOperationCount": 0,
+                    "maxHlc": {"physical": 0, "logical": 0},
+                    "restoreEpoch": 0,
+                    "latestSnapshotHlc": None,
+                },
+            )
+
+        client = NoteesClient(BASE_URL, api_key="secret-key", transport=httpx.MockTransport(handler))
+        client.stats(WORKSPACE_ID)
+        assert seen == ["secret-key"]
+
+    def test_api_key_header_present_without_login(self) -> None:
+        """The v2 relay is key-only: no login round-trip happens."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-API-Key"] == "secret-key"
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, json={"savedCount": 0, "savedIds": []})
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}), api_key="secret-key")
+        assert client.submit_batch([]) == []
+
+    def test_ws_token_prefers_api_key_then_bearer(self) -> None:
+        assert NoteesClient(BASE_URL, transport=httpx.MockTransport(_no_http), api_key="k", token="t").ws_token() == "k"
+        assert NoteesClient(BASE_URL, transport=httpx.MockTransport(_no_http), token="t").ws_token() == "t"
+        assert NoteesClient(BASE_URL, transport=httpx.MockTransport(_no_http)).ws_token() is None
+
+    def test_login_replaces_bearer_and_keeps_api_key(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=LOGIN_OK)
+
+        client, _ = _make_client(_router({("POST", "/api/auth/login"): handler}), api_key="k")
+        client.login("ada@example.com", "hunter2")
+        assert client._client.headers["Authorization"] == "Bearer at-1"
+        assert client._client.headers["X-API-Key"] == "k"
 
 
 class TestLogin:
@@ -249,25 +302,29 @@ class TestSubmitBatch:
         saved_ids = [envelope["id"] for envelope in fixture["envelopes"]]
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/relay/batch"
+            assert request.url.path == f"{RELAY_V2_BASE}/batch"
             assert normalize_json(_json_body(request)) == normalize_json(fixture)
-            return httpx.Response(200, json={"saved_count": 2, "saved_ids": saved_ids})
+            return httpx.Response(200, json={"savedCount": len(saved_ids), "savedIds": saved_ids})
 
-        client, _ = _make_client(_router({("POST", "/api/relay/batch"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
         result = client.submit_batch(_batch_envelopes())
         assert result == saved_ids
 
     def test_duplicate_ids_may_be_omitted_from_saved_ids(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"saved_count": 1, "saved_ids": ["018f0000-0000-7000-8000-000000000101"]})
+        first_id = "0192a000-0000-7000-8000-0000000000f2"
 
-        client, _ = _make_client(_router({("POST", "/api/relay/batch"): handler}))
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"savedCount": 1, "savedIds": [first_id]})
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
         result = client.submit_batch(_batch_envelopes())
-        assert result == ["018f0000-0000-7000-8000-000000000101"]
+        assert result == [first_id]
 
     def test_more_than_max_batch_size_rejected_before_wire(self) -> None:
         env = _batch_envelopes()[0]
-        envelopes = [env.model_copy(update={"id": f"018f0000-0000-7000-8000-{i:012d}"}) for i in range(MAX_BATCH_SIZE + 1)]
+        envelopes = [
+            env.model_copy(update={"id": f"0192a000-0000-7000-8000-{i:012d}"}) for i in range(MAX_BATCH_SIZE + 1)
+        ]
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise AssertionError("request must not hit the transport")
@@ -305,11 +362,11 @@ class TestCatchUp:
         workspace_id = fixture_request["workspaceId"]
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/relay/catch-up"
+            assert request.url.path == f"{RELAY_V2_BASE}/catch-up"
             assert _json_body(request) == fixture_request
             return httpx.Response(200, json=fixture_response)
 
-        client, _ = _make_client(_router({("POST", "/api/relay/catch-up"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/catch-up"): handler}))
         page = client.catch_up(workspace_id, after_seq=42, limit=1000)
 
         assert isinstance(page, CatchUpPaginatedResponse)
@@ -333,34 +390,32 @@ class TestCatchUp:
                 },
             )
 
-        client, _ = _make_client(_router({("POST", "/api/relay/catch-up"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/catch-up"): handler}))
         page = client.catch_up(WORKSPACE_ID)
         assert page.envelopes == []
         assert page.has_more is False
 
 
 class TestSnapshots:
-    def test_probe_maps_snapshot_meta(self) -> None:
+    def test_probe_maps_v2_snapshot_meta(self) -> None:
         probe: dict[str, Any] = {
-            "snapshot_id": "s1",
-            "workspace_id": WORKSPACE_ID,
+            "snapshotId": "0192a000-0000-7000-8000-0000000000e1",
             "hlc": {"physical": 1767225600000, "logical": 7},
-            "has_snapshot": True,
-            "restore_epoch": 3,
-            "up_to_seq": 77,
+            "hasSnapshot": True,
+            "restoreEpoch": 3,
+            "upToSeq": 77,
         }
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/relay/snapshot"
-            assert request.url.params["workspace_id"] == WORKSPACE_ID
+            assert request.url.path == f"{RELAY_V2_BASE}/snapshot"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
             return httpx.Response(200, json=probe)
 
-        client, _ = _make_client(_router({("GET", "/api/relay/snapshot"): handler}))
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/snapshot"): handler}))
         meta = client.snapshot_probe(WORKSPACE_ID)
 
         assert isinstance(meta, SnapshotMeta)
-        assert meta.snapshot_id == "s1"
-        assert meta.workspace_id == WORKSPACE_ID
+        assert meta.snapshot_id == "0192a000-0000-7000-8000-0000000000e1"
         assert meta.hlc.physical == 1767225600000
         assert meta.hlc.logical == 7
         assert meta.has_snapshot is True
@@ -369,18 +424,17 @@ class TestSnapshots:
 
     def test_probe_without_snapshot_allows_null_up_to_seq(self) -> None:
         probe: dict[str, Any] = {
-            "snapshot_id": "",
-            "workspace_id": WORKSPACE_ID,
+            "snapshotId": "",
             "hlc": {"physical": 0, "logical": 0},
-            "has_snapshot": False,
-            "restore_epoch": 0,
-            "up_to_seq": None,
+            "hasSnapshot": False,
+            "restoreEpoch": 0,
+            "upToSeq": None,
         }
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=probe)
 
-        client, _ = _make_client(_router({("GET", "/api/relay/snapshot"): handler}))
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/snapshot"): handler}))
         meta = client.snapshot_probe(WORKSPACE_ID)
         assert meta.has_snapshot is False
         assert meta.up_to_seq is None
@@ -389,33 +443,87 @@ class TestSnapshots:
         blob = b"SQLite format 3\x00fake-snapshot"
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/relay/snapshot/data"
-            assert request.url.params["workspace_id"] == WORKSPACE_ID
+            assert request.url.path == f"{RELAY_V2_BASE}/snapshot/data"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
             return httpx.Response(200, content=blob, headers={"Content-Type": "application/octet-stream"})
 
-        client, _ = _make_client(_router({("GET", "/api/relay/snapshot/data"): handler}))
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/snapshot/data"): handler}))
         assert client.snapshot_data(WORKSPACE_ID) == blob
 
-    def test_stats_returns_raw_dict(self) -> None:
+    def test_upload_snapshot_puts_raw_bytes(self) -> None:
+        blob = b"SQLite format 3\x00client-snapshot"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "PUT"
+            assert request.url.path == f"{RELAY_V2_BASE}/snapshot/data"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
+            assert request.url.params["physical"] == "1767225600000"
+            assert request.url.params["logical"] == "7"
+            assert request.content == blob
+            return httpx.Response(
+                201,
+                json={
+                    "snapshotId": "0192a000-0000-7000-8000-0000000000e2",
+                    "workspaceId": WORKSPACE_ID,
+                    "upToHlc": {"physical": 1767225600000, "logical": 7},
+                    "upToSeq": 99,
+                },
+            )
+
+        client, _ = _make_client(_router({("PUT", f"{RELAY_V2_BASE}/snapshot/data"): handler}))
+        result = client.upload_snapshot(WORKSPACE_ID, blob, hlc=Hlc(physical=1767225600000, logical=7))
+
+        assert isinstance(result, SnapshotUploadResult)
+        assert result.snapshot_id == "0192a000-0000-7000-8000-0000000000e2"
+        assert result.workspace_id == WORKSPACE_ID
+        assert result.up_to_hlc == Hlc(physical=1767225600000, logical=7)
+        assert result.up_to_seq == 99
+
+    def test_stats_maps_v2_shape(self) -> None:
         stats: dict[str, Any] = {
-            "workspace_id": WORKSPACE_ID,
-            "envelope_count": 42,
-            "envelope_size_bytes": 1234,
-            "snapshot_count": 1,
-            "latest_snapshot_hlc": {"physical": 1767225600000, "logical": 7},
-            "compacted_segment_count": 0,
-            "compacted_operation_count": 0,
-            "max_hlc": {"physical": 1767225600000, "logical": 9},
-            "restore_epoch": 3,
+            "envelopeCount": 42,
+            "snapshotCount": 1,
+            "compactedOperationCount": 5,
+            "maxHlc": {"physical": 1767225600000, "logical": 9},
+            "restoreEpoch": 3,
+            "latestSnapshotHlc": {"physical": 1767225600000, "logical": 7},
         }
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/relay/stats"
-            assert request.url.params["workspace_id"] == WORKSPACE_ID
+            assert request.url.path == f"{RELAY_V2_BASE}/stats"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
             return httpx.Response(200, json=stats)
 
-        client, _ = _make_client(_router({("GET", "/api/relay/stats"): handler}))
-        assert client.stats(WORKSPACE_ID) == stats
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/stats"): handler}))
+        result = client.stats(WORKSPACE_ID)
+
+        assert isinstance(result, RelayStats)
+        assert result.envelope_count == 42
+        assert result.snapshot_count == 1
+        assert result.compacted_operation_count == 5
+        assert result.max_hlc == Hlc(physical=1767225600000, logical=9)
+        assert result.restore_epoch == 3
+        assert result.latest_snapshot_hlc == Hlc(physical=1767225600000, logical=7)
+
+    def test_stats_without_snapshot_has_null_latest_hlc(self) -> None:
+        stats: dict[str, Any] = {
+            "envelopeCount": 0,
+            "snapshotCount": 0,
+            "compactedOperationCount": 0,
+            "maxHlc": {"physical": 0, "logical": 0},
+            "restoreEpoch": 0,
+            "latestSnapshotHlc": None,
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=stats)
+
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/stats"): handler}))
+        assert client.stats(WORKSPACE_ID).latest_snapshot_hlc is None
+
+
+def _no_http(request: httpx.Request) -> httpx.Response:
+    raise AssertionError(f"unexpected HTTP request: {request.url}")
 
 
 class TestErrorTaxonomy:
@@ -433,29 +541,85 @@ class TestErrorTaxonomy:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(status, json={"detail": detail})
 
-        client, _ = _make_client(_router({("POST", "/api/relay/catch-up"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/catch-up"): handler}))
         with pytest.raises(expected) as exc_info:
             client.catch_up(WORKSPACE_ID)
 
         assert exc_info.value.status == status
         assert exc_info.value.detail == detail
 
+    @pytest.mark.parametrize(
+        ("code", "status", "expected"),
+        [
+            ("unauthenticated", 401, AuthenticationError),
+            ("forbidden", 403, ForbiddenError),
+            ("validation_failed", 422, QuarantinedError),
+            ("not_found", 404, QuarantinedError),
+            ("conflict", 409, QuarantinedError),
+            ("rate_limited", 429, RateLimitedError),
+            ("idempotency_replay", 409, ServerError),
+        ],
+    )
+    def test_v2_error_envelope_codes_map_to_taxonomy(self, code: str, status: int, expected: type[ApiError]) -> None:
+        """WIRE.md §3 stable codes take priority over status heuristics."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status, json={"error": {"code": code, "message": f"machine {code}", "status": status}}
+            )
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
+        with pytest.raises(expected) as exc_info:
+            client.submit_batch(_batch_envelopes())
+
+        assert exc_info.value.code == code
+        assert exc_info.value.detail == f"machine {code}"
+        assert exc_info.value.status == status
+
+    def test_idempotency_replay_is_retryable_server_error(self) -> None:
+        """The engine retries ServerError; envelope-id dedupe makes the retry harmless."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409, json={"error": {"code": "idempotency_replay", "message": "original in flight", "status": 409}}
+            )
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
+        with pytest.raises(ServerError) as exc_info:
+            client.submit_batch(_batch_envelopes())
+        assert exc_info.value.code == "idempotency_replay"
+
+    def test_unknown_code_falls_back_to_status(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(418, json={"error": {"code": "teapot", "message": "short and stout", "status": 418}})
+
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/stats"): handler}))
+        with pytest.raises(QuarantinedError) as exc_info:
+            client.stats(WORKSPACE_ID)
+        assert exc_info.value.code == "teapot"
+        assert exc_info.value.status == 418
+
     def test_rate_limited_parses_retry_after(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(429, json={"detail": "Too many requests"}, headers={"Retry-After": "2.5"})
+            return httpx.Response(
+                429,
+                json={"error": {"code": "rate_limited", "message": "Too many requests", "status": 429}},
+                headers={"Retry-After": "2.5"},
+            )
 
-        client, _ = _make_client(_router({("POST", "/api/relay/batch"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
         with pytest.raises(RateLimitedError) as exc_info:
             client.submit_batch(_batch_envelopes())
 
         assert exc_info.value.status == 429
         assert exc_info.value.retry_after == 2.5
+        assert exc_info.value.code == "rate_limited"
 
     def test_rate_limited_without_retry_after(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(429, json={"detail": "slow down"})
 
-        client, _ = _make_client(_router({("GET", "/api/relay/stats"): handler}))
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/stats"): handler}))
         with pytest.raises(RateLimitedError) as exc_info:
             client.stats(WORKSPACE_ID)
         assert exc_info.value.retry_after is None
@@ -477,7 +641,7 @@ class TestErrorTaxonomy:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(422, json=fastapi_422)
 
-        client, _ = _make_client(_router({("POST", "/api/relay/batch"): handler}))
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/batch"): handler}))
         with pytest.raises(QuarantinedError) as exc_info:
             client.submit_batch(_batch_envelopes())
         assert "envelopes" in exc_info.value.detail
@@ -486,7 +650,7 @@ class TestErrorTaxonomy:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(500, text="boom")
 
-        client, _ = _make_client(_router({("GET", "/api/relay/stats"): handler}))
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/stats"): handler}))
         with pytest.raises(ServerError) as exc_info:
             client.stats(WORKSPACE_ID)
         assert exc_info.value.detail == "boom"

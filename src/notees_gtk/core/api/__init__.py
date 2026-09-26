@@ -2,9 +2,12 @@
 
 from notees_gtk.core.api.client import (
     MAX_BATCH_SIZE,
+    RELAY_V2_BASE,
     AuthResult,
     NoteesClient,
+    RelayStats,
     SnapshotMeta,
+    SnapshotUploadResult,
     TwoFactorRequired,
     WorkspaceRef,
 )
@@ -21,6 +24,7 @@ from notees_gtk.core.api.errors import (
 
 __all__ = [
     "MAX_BATCH_SIZE",
+    "RELAY_V2_BASE",
     "ApiError",
     "AuthResult",
     "AuthenticationError",
@@ -29,8 +33,10 @@ __all__ = [
     "NoteesClient",
     "QuarantinedError",
     "RateLimitedError",
+    "RelayStats",
     "ServerError",
     "SnapshotMeta",
+    "SnapshotUploadResult",
     "TwoFactorRequired",
     "WorkspaceRef",
     "classify_response",

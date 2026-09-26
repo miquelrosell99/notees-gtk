@@ -12,8 +12,11 @@ class ClientConfig:
         server_url: Base URL of the Notees server.
         data_dir: Local directory for client data (cache, sync state).
         token: Authentication token for the server, if any.
+        api_key: Single-user API key for the v2 relay (``X-API-Key``), if any.
+            Takes precedence over the login token for relay endpoints.
     """
 
     server_url: str
     data_dir: Path
     token: str | None = None
+    api_key: str | None = None

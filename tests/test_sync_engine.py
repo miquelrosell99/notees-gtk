@@ -164,7 +164,6 @@ class FakeRelayClient(NoteesClient):
         has_snapshot = self.snapshot_blob is not None
         return SnapshotMeta(
             snapshot_id="snap-1" if has_snapshot else "",
-            workspace_id=workspace_id,
             hlc=Hlc(physical=0, logical=0),
             has_snapshot=has_snapshot,
             restore_epoch=self.restore_epoch,
@@ -264,9 +263,7 @@ class TestPush:
         assert [len(call) for call in relay.batch_calls] == [100, 1]
 
     @pytest.mark.parametrize("failure", [AuthenticationError("expired"), ForbiddenError("no access")])
-    def test_auth_failures_abort_push_and_keep_outbox(
-        self, store: LocalStore, failure: BaseException
-    ) -> None:
+    def test_auth_failures_abort_push_and_keep_outbox(self, store: LocalStore, failure: BaseException) -> None:
         relay = FakeRelayClient(WS)
         relay.batch_script = [failure]
         store.enqueue(create_env("n1"))
