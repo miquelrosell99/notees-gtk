@@ -12,6 +12,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx",
     "pydantic>=2",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]

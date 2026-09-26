@@ -21,6 +21,14 @@ from notees_gtk.core.api.errors import (
     ServerError,
     classify_response,
 )
+from notees_gtk.core.api.ws import (
+    DEFAULT_RECONNECT_DELAYS,
+    HelloInfo,
+    ProtocolVersionError,
+    RealtimeClient,
+    RealtimeProtocolError,
+    build_ws_url,
+)
 
 __all__ = [
     "MAX_BATCH_SIZE",
@@ -28,16 +36,22 @@ __all__ = [
     "ApiError",
     "AuthResult",
     "AuthenticationError",
+    "DEFAULT_RECONNECT_DELAYS",
     "ForbiddenError",
+    "HelloInfo",
     "NetworkError",
     "NoteesClient",
+    "ProtocolVersionError",
     "QuarantinedError",
     "RateLimitedError",
+    "RealtimeClient",
+    "RealtimeProtocolError",
     "RelayStats",
     "ServerError",
     "SnapshotMeta",
     "SnapshotUploadResult",
     "TwoFactorRequired",
     "WorkspaceRef",
+    "build_ws_url",
     "classify_response",
 ]
