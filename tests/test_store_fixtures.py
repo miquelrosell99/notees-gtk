@@ -250,6 +250,54 @@ class TestClassPropertyDefaultsFixture:
         assert [(row.value, row.source, row.bound_by) for row in effective] == [("high", "default", self.PROJECT)]
 
 
+class TestClassUnassignFixture:
+    """Replay of class-unassign.json with intermediate states (mirrors the
+    monorepo store test): unassign drops the derived default and empties
+    class_ids, the authored value survives unbound, and the re-issued
+    object.create re-assigns (add-wins, newer HLC) restoring both."""
+
+    EFFORT = "0192a000-0000-7000-8000-000000000410"
+    IMPACT = "0192a000-0000-7000-8000-000000000411"
+    TASK = "0192a000-0000-7000-8000-000000000412"
+    ITEM = "0192a000-0000-7000-8000-000000000413"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-unassign.json")]
+
+    def test_prefix_7_derived_default_plus_authored_shadow(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:7]:
+            store.apply_remote(env)
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.property_schema_id, row.value, row.source, row.bound_by) for row in effective] == [
+            (self.EFFORT, "xs", "default", self.TASK),
+            (self.IMPACT, "authored", "authored", self.TASK),
+        ]
+
+    def test_unassign_drops_default_and_empties_class_ids_authored_survives_unbound(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:8]:
+            store.apply_remote(env)
+        row = store.node(WS, self.ITEM)
+        assert row is not None and row.class_ids == ()
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.property_schema_id, row.value, row.source, row.bound_by) for row in effective] == [
+            (self.IMPACT, "authored", "authored", None),
+        ]
+
+    def test_reassign_restores_default_and_binding(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes:
+            store.apply_remote(env)
+        row = store.node(WS, self.ITEM)
+        assert row is not None and row.class_ids == (self.TASK,)
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.property_schema_id, row.value, row.source, row.bound_by) for row in effective] == [
+            (self.EFFORT, "xs", "default", self.TASK),
+            (self.IMPACT, "authored", "authored", self.TASK),
+        ]
+
+
 class TestCycleFixture:
     def test_cycle_closing_envelopes_throw_and_roll_back(self, store: LocalStore) -> None:
         root, leaf, leaf_extends_root, root_extends_leaf, root_extends_root_self = (

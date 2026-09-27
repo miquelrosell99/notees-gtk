@@ -743,6 +743,76 @@ class TestClassPropertyBindings:
         assert raw_rows(store, "SELECT COUNT(*) FROM class_property") == [(0,)]
 
 
+class TestClassUnassign:
+    def _seed_classed_node(self, store: LocalStore, *, node_id: str = "n-x") -> None:
+        store.apply_remote(class_env("class.create", "cls-x", hlc=(1, 0), name="X"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create", {"propertySchemaId": "ps-x", "name": "effort", "type": "text"}, hlc=(2, 0)
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": "cls-x", "propertySchemaId": "ps-x", "sequence": 0, "defaultValue": "xs"},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env("object.create", {"objectId": node_id, "nodeType": "page", "classIds": ["cls-x"]}, hlc=(4, 0)),
+        )
+
+    def test_missing_node_fails_loud(self, store: LocalStore) -> None:
+        with pytest.raises(NotFoundError, match="does not exist"):
+            store.apply_remote(make_env("class.unassign", {"objectId": "ghost", "classId": "cls-x"}, hlc=(2, 0)))
+
+    def test_newer_remove_clears_then_newer_add_restores(self, store: LocalStore) -> None:
+        self._seed_classed_node(store)
+        assert (
+            store.apply_remote(make_env("class.unassign", {"objectId": "n-x", "classId": "cls-x"}, hlc=(5, 0))) is True
+        )
+        assert store.node(WS_A, "n-x").class_ids == ()
+        assert store.get_effective_properties("n-x") == []
+        row = raw_rows(
+            store,
+            "SELECT present, hlc_physical FROM class_member_set WHERE node_id = 'n-x' AND class_id = 'cls-x'",
+        )
+        assert row == [(0, 5)]
+        # Re-add with a newer HLC restores membership and the derived default.
+        store.apply_remote(make_env("object.create", {"objectId": "n-x", "classIds": ["cls-x"]}, hlc=(6, 0)))
+        assert store.node(WS_A, "n-x").class_ids == ("cls-x",)
+        effective = store.get_effective_properties("n-x")
+        assert [(row.source, row.value, row.bound_by) for row in effective] == [("default", "xs", "cls-x")]
+
+    def test_stale_remove_loses_to_newer_add(self, store: LocalStore) -> None:
+        self._seed_classed_node(store)
+        # Re-add at a higher HLC, then a stale (lower-HLC) remove must no-op.
+        store.apply_remote(make_env("object.create", {"objectId": "n-x", "classIds": ["cls-x"]}, hlc=(6, 0)))
+        assert (
+            store.apply_remote(make_env("class.unassign", {"objectId": "n-x", "classId": "cls-x"}, hlc=(5, 5))) is True
+        )
+        assert store.node(WS_A, "n-x").class_ids == ("cls-x",)
+        assert raw_rows(
+            store,
+            "SELECT present, hlc_physical FROM class_member_set WHERE node_id = 'n-x' AND class_id = 'cls-x'",
+        ) == [(1, 6)]
+
+    def test_exact_hlc_tie_add_wins_in_either_delivery_order(self, store: LocalStore) -> None:
+        self._seed_classed_node(store)
+        # Order 1: remove first, then the re-issued create at the SAME
+        # (hlc, actor) — the add's >= comparator wins.
+        store.apply_remote(make_env("class.unassign", {"objectId": "n-x", "classId": "cls-x"}, hlc=(7, 0)))
+        store.apply_remote(make_env("object.create", {"objectId": "n-x", "classIds": ["cls-x"]}, hlc=(7, 0)))
+        assert store.node(WS_A, "n-x").class_ids == ("cls-x",)
+
+        # Order 2: the add lands first, then the equal-(hlc, actor) remove
+        # (strictly-greater gate) is dropped.
+        store.apply_remote(make_env("object.create", {"objectId": "n-y", "nodeType": "page"}, hlc=(8, 0)))
+        store.apply_remote(make_env("object.create", {"objectId": "n-y", "classIds": ["cls-x"]}, hlc=(9, 0)))
+        store.apply_remote(make_env("class.unassign", {"objectId": "n-y", "classId": "cls-x"}, hlc=(9, 0)))
+        assert store.node(WS_A, "n-y").class_ids == ("cls-x",)
+
+
 class TestPropertySchema:
     def test_registry_create_update_delete(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(

@@ -241,6 +241,7 @@ class LocalStore:
             "class.create": self._apply_class_create,
             "class.update": self._apply_class_update,
             "class.delete": self._apply_class_delete,
+            "class.unassign": self._apply_class_unassign,
             "class.setExtends": self._apply_class_set_extends,
             "class.property.set": self._apply_class_property_set,
             "class.property.unset": self._apply_class_property_unset,
@@ -753,11 +754,34 @@ class LocalStore:
     # -------------------------------------------------------------------- class.*
 
     def _class_member_upsert(self, node_id: str, class_id: str, env: RelayEnvelope) -> None:
+        """Seed OR-Set membership from an object.create's classIds (add-wins
+        per pair, HLC-gated; concurrent creates on the same id are the
+        designed carrier for class membership). The add's comparator is >=
+        on the actor tiebreak so an exact-HLC add beats a class.unassign
+        remove in either delivery order (the remove's is > — the
+        collection_member convention)."""
         self._conn.execute(
             """INSERT INTO class_member_set (node_id, class_id, present, hlc_physical, hlc_logical, actor_id)
                VALUES (?, ?, 1, ?, ?, ?)
                ON CONFLICT(node_id, class_id) DO UPDATE SET
                  present = 1, hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id >= COALESCE(actor_id, ''))""",
+            (node_id, class_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+
+    def _class_member_remove(self, node_id: str, class_id: str, env: RelayEnvelope) -> None:
+        """class.unassign tombstone: strictly-greater gate (including the
+        actor tiebreak) — a remove at an equal (hlc, actor) to the standing
+        add loses, so ties resolve add-wins regardless of delivery order."""
+        self._conn.execute(
+            """INSERT INTO class_member_set (node_id, class_id, present, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, 0, ?, ?, ?)
+               ON CONFLICT(node_id, class_id) DO UPDATE SET
+                 present = 0, hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
                  actor_id = excluded.actor_id
                WHERE excluded.hlc_physical > hlc_physical
                   OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
@@ -883,6 +907,27 @@ class LocalStore:
                 "UPDATE nodes SET is_active = 0, updated_at = ? WHERE workspace_id = ? AND id = ?",
                 (ts, env.workspace_id, class_id),
             )
+        return True
+
+    def _apply_class_unassign(self, env: RelayEnvelope) -> bool:
+        """Class membership removal (SCHEMA.md "Class properties" removal
+        semantics): an OR-Set tombstone on the (node, class) pair. Bound
+        properties with no authored value stop being derived (nothing stored,
+        nothing to clean — the effective read model just stops reading the
+        class's bindings); authored values survive, marked unbound.
+
+        The remove is gated strictly-greater on (hlc, actor), so a remove
+        that loses the HLC race to a newer add (or ties it) is written as
+        nothing (the gated upsert no-ops) and membership stands.
+        """
+        op_type = "class.unassign"
+        payload = env.payload
+        object_id = str(payload["objectId"])
+        class_id = str(payload["classId"])
+        self._require_node(env.workspace_id, object_id, op_type)
+        with self._conn:
+            self._class_member_remove(object_id, class_id, env)
+            self._recompute_class_ids(object_id)
         return True
 
     def _apply_class_set_extends(self, env: RelayEnvelope) -> bool:

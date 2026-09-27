@@ -1,0 +1,164 @@
+{
+  "comment": "Class membership removal (SCHEMA.md 'Class properties', unassign op). Class Task binds 'effort' (default 'xs') and 'impact' (default 'xl'); the node is created classed with Task, then authors impact = 'authored' (which shadows the 'xl' default at idx 0). class.unassign tombstones the OR-Set pair: node.class_ids is recomputed empty, the derived 'effort' default stops reading (nothing was ever stored), and the authored impact value survives marked unbound (boundBy null). The final re-issued object.create re-assigns Task (OR-Set add-wins with a newer HLC): the 'effort' default is derived again, and the authored impact reads bound by Task.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000401",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:12.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000410",
+        "name": "effort",
+        "type": "text",
+        "multi": false,
+        "scope": "global"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000402",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012100, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:12.100Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000411",
+        "name": "impact",
+        "type": "text",
+        "multi": false,
+        "scope": "global"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000403",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:12.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000412",
+        "name": "Task"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000404",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:12.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000413",
+        "nodeType": "page",
+        "name": "Unassign demo",
+        "classIds": ["0192a000-0000-7000-8000-000000000412"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000405",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:12.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000412",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000410",
+        "sequence": 0,
+        "defaultValue": "xs"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000406",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:12.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000412",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000411",
+        "sequence": 1,
+        "defaultValue": "xl"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000407",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:12.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000413",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000411",
+        "value": "authored",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000408",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "opType": "class.unassign",
+      "timestamp": "2026-09-24T12:00:12.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000413",
+        "classId": "0192a000-0000-7000-8000-000000000412"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000409",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200012800, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:12.800Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000413",
+        "nodeType": "page",
+        "classIds": ["0192a000-0000-7000-8000-000000000412"]
+      }
+    }
+  ]
+}
