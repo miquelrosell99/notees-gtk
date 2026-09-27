@@ -1,26 +1,25 @@
-"""Seed-parity lockstep: the seed-manifest deltas from the citations model
-revision (monorepo commit `feat(v2): citations model per owner — source
-family subclasses, text authors, explicit linkedAuthors`).
+"""Seed-parity lockstep: the FINAL citations-authors model (monorepo commits
+``docs(schema): FINAL citations authorship decision`` and ``feat(v2): FINAL
+authors model — node-typed to agent nodes; linkedAuthors withdrawn``).
 
 The GTK client has NO seed manifest of its own — seeding is server-side
 (``buildSeedEnvelopes`` in ``apps/server/src/seed.ts`` driven by
 ``@notees/domain`` seeds.ts); clients receive seed envelopes through
 catch-up like any other ops. This test is the client-side half of the
 lockstep: it replays the seed-op SHAPES the changed manifest emits through
-the store appliers and pins the fixed UUIDs (never reuse), the system-class
-block prefix, the extends parents, and the revised property specs:
+the store appliers and pins the fixed UUIDs (never reuse), the
+system-class block prefix, the extends parents, and the FINAL property
+specs:
 
 - new system classes ``song`` / ``tv_series`` / ``conference``
   (block ``00000000-0000-0000-0001-…``), all ``extends ["source"]``, with
-  their fixed ids and mdi icons;
-- ``authors`` CHANGED to ``{type: text, multi: true, bindTo: source}`` —
-  verbatim strings, never person nodes — same UUID ``…000000000012``, and
-  crucially NO ``targetClassFilter`` anymore (the node-typed assumption is
-  gone);
-- new ``linkedAuthors`` ``{type: object, multi: true, bindTo: source,
-  targetClassFilter: [agent]}`` at UUID ``…000000000025`` (note the block:
-  the property lives in ``0000-0000-0000-…``, distinct from the ``paper``
-  CLASS at ``0000-0000-0001-…025`` used by the object-create fixture).
+  their fixed UUIDs (…000000000036/037/038) and mdi icons;
+- ``authors`` FINAL: node-typed to agent nodes —
+  ``{type: object, multi: true, bindTo: source, targetClassFilter: [agent]}``
+  at UUID ``…000000000012``. The text-authors experiment (verbatim strings,
+  no targetClassFilter) was reversed by the owner;
+- withdrawn ids are never reused (v1 ``locator`` …0018 precedent):
+  ``…0025`` (``linkedAuthors``) is WITHDRAWN 2026-09-27, reversed same day.
 
 It fails loud if a future registry/applier change breaks seed application.
 """
@@ -52,9 +51,16 @@ SONG = "00000000-0000-0000-0001-000000000036"
 TV_SERIES = "00000000-0000-0000-0001-000000000037"
 CONFERENCE = "00000000-0000-0000-0001-000000000038"
 
-#: Delta property schemas (0000-0000-0000- block — distinct from classes).
+#: Active delta property schema (0000-0000-0000- block — distinct from classes).
 AUTHORS_SCHEMA = "00000000-0000-0000-0000-000000000012"
-LINKED_AUTHORS_SCHEMA = "00000000-0000-0000-0000-000000000025"
+
+#: Withdrawn system property ids — never reuse (seeds.ts registers them as
+#: dead slots): v1 ``locator`` …0018, and …0025 (``linkedAuthors``) —
+#: WITHDRAWN 2026-09-27, reversed same day in the FINAL authors model.
+WITHDRAWN_PROPERTY_IDS = (
+    "00000000-0000-0000-0000-000000000018",
+    "00000000-0000-0000-0000-000000000025",
+)
 
 
 def seed_env(op_type: str, payload: dict[str, object], physical: int) -> RelayEnvelope:
@@ -90,6 +96,27 @@ def _seed_source_family(store: LocalStore) -> None:
     assert (
         store.apply_remote(
             seed_env("class.create", {"classId": SOURCE, "name": "source", "icon": "mdiBookOpenVariant"}, 1)
+        )
+        is True
+    )
+
+
+def _seed_authors_schema(store: LocalStore) -> None:
+    """The FINAL authors schema as the seed emits it (node-typed to agent)."""
+    assert (
+        store.apply_remote(
+            seed_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": AUTHORS_SCHEMA,
+                    "name": "authors",
+                    "type": "object",
+                    "multi": True,
+                    "scope": "class",
+                    "targetClassFilter": [AGENT],
+                },
+                2,
+            )
         )
         is True
     )
@@ -143,67 +170,33 @@ class TestNewSourceSubclasses:
         for class_id, name, icon in classes:
             assert registry[class_id] == (name, icon)
 
-    def test_fixed_uuids_are_unique_and_block_prefixed(self) -> None:
+    def test_fixed_uuids_are_unique_block_prefixed_and_withdrawn_never_reused(self) -> None:
         class_ids = [SOURCE, AGENT, SONG, TV_SERIES, CONFERENCE]
-        schema_ids = [AUTHORS_SCHEMA, LINKED_AUTHORS_SCHEMA]
+        schema_ids = [AUTHORS_SCHEMA]
         assert len(set(class_ids + schema_ids)) == len(class_ids) + len(schema_ids)
         for class_id in class_ids:
             assert class_id.startswith(SYSTEM_CLASS_BLOCK_PREFIX)
+        # Withdrawn ids (v1 locator …0018; linkedAuthors …0025, WITHDRAWN
+        # 2026-09-27) are dead slots: never assigned to an active schema.
+        assert not set(WITHDRAWN_PROPERTY_IDS) & set(schema_ids)
 
 
-class TestRevisedPropertySpecs:
-    def test_authors_is_text_multi_without_target_filter(self, store: LocalStore) -> None:
-        """The citations revision: verbatim strings, never person nodes — the
-        node-typed targetClassFilter assumption is gone from the seed spec."""
-        assert (
-            store.apply_remote(
-                seed_env(
-                    "propertySchema.create",
-                    {
-                        "propertySchemaId": AUTHORS_SCHEMA,
-                        "name": "authors",
-                        "type": "text",
-                        "multi": True,
-                        "scope": "class",
-                    },
-                    2,
-                )
-            )
-            is True
-        )
+class TestFinalAuthorsSpec:
+    def test_authors_is_node_typed_multi_filtered_to_agent(self, store: LocalStore) -> None:
+        """FINAL authors model: node-typed to agent nodes. The text-authors
+        experiment (verbatim strings, no targetClassFilter) was reversed."""
+        _seed_authors_schema(store)
         with sqlite3.connect(_db_path(store)) as raw:
             row = raw.execute(
                 "SELECT name, type, multi, scope, target_class_filter FROM property_schema WHERE id = ?",
                 (AUTHORS_SCHEMA,),
             ).fetchone()
-        assert row == ("authors", "text", 1, "class", None)
+        assert row == ("authors", "object", 1, "class", json.dumps([AGENT]))
 
-    def test_linked_authors_is_object_multi_filtered_to_agent(self, store: LocalStore) -> None:
-        assert (
-            store.apply_remote(
-                seed_env(
-                    "propertySchema.create",
-                    {
-                        "propertySchemaId": LINKED_AUTHORS_SCHEMA,
-                        "name": "linkedAuthors",
-                        "type": "object",
-                        "multi": True,
-                        "scope": "class",
-                        "targetClassFilter": [AGENT],
-                    },
-                    3,
-                )
-            )
-            is True
-        )
+    def test_withdrawn_linked_authors_id_is_never_seeded(self, store: LocalStore) -> None:
+        """…0025 (linkedAuthors) was withdrawn with the FINAL authors model;
+        no seed envelope may ever carry it again."""
+        _seed_authors_schema(store)
         with sqlite3.connect(_db_path(store)) as raw:
-            row = raw.execute(
-                "SELECT name, type, multi, target_class_filter FROM property_schema WHERE id = ?",
-                (LINKED_AUTHORS_SCHEMA,),
-            ).fetchone()
-        assert row == ("linkedAuthors", "object", 1, json.dumps([AGENT]))
-
-    def test_authors_and_linked_authors_do_not_collide_with_class_ids(self) -> None:
-        """…0000-…025 (linkedAuthors schema) vs …0001-…025 (paper class) are
-        different namespaces — the object-create fixture uses the latter."""
-        assert LINKED_AUTHORS_SCHEMA != "00000000-0000-0000-0001-000000000025"
+            active = {str(row_id) for (row_id,) in raw.execute("SELECT id FROM property_schema")}
+        assert active.isdisjoint(WITHDRAWN_PROPERTY_IDS)
