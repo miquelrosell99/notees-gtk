@@ -24,6 +24,12 @@ The flow mirrors a two-device sync scenario:
    it through the live ops frame;
 6. a fresh Device C re-pulls the whole log from seq 0 and must converge to the
    identical dump (replay determinism against the live server log).
+
+A second test exercises the newer write surface end-to-end: a property write
+through the server's REST endpoint (``POST /api/v1/objects/:id/properties`` —
+a server-stamped ``property.set`` envelope), and a ``class.property.set``
+binding authored through the GTK engine's own write path, converging into
+Device B's effective-properties read model.
 """
 
 from __future__ import annotations
@@ -86,6 +92,10 @@ BLOCK_ONE = "0192b000-0000-7000-8000-0000000000c1"
 BLOCK_TWO = "0192b000-0000-7000-8000-0000000000c2"
 BLOCK_LIVE = "0192b000-0000-7000-8000-0000000000c3"
 PROPERTY_SCHEMA = "0192b000-0000-7000-8000-0000000000d1"
+PROPERTY_SCHEMA_PRIORITY = "0192b000-0000-7000-8000-0000000000d2"
+CLASS_KIND = "0192b000-0000-7000-8000-0000000000a3"
+PAGE_PROPS = "0192b000-0000-7000-8000-0000000000b3"
+PAGE_DEFAULTS = "0192b000-0000-7000-8000-0000000000b4"
 
 #: Every derived-state table the two client stores must converge on.
 #: (relay_operations.applied_at and sync_watermark are per-device bookkeeping
@@ -359,3 +369,125 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     replay = device_c.engine.pull()
     assert replay.applied == 10
     assert _store_dump(device_a.store) == _store_dump(device_c.store)
+
+
+def test_live_property_writes_and_effective_defaults(server_url: str, device_factory: Any) -> None:
+    """The newer write surface against the real server.
+
+    1. A property write through the server's REST endpoint (a server-stamped
+       property.set envelope, ``client: "api"``) converges into both client
+       stores — property_value rows (value, metadata, row HLCs) land identically
+       on every replica.
+    2. A class.property.set binding authored through the GTK engine's own write
+       path (local apply + push) converges; Device B's effective-properties
+       read model shows the derived default for a classed node without an
+       authored value, and the authored row (which shadows the default) tagged
+       correctly for the node that has one.
+    """
+    device_a = device_factory("device-a")
+    device_a.produce(
+        "propertySchema.create",
+        {
+            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
+            "name": "Priority",
+            "type": "select",
+            "options": [{"id": "low", "label": "low"}, {"id": "medium", "label": "medium"}],
+        },
+    )
+    device_a.produce("class.create", {"classId": CLASS_KIND, "name": "Kind"}, affected=(CLASS_KIND,))
+    device_a.produce(
+        "object.create",
+        {"objectId": PAGE_PROPS, "nodeType": "page", "name": "Props Page", "classIds": [CLASS_KIND], "parentId": None},
+        affected=(PAGE_PROPS,),
+    )
+    device_a.produce(
+        "object.create",
+        {
+            "objectId": PAGE_DEFAULTS,
+            "nodeType": "page",
+            "name": "Defaults Page",
+            "classIds": [CLASS_KIND],
+            "parentId": None,
+        },
+        affected=(PAGE_DEFAULTS,),
+    )
+    push = device_a.engine.push()
+    assert push.quarantined == 0
+    assert push.sent == 4
+
+    device_b = device_factory("device-b")
+    assert device_b.engine.pull().applied == 4
+    assert _store_dump(device_a.store) == _store_dump(device_b.store)
+
+    # --- 1: property write over the REST endpoint (server-stamped envelope). ---
+    written = device_a.client._post_json(
+        f"/api/v1/objects/{PAGE_PROPS}/properties",
+        {
+            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
+            "value": {"label": "high"},
+            "metadata": {"via": "rest"},
+        },
+    )["object"]
+    authored_server = [
+        entry for entry in written["properties"] if entry["schemaId"] == PROPERTY_SCHEMA_PRIORITY and entry["idx"] == 0
+    ]
+    assert authored_server == [
+        {
+            "schemaId": PROPERTY_SCHEMA_PRIORITY,
+            "schemaName": "Priority",
+            "schemaType": "select",
+            "idx": 0,
+            "value": {"label": "high"},
+            "metadata": {"via": "rest"},
+        }
+    ]
+
+    # Both devices catch up the server-stamped envelope; the authored row
+    # (value + metadata + row HLCs) converges byte-for-byte.
+    assert device_b.engine.pull().applied == 1
+    assert device_a.engine.pull().applied == 1  # A learns its own REST write via catch-up
+    assert _store_dump(device_a.store) == _store_dump(device_b.store)
+    authored_b = device_b.store.get_effective_properties(PAGE_PROPS)
+    # No class_property binding exists yet: authored row, bound_by None.
+    assert [(row.source, row.value, row.metadata, row.bound_by) for row in authored_b] == [
+        ("authored", {"label": "high"}, {"via": "rest"}, None)
+    ]
+
+    # --- 2: class binding through the engine's write path + effective default. ---
+    device_a.produce(
+        "class.property.set",
+        {
+            "classId": CLASS_KIND,
+            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
+            "sequence": 0,
+            "defaultValue": "medium",
+        },
+        affected=(CLASS_KIND,),
+    )
+    binding_push = device_a.engine.push()
+    assert binding_push.sent == 1
+    assert device_b.engine.pull().applied == 1
+    assert _store_dump(device_a.store) == _store_dump(device_b.store)
+
+    # Node WITHOUT an authored value reads the derived default (never
+    # materialized: no property_value row exists for it).
+    defaults_b = device_b.store.get_effective_properties(PAGE_DEFAULTS)
+    assert [(row.source, row.value, row.bound_by, row.sequence) for row in defaults_b] == [
+        ("default", "medium", CLASS_KIND, 0)
+    ]
+
+    # The authored row still shadows the default on the other node — and now
+    # carries the binding metadata (bound_by).
+    authored_after = device_b.store.get_effective_properties(PAGE_PROPS)
+    assert [(row.source, row.bound_by) for row in authored_after] == [("authored", CLASS_KIND)]
+
+    # Server-side authored truth agrees. NOTE THE GAP: the M1 object API
+    # surfaces AUTHORED property_value rows only (fullObject joins
+    # property_value); the effective read model — derived defaults included —
+    # lives in the store's getEffectiveProperties, which has no REST exposure
+    # yet. So Defaults Page shows no properties server-side while every
+    # client's effective read returns "medium".
+    props_server = device_a.client._get_json(f"/api/v1/objects/{PAGE_PROPS}")["object"]["properties"]
+    assert [entry["value"] for entry in props_server] == [{"label": "high"}]
+    defaults_server = device_a.client._get_json(f"/api/v1/objects/{PAGE_DEFAULTS}")["object"]["properties"]
+    assert defaults_server == []
