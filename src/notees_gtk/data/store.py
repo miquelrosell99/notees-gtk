@@ -52,12 +52,12 @@ from notees_gtk.data.errors import (
     UnsupportedCarrierError,
 )
 
-__all__ = ["LocalStore", "NodeRow"]
+__all__ = ["EffectiveProperty", "EffectivePropertySchema", "LocalStore", "NodeRow"]
 
 _log = logging.getLogger(__name__)
 
 #: Latest schema version applied to the database (see ``_MIGRATIONS``).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -148,6 +148,41 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@dataclass(frozen=True)
+class EffectivePropertySchema:
+    """Property schema projection inside an :class:`EffectiveProperty` row."""
+
+    id: str
+    name: str
+    type: str
+    multi: bool
+
+
+@dataclass(frozen=True)
+class EffectiveProperty:
+    """One effective ``(schema, idx)`` row for a node — the property panel's
+    read surface (SCHEMA.md "Class properties", 2026-09-27).
+
+    ``source`` tags authored vs derived; ``bound_by`` is the class supplying
+    the binding metadata — the winning class for a default, the
+    currently-binding class for an authored row, or ``None`` when no current
+    class binds the schema (an authored value whose binding went away stays
+    visible, marked unbound).
+    """
+
+    property_schema_id: str
+    idx: int
+    schema: EffectivePropertySchema | None
+    value: Any
+    metadata: dict[str, Any] | None
+    source: str  # "authored" | "default"
+    bound_by: str | None
+    required: bool | None
+    readonly: bool | None
+    hide_when_empty: bool | None
+    sequence: int | None
+
+
 def _envelope_ts(env: RelayEnvelope) -> str:
     """Return the envelope timestamp as ISO-8601, falling back to now."""
     return env.timestamp.isoformat() if env.timestamp is not None else _now_iso()
@@ -207,6 +242,8 @@ class LocalStore:
             "class.update": self._apply_class_update,
             "class.delete": self._apply_class_delete,
             "class.setExtends": self._apply_class_set_extends,
+            "class.property.set": self._apply_class_property_set,
+            "class.property.unset": self._apply_class_property_unset,
             "propertySchema.create": self._apply_property_schema_create,
             "propertySchema.update": self._apply_property_schema_update,
             "propertySchema.delete": self._apply_property_schema_delete,
@@ -370,6 +407,7 @@ class LocalStore:
                     [*node_ids, *node_ids],
                 )
                 self._conn.execute(f"DELETE FROM trash WHERE node_id IN ({placeholders})", node_ids)
+                self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", node_ids)
             self._conn.execute("DELETE FROM nodes WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_outbox WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_operations WHERE workspace_id = ?", (workspace_id,))
@@ -625,6 +663,7 @@ class LocalStore:
                 f" WHERE collection_id IN ({placeholders}) OR object_id IN ({placeholders})",
                 [*ids, *ids],
             )
+            self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", ids)
             self._conn.execute(
                 f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
             )
@@ -917,6 +956,85 @@ class LocalStore:
                     (class_id, ancestor_id),
                 )
 
+    # ------------------------------------------------------- class.property.*
+
+    def _apply_class_property_set(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        class_id = str(payload["classId"])
+        schema_id = str(payload["propertySchemaId"])
+        existing = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM class_property"
+            " WHERE class_id = ? AND property_schema_id = ?",
+            (class_id, schema_id),
+        ).fetchone()
+        if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
+            return False
+
+        # Omitted (absent) fields keep the stored value via COALESCE; explicit
+        # false / JSON null are real writes (null default == JSON "null").
+        def flag(name: str) -> int | None:
+            if name not in payload:
+                return None  # absent → COALESCE keeps the stored value
+            return 1 if payload[name] else 0  # explicit null (falsy) writes 0, as the TS port
+
+        sequence = int(payload["sequence"]) if payload.get("sequence") is not None else None
+        default_value = json.dumps(payload["defaultValue"]) if "defaultValue" in payload else None
+        with self._conn:
+            if existing is None:
+                self._conn.execute(
+                    """INSERT INTO class_property
+                         (class_id, property_schema_id, sequence, required, readonly, hide_when_empty,
+                          default_value, hlc_physical, hlc_logical, actor_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        class_id,
+                        schema_id,
+                        sequence if sequence is not None else 0,
+                        flag("required"),
+                        flag("readonly"),
+                        flag("hideWhenEmpty"),
+                        default_value,
+                        env.hlc.physical,
+                        env.hlc.logical,
+                        env.actor_id,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """UPDATE class_property SET
+                         sequence = COALESCE(?, sequence),
+                         required = COALESCE(?, required),
+                         readonly = COALESCE(?, readonly),
+                         hide_when_empty = COALESCE(?, hide_when_empty),
+                         default_value = COALESCE(?, default_value),
+                         hlc_physical = ?, hlc_logical = ?, actor_id = ?
+                       WHERE class_id = ? AND property_schema_id = ?""",
+                    (
+                        sequence,
+                        flag("required"),
+                        flag("readonly"),
+                        flag("hideWhenEmpty"),
+                        default_value,
+                        env.hlc.physical,
+                        env.hlc.logical,
+                        env.actor_id,
+                        class_id,
+                        schema_id,
+                    ),
+                )
+        return True
+
+    def _apply_class_property_unset(self, env: RelayEnvelope) -> bool:
+        """Binding removal: plain DELETE — a config row, last write wins, no
+        tombstone (SCHEMA.md). Authored property_value rows are untouched."""
+        payload = env.payload
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+                (str(payload["classId"]), str(payload["propertySchemaId"])),
+            )
+        return True
+
     # ------------------------------------------------------------- propertySchema.*
 
     def _apply_property_schema_create(self, env: RelayEnvelope) -> bool:
@@ -1200,6 +1318,149 @@ class LocalStore:
             is_active=bool(row[8]),
             content=row[9],
             content_plain=str(row[10] or ""),
+        )
+
+    # ------------------------------------------------- effective properties
+
+    @_synchronized
+    def get_effective_properties(self, node_id: str) -> list[EffectiveProperty]:
+        """The effective-values read model (SCHEMA.md "Class properties")::
+
+            effective(node, schema, idx) = authored property_value
+                                           ?? winning binding's defaultValue
+
+        Port of v2 ``packages/store/src/effective.ts``. Authored rows always
+        win and survive class removal; derived defaults are computed HERE and
+        never materialized (the applier writes no property_value rows for
+        them). Binding conflicts across the node's classes resolve
+        first-class-applied-wins: the class whose OR-Set membership add
+        carries the earliest HLC supplies the default AND the binding
+        metadata; exact HLC ties break by class id. A pure read over derived
+        tables — deterministic on every replica, no writes, no clocks.
+        """
+        authored_rows = self._conn.execute(
+            "SELECT property_schema_id, value, idx, metadata, hlc_physical, hlc_logical, actor_id"
+            " FROM property_value WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+        tombstones = self._conn.execute(
+            "SELECT property_schema_id, idx, hlc_physical, hlc_logical, actor_id"
+            " FROM property_value_tombstone WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+
+        def suppressed(row: tuple[Any, ...]) -> bool:
+            for tomb in tombstones:
+                if tomb[0] != row[0] or tomb[1] != row[2]:
+                    continue
+                authored_winner = (int(row[4]), int(row[5]), row[6] or "")
+                tomb_winner = (int(tomb[2]), int(tomb[3]), tomb[4] or "")
+                if authored_winner <= tomb_winner:
+                    return True
+            return False
+
+        # The node's classes in assignment order: OR-Set add HLC ascending
+        # (earliest first), ties by class id.
+        classes = sorted(
+            self._conn.execute(
+                "SELECT class_id, hlc_physical, hlc_logical FROM class_member_set WHERE node_id = ? AND present = 1",
+                (node_id,),
+            ).fetchall(),
+            key=lambda row: (int(row[1]), int(row[2]), str(row[0])),
+        )
+
+        # Winning binding per schema: the first class (in assignment order)
+        # that binds the schema supplies default + metadata.
+        winner_by_schema: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        for cls in classes:
+            bindings = self._conn.execute(
+                "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value"
+                " FROM class_property WHERE class_id = ?",
+                (str(cls[0]),),
+            ).fetchall()
+            for binding in bindings:
+                if str(binding[0]) not in winner_by_schema:
+                    winner_by_schema[str(binding[0])] = (str(cls[0]), binding)
+
+        # Schema rows for everything referenced (authored rows survive schema
+        # deletion: the row renders with schema=None).
+        schema_ids = {str(row[0]) for row in authored_rows} | set(winner_by_schema)
+        schemas: dict[str, EffectivePropertySchema] = {}
+        if schema_ids:
+            placeholders = ", ".join("?" for _ in schema_ids)
+            rows = self._conn.execute(
+                f"SELECT id, name, type, multi FROM property_schema WHERE id IN ({placeholders})",
+                tuple(sorted(schema_ids)),
+            ).fetchall()
+            for row in rows:
+                schemas[str(row[0])] = EffectivePropertySchema(
+                    id=str(row[0]), name=str(row[1]), type=str(row[2]), multi=bool(row[3])
+                )
+
+        def flag(value: Any) -> bool | None:
+            return None if value is None else bool(value)
+
+        def parse_json(raw: Any) -> Any:
+            if not isinstance(raw, str):
+                return raw
+            try:
+                return json.loads(raw)
+            except ValueError:
+                return raw
+
+        rows_out: dict[str, EffectiveProperty] = {}
+        for authored in authored_rows:
+            if suppressed(authored):
+                continue
+            schema_id, idx = str(authored[0]), int(authored[2])
+            winner = winner_by_schema.get(schema_id)
+            rows_out[f"{schema_id}:{idx}"] = EffectiveProperty(
+                property_schema_id=schema_id,
+                idx=idx,
+                schema=schemas.get(schema_id),
+                value=parse_json(authored[1]),
+                metadata=parse_json(authored[3]) if authored[3] is not None else None,
+                source="authored",
+                bound_by=winner[0] if winner else None,
+                required=flag(winner[1][2]) if winner else None,
+                readonly=flag(winner[1][3]) if winner else None,
+                hide_when_empty=flag(winner[1][4]) if winner else None,
+                sequence=int(winner[1][1]) if winner else None,
+            )
+
+        for schema_id, (class_id, binding) in winner_by_schema.items():
+            if binding[5] is None:
+                continue  # bound without a default
+            key = f"{schema_id}:0"
+            if key in rows_out:
+                continue  # authored value at idx 0 shadows the default
+            rows_out[key] = EffectiveProperty(
+                property_schema_id=schema_id,
+                idx=0,
+                schema=schemas.get(schema_id),
+                value=parse_json(binding[5]),
+                metadata=None,
+                source="default",
+                bound_by=class_id,
+                required=flag(binding[2]),
+                readonly=flag(binding[3]),
+                hide_when_empty=flag(binding[4]),
+                sequence=int(binding[1]),
+            )
+
+        # Deterministic presentation order: bound rows by binding sequence,
+        # unbound authored rows last; schema name then idx as the tiebreak.
+        def name_of(row: EffectiveProperty) -> str:
+            return row.schema.name if row.schema is not None else row.property_schema_id
+
+        return sorted(
+            rows_out.values(),
+            key=lambda row: (
+                row.bound_by is None,
+                row.sequence if row.sequence is not None else 2**53 - 1,
+                name_of(row),
+                row.idx,
+            ),
         )
 
     # ---------------------------------------------------------------- snapshots
@@ -1546,9 +1807,39 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS node_content_hlc")
 
 
+_CLASS_PROPERTY_DDL = """
+-- Class -> property bindings (sequence, flags, default), per SCHEMA.md
+-- "Class properties — bindings, defaults, aggregation" (2026-09-27).
+-- Registry rows authored by class.property.set/unset; LWW on the row by
+-- (hlc, actor). Defaults are a DERIVED read model (get_effective_properties),
+-- never materialized property_value rows.
+CREATE TABLE IF NOT EXISTS class_property (
+    class_id TEXT NOT NULL,
+    property_schema_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL DEFAULT 0,
+    required INTEGER,
+    readonly INTEGER,
+    hide_when_empty INTEGER,
+    default_value TEXT,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (class_id, property_schema_id)
+);
+CREATE INDEX IF NOT EXISTS idx_class_property_class ON class_property (class_id);
+"""
+
+
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """Add the class_property binding table (CREATE IF NOT EXISTS is the guard;
+    idempotent for fresh databases, which run the whole chain 1→4)."""
+    conn.executescript(_CLASS_PROPERTY_DDL)
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
+    (4, _migrate_v4),
 )

@@ -23,6 +23,8 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         "class.update",
         "class.delete",
         "class.setExtends",
+        "class.property.set",
+        "class.property.unset",
         # Property schemas
         "propertySchema.create",
         "propertySchema.update",

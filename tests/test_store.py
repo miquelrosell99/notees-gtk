@@ -37,6 +37,7 @@ UNSET: Any = object()
 
 V2_TABLES = {
     "node_child_order",
+    "class_property",
     "class_member_set",
     "class_extends",
     "class_hierarchy",
@@ -191,7 +192,7 @@ class TestMigrations:
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
         assert tables >= {"relay_outbox", "relay_operations", "sync_watermark", "nodes"}
         assert tables >= V2_TABLES
-        assert version == 3
+        assert version == 4
         # v2 node column names: is_active replaces archived; row-LWW columns
         # replace the v1 node_content_hlc watermark.
         assert {"is_active", "class_ids", "content_plain", "hlc_physical", "hlc_logical", "actor_id"} <= columns
@@ -661,6 +662,85 @@ class TestClassOps:
         store.apply_remote(class_env("class.create", "a", hlc=(1, 0), name="A"))
         with pytest.raises(NotFoundError):
             store.apply_remote(extends_env("a", ["ghost"], hlc=(2, 0)))
+
+
+class TestClassPropertyBindings:
+    def test_set_inserts_row_and_patch_keeps_omitted_fields(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", "cls-1", hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": "cls-1", "propertySchemaId": "ps-1", "sequence": 0, "defaultValue": "medium"},
+                hlc=(2, 0),
+            )
+        )
+        assert raw_rows(
+            store,
+            "SELECT sequence, required, readonly, hide_when_empty, default_value, hlc_physical"
+            " FROM class_property WHERE class_id = 'cls-1' AND property_schema_id = 'ps-1'",
+        ) == [(0, None, None, None, '"medium"', 2)]
+
+        # Patch only default + required: sequence survives via COALESCE.
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": "cls-1", "propertySchemaId": "ps-1", "defaultValue": "low", "required": True},
+                hlc=(3, 0),
+            )
+        )
+        assert raw_rows(
+            store,
+            "SELECT sequence, required, default_value, hlc_physical FROM class_property"
+            " WHERE class_id = 'cls-1' AND property_schema_id = 'ps-1'",
+        ) == [(0, 1, '"low"', 3)]
+
+    def test_stale_set_dropped_by_row_lww(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", "cls-1", hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": "cls-1", "propertySchemaId": "ps-1", "defaultValue": "low"},
+                hlc=(3, 0),
+            )
+        )
+        assert (
+            store.apply_remote(
+                make_env(
+                    "class.property.set",
+                    {"classId": "cls-1", "propertySchemaId": "ps-1", "defaultValue": "stale"},
+                    hlc=(2, 0),
+                )
+            )
+            is False
+        )
+        assert raw_rows(
+            store, "SELECT default_value FROM class_property WHERE class_id = 'cls-1' AND property_schema_id = 'ps-1'"
+        ) == [('"low"',)]
+
+    def test_explicit_json_null_default_is_a_real_default(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", "cls-1", hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "class.property.set", {"classId": "cls-1", "propertySchemaId": "ps-1", "defaultValue": None}, hlc=(2, 0)
+            )
+        )
+        assert raw_rows(
+            store, "SELECT default_value FROM class_property WHERE class_id = 'cls-1' AND property_schema_id = 'ps-1'"
+        ) == [("null",)]
+
+    def test_unset_deletes_the_binding_row(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", "cls-1", hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": "cls-1", "propertySchemaId": "ps-1", "defaultValue": "low"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env("class.property.unset", {"classId": "cls-1", "propertySchemaId": "ps-1"}, hlc=(3, 0))
+        )
+        assert raw_rows(store, "SELECT COUNT(*) FROM class_property") == [(0,)]
 
 
 class TestPropertySchema:

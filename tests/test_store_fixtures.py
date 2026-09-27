@@ -22,7 +22,11 @@ import pytest
 
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.errors import CycleError
-from notees_gtk.data.store import LocalStore
+from notees_gtk.data.store import (
+    EffectiveProperty,
+    EffectivePropertySchema,
+    LocalStore,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "v2"
 
@@ -191,6 +195,59 @@ class TestClassExtendsFixture:
                 store, "SELECT class_id FROM class_hierarchy WHERE ancestor_id = ? ORDER BY class_id", (parent,)
             )
             assert (c,) in descendants
+
+
+class TestClassPropertyDefaultsFixture:
+    """Replay of class-property-defaults.json with intermediate states
+    (mirrors the monorepo store test): default applies → multi-class conflict
+    resolves first-applied-wins → unset flips the winner."""
+
+    PRIORITY = "0192a000-0000-7000-8000-000000000301"
+    TASK = "0192a000-0000-7000-8000-000000000302"
+    PROJECT = "0192a000-0000-7000-8000-000000000303"
+    ITEM = "0192a000-0000-7000-8000-000000000304"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-property-defaults.json")]
+
+    def test_prefix_5_node_reads_task_default(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:5]:
+            assert store.apply_remote(env) is True
+        effective = store.get_effective_properties(self.ITEM)
+        assert effective == [
+            EffectiveProperty(
+                property_schema_id=self.PRIORITY,
+                idx=0,
+                schema=EffectivePropertySchema(id=self.PRIORITY, name="priority", type="select", multi=False),
+                value="medium",
+                metadata=None,
+                source="default",
+                bound_by=self.TASK,
+                required=None,
+                readonly=None,
+                hide_when_empty=None,
+                sequence=0,
+            )
+        ]
+        # The default is DERIVED: no property_value row was ever written.
+        assert raw(store, "SELECT COUNT(*) FROM property_value WHERE node_id = ?", (self.ITEM,)) == [(0,)]
+
+    def test_prefix_7_first_applied_class_wins_the_conflict(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:7]:
+            store.apply_remote(env)  # envelope 7 is a re-create: tree no-op by design
+        # Task's membership add HLC (envelope 4) precedes Project's
+        # (envelope 7): Task's 'medium' beats Project's 'high'.
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [("medium", "default", self.TASK)]
+
+    def test_full_8_unset_flips_the_winner(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes:
+            store.apply_remote(env)
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [("high", "default", self.PROJECT)]
 
 
 class TestCycleFixture:

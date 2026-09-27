@@ -60,6 +60,8 @@ class TestOpTypeRegistry:
                     "class.update",
                     "class.delete",
                     "class.setExtends",
+                    "class.property.set",
+                    "class.property.unset",
                     "propertySchema.create",
                     "propertySchema.update",
                     "propertySchema.delete",

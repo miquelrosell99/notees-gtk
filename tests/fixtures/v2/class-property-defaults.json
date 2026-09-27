@@ -1,0 +1,148 @@
+{
+  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings — the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000111",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:11.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
+        "name": "priority",
+        "type": "select",
+        "multi": false,
+        "scope": "global",
+        "options": [
+          { "id": "low", "label": "low" },
+          { "id": "medium", "label": "medium" },
+          { "id": "high", "label": "high" }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000112",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:11.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000302",
+        "name": "Task"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000113",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000303"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:11.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000303",
+        "name": "Project"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000114",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000304"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:11.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000304",
+        "nodeType": "page",
+        "name": "Ship v2",
+        "classIds": ["0192a000-0000-7000-8000-000000000302"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000115",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:11.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000302",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
+        "sequence": 0,
+        "defaultValue": "medium"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000116",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200011500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000303"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:11.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000303",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
+        "sequence": 0,
+        "defaultValue": "high"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000117",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200011600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000304"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:11.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000304",
+        "nodeType": "page",
+        "classIds": ["0192a000-0000-7000-8000-000000000303"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000118",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200011700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "opType": "class.property.unset",
+      "timestamp": "2026-09-24T12:00:11.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000302",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
+      }
+    }
+  ]
+}

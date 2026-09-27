@@ -97,6 +97,7 @@ DUMP_TABLES = (
     "class_extends",
     "class_hierarchy",
     "class",
+    "class_property",
     "property_schema",
     "property_value",
     "property_value_tombstone",
