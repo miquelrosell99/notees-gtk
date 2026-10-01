@@ -17,26 +17,27 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Pango
 
 from notees_gtk.core.api import WorkspaceRef
+from notees_gtk.core.protocol.content import derive_display_name, parse_content_ast
 from notees_gtk.data.store import NodeRow
-from notees_gtk.ui.ast_render import ast_to_plaintext
 
 __all__ = ["NodeTreeSidebar", "node_display_name"]
 
 
 def node_display_name(row: NodeRow) -> str:
-    """Derive the sidebar label from the derived plaintext excerpt.
+    """Derive the sidebar label (title-is-content).
 
-    The store derives ``content_plain`` when content ops apply (and on
-    snapshot restore), so the sidebar needs no AST walk; the renderer's
-    plaintext stays the fallback for rows that predate the excerpt (or carry
-    legacy plaintext). Empty content renders as "Untitled".
+    Port of the web ``deriveDisplayName``: a node's title IS its content —
+    the label is the content excerpt (date labels in the YYYYMMDD shape
+    format as YYYY/MM(/DD)). The store derives ``content_plain`` when content
+    ops apply (and on snapshot restore), so the sidebar needs no AST walk;
+    the renderer's plaintext stays the fallback for rows that predate the
+    excerpt (or carry legacy plaintext). Empty content renders as "Untitled".
     """
     if row.content_plain:
-        return row.content_plain.strip() or "Untitled"
+        return derive_display_name([{"type": "text", "text": row.content_plain}], row.class_ids) or "Untitled"
     if not row.content:
         return "Untitled"
-    first_line = ast_to_plaintext(row.content).split("\n", 1)[0].strip()
-    return first_line or "Untitled"
+    return derive_display_name(parse_content_ast(row.content), row.class_ids) or "Untitled"
 
 
 class NodeTreeSidebar(Gtk.Box):

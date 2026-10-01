@@ -13,6 +13,7 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 import pytest
@@ -43,6 +44,13 @@ WS = "ws-a"
 ACTOR_A = "actor-a"
 ACTOR_B = "actor-b"
 BASE_TS = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def uid(label: str) -> str:
+    """Deterministic test UUID — the strict payload validator requires UUID shapes."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    return str(uuid5(NAMESPACE_URL, f"notees-gtk/test/{label}"))
 
 
 def make_env(
@@ -214,7 +222,7 @@ class TestPush:
     def test_push_drains_outbox_in_chunks_of_100(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         for i in range(150):
-            store.enqueue(create_env(f"n{i}"))
+            store.enqueue(create_env(str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n{i}"))))
         result = make_engine(relay, store).push()
         assert result == PushResult(sent=150, quarantined=0)
         assert [len(call) for call in relay.batch_calls] == [100, 50]
@@ -222,15 +230,15 @@ class TestPush:
 
     def test_pushed_chunk_is_applied_to_local_cache(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        store.enqueue(create_env("n1", content="hello", hlc=(2, 0)))
+        store.enqueue(create_env(uid("n1"), content="hello", hlc=(2, 0)))
         result = make_engine(relay, store).push()
         assert result.sent == 1
-        row = store.node(WS, "n1")
+        row = store.node(WS, uid("n1"))
         assert row is not None and row.content_plain == "hello"
 
     def test_whole_chunk_ack_despite_saved_ids_omitting_duplicates(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        env = create_env("n1")
+        env = create_env(uid("n1"))
         store.enqueue(env)
         relay._ops[env.id] = (1, env)  # server already stored it → saved_ids omits it
         result = make_engine(relay, store).push()
@@ -240,7 +248,7 @@ class TestPush:
     def test_quarantined_chunk_is_parked_and_never_retried(self, store: LocalStore, tmp_path: Path) -> None:
         relay = FakeRelayClient(WS)
         relay.batch_script = [QuarantinedError("unknown op type", status=422)]
-        store.enqueue(create_env("n1"))
+        store.enqueue(create_env(uid("n1")))
         engine = make_engine(relay, store)
         assert engine.push() == PushResult(sent=0, quarantined=1)
         assert engine.push() == PushResult(sent=0, quarantined=0)
@@ -254,7 +262,7 @@ class TestPush:
         relay = FakeRelayClient(WS)
         relay.batch_script = [QuarantinedError("bad chunk", status=422)]
         for i in range(101):
-            store.enqueue(create_env(f"n{i}"))
+            store.enqueue(create_env(str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n{i}"))))
         result = make_engine(relay, store).push()
         assert result == PushResult(sent=1, quarantined=100)
         assert [len(call) for call in relay.batch_calls] == [100, 1]
@@ -263,8 +271,8 @@ class TestPush:
     def test_auth_failures_abort_push_and_keep_outbox(self, store: LocalStore, failure: BaseException) -> None:
         relay = FakeRelayClient(WS)
         relay.batch_script = [failure]
-        store.enqueue(create_env("n1"))
-        store.enqueue(create_env("n2"))
+        store.enqueue(create_env(uid("n1")))
+        store.enqueue(create_env(uid("n2")))
         engine = make_engine(relay, store)
         with pytest.raises(type(failure)):
             engine.push()
@@ -275,7 +283,7 @@ class TestPush:
         relay = FakeRelayClient(WS)
         relay.batch_script = [NetworkError("boom")] * 5
         sleeper = RecordingSleeper()
-        store.enqueue(create_env("n1"))
+        store.enqueue(create_env(uid("n1")))
         result = make_engine(relay, store, sleeper=sleeper).push()
         assert result == PushResult(sent=0, quarantined=0)
         assert sleeper.durations == [5, 15, 60, 300]
@@ -286,7 +294,7 @@ class TestPush:
         relay = FakeRelayClient(WS)
         relay.batch_script = [NetworkError("x"), ServerError("y", status=500)]
         sleeper = RecordingSleeper()
-        store.enqueue(create_env("n1"))
+        store.enqueue(create_env(uid("n1")))
         result = make_engine(relay, store, sleeper=sleeper).push()
         assert result == PushResult(sent=1, quarantined=0)
         assert sleeper.durations == [5, 15]
@@ -296,7 +304,7 @@ class TestPush:
         relay = FakeRelayClient(WS)
         relay.batch_script = [RateLimitedError("slow", retry_after=2.5), RateLimitedError("slow")]
         sleeper = RecordingSleeper()
-        store.enqueue(create_env("n1"))
+        store.enqueue(create_env(uid("n1")))
         result = make_engine(relay, store, sleeper=sleeper).push()
         assert result.sent == 1
         assert sleeper.durations == [2.5, 15]
@@ -305,7 +313,7 @@ class TestPush:
         relay = FakeRelayClient(WS)
         relay.batch_script = [NetworkError("x"), AuthenticationError("expired")]
         sleeper = RecordingSleeper()
-        store.enqueue(create_env("n1"))
+        store.enqueue(create_env(uid("n1")))
         engine = make_engine(relay, store, sleeper=sleeper)
         with pytest.raises(AuthenticationError):
             engine.push()
@@ -315,7 +323,7 @@ class TestPush:
 class TestPull:
     def test_pull_pages_until_final_next_after_seq_is_adopted(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        relay.receive_remote(*(create_env(f"n{i}") for i in range(250)))
+        relay.receive_remote(*(create_env(str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n{i}"))) for i in range(250)))
         result = make_engine(relay, store, page_size=100).pull()
         assert result.applied == 250
         assert result.cursor == 250
@@ -324,7 +332,7 @@ class TestPull:
 
     def test_pull_continues_from_persisted_cursor(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        relay.receive_remote(create_env("n1"), create_env("n2"))
+        relay.receive_remote(create_env(uid("n1")), create_env(uid("n2")))
         store.set_cursor(WS, 1)
         result = make_engine(relay, store).pull()
         assert result.applied == 1
@@ -333,23 +341,23 @@ class TestPull:
 
     def test_pull_never_double_applies_overlap_with_live_apply(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        env = create_env("n1", content="hi", hlc=(2, 0))
+        env = create_env(uid("n1"), content="hi", hlc=(2, 0))
         relay.receive_remote(env)
         assert store.apply_remote(env) is True  # live frame arrives first
         result = make_engine(relay, store).pull()
         assert result.applied == 0  # catch-up overlap deduped by op id
         assert len(store.nodes(WS)) == 1
-        assert store.node(WS, "n1").content_plain == "hi"
+        assert store.node(WS, uid("n1")).content_plain == "hi"
 
     def test_pull_applies_newest_content_and_skips_stale_lww(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         # Server log order (ascending seq) but the HLC clocks are out of order.
-        relay.receive_remote(create_env("n1", content="first", hlc=(1, 0)))
-        relay.receive_remote(content_env("n1", "newer", hlc=(20, 0)))
-        relay.receive_remote(content_env("n1", "stale", hlc=(10, 0)))
+        relay.receive_remote(create_env(uid("n1"), content="first", hlc=(1, 0)))
+        relay.receive_remote(content_env(uid("n1"), "newer", hlc=(20, 0)))
+        relay.receive_remote(content_env(uid("n1"), "stale", hlc=(10, 0)))
         result = make_engine(relay, store).pull()
         assert result.applied == 2  # create + newer content; stale skipped
-        row = store.node(WS, "n1")
+        row = store.node(WS, uid("n1"))
         assert row is not None and row.content_plain == "newer"
 
     def test_pull_empty_page_keeps_cursor(self, store: LocalStore) -> None:
@@ -369,14 +377,14 @@ class TestSyncConvergence:
         engine_a = make_engine(relay, store_a, actor=ACTOR_A)
         engine_b = make_engine(relay, store_b, actor=ACTOR_B)
 
-        store_a.enqueue(create_env("root"))
-        store_a.enqueue(create_env("child", node_type="block", parent_id="root"))
+        store_a.enqueue(create_env(uid("root")))
+        store_a.enqueue(create_env(uid("child"), node_type="block", parent_id=uid("root")))
         store_a.enqueue(
             make_env(
                 "object.update",
-                {"objectId": "root", "icon": "📄", "contentAst": [{"type": "text", "text": "Hello"}]},
+                {"objectId": uid("root"), "icon": "📄", "contentAst": [{"type": "text", "text": "Hello"}]},
                 hlc=(5, 0),
-                affected=("root",),
+                affected=(uid("root"),),
             )
         )
         assert engine_a.push() == PushResult(sent=3, quarantined=0)
@@ -384,20 +392,20 @@ class TestSyncConvergence:
         pulled = engine_b.pull()
         assert pulled.applied == 3
         assert pulled.cursor == 3
-        assert store_b.node(WS, "root") is not None and store_b.node(WS, "root").icon == "📄"
-        assert store_b.node(WS, "child") is not None and store_b.node(WS, "child").parent_id == "root"
-        assert store_b.node(WS, "root").content_plain == "Hello"
+        assert store_b.node(WS, uid("root")) is not None and store_b.node(WS, uid("root")).icon == "📄"
+        assert store_b.node(WS, uid("child")) is not None and store_b.node(WS, uid("child")).parent_id == uid("root")
+        assert store_b.node(WS, uid("root")).content_plain == "Hello"
 
         # The catch-up echo of A's own pushed ops must not double-apply anywhere.
         assert engine_a.pull().applied == 0
         assert engine_b.pull().applied == 0
 
         # B edits; both sides converge after one sync round each.
-        store_b.enqueue(content_env("root", "v2", hlc=(9, 0), actor=ACTOR_B))
+        store_b.enqueue(content_env(uid("root"), "v2", hlc=(9, 0), actor=ACTOR_B))
         engine_b.sync()
         engine_a.sync()
-        row_a = store_a.node(WS, "root")
-        row_b = store_b.node(WS, "root")
+        row_a = store_a.node(WS, uid("root"))
+        row_b = store_b.node(WS, uid("root"))
         assert row_a is not None and row_a.content_plain == "v2"
         assert row_a == row_b
 
@@ -405,13 +413,13 @@ class TestSyncConvergence:
 class TestSync:
     def test_sync_pushes_then_pulls(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
-        relay.receive_remote(create_env("theirs", actor=ACTOR_B))
-        relay.receive_remote(content_env("theirs", "remote text", hlc=(3, 0), actor=ACTOR_B))
-        store.enqueue(create_env("mine"))
+        relay.receive_remote(create_env(uid("theirs"), actor=ACTOR_B))
+        relay.receive_remote(content_env(uid("theirs"), "remote text", hlc=(3, 0), actor=ACTOR_B))
+        store.enqueue(create_env(uid("mine")))
         make_engine(relay, store).sync()
         assert store.pending_outbox(WS) == []
-        assert store.node(WS, "mine") is not None
-        row = store.node(WS, "theirs")
+        assert store.node(WS, uid("mine")) is not None
+        row = store.node(WS, uid("theirs"))
         assert row is not None and row.content_plain == "remote text"
         assert store.cursor(WS) == 3
 
@@ -420,25 +428,25 @@ class TestSnapshotRestore:
     def test_restore_epoch_change_wipes_cursor_and_cache(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.restore_epoch = 3
-        store.apply_remote(create_env("old"))
+        store.apply_remote(create_env(uid("old")))
         store.set_cursor(WS, 12)
         store.set_restore_epoch(WS, 0)
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is False  # no snapshot staged
         assert store.cursor(WS) == 0
-        assert store.node(WS, "old") is None
+        assert store.node(WS, uid("old")) is None
         assert store.stored_restore_epoch(WS) == 3
 
     def test_newer_snapshot_restores_nodes_and_sets_cursor(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
             [
-                {"id": "n1", "workspace_id": WS, "node_type": "page", "content": "one", "updated_at": None},
+                {"id": uid("n1"), "workspace_id": WS, "node_type": "page", "content": "one", "updated_at": None},
                 {
-                    "id": "n2",
+                    "id": uid("n2"),
                     "workspace_id": WS,
                     "node_type": "block",
-                    "parent_id": "n1",
+                    "parent_id": uid("n1"),
                     "content": "two",
                     "updated_at": None,
                 },
@@ -448,8 +456,8 @@ class TestSnapshotRestore:
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is True
         rows = store.nodes(WS, include_inactive=True)
-        assert sorted(row.id for row in rows) == ["n1", "n2"]
-        assert store.node(WS, "n1").content == "one"
+        assert sorted(row.id for row in rows) == [uid("n1"), uid("n2")]
+        assert store.node(WS, uid("n1")).content == "one"
         assert store.cursor(WS) == 42
         # Second call: snapshot no longer newer than the cursor → no re-download.
         assert engine.maybe_restore_snapshot() is False
@@ -459,15 +467,15 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.restore_epoch = 7
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": "fresh", "workspace_id": WS, "node_type": "page", "content": "restored", "updated_at": None}]
+            [{"id": uid("fresh"), "workspace_id": WS, "node_type": "page", "content": "restored", "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
-        store.apply_remote(create_env("stale-local"))
+        store.apply_remote(create_env(uid("stale-local")))
         store.set_cursor(WS, 100)
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is True
-        assert store.node(WS, "stale-local") is None
-        row = store.node(WS, "fresh")
+        assert store.node(WS, uid("stale-local")) is None
+        row = store.node(WS, uid("fresh"))
         assert row is not None and row.content == "restored"
         assert store.cursor(WS) == 42
         assert store.stored_restore_epoch(WS) == 7
@@ -476,18 +484,18 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = b"this is not a sqlite database"
         relay.snapshot_up_to_seq = 9
-        store.apply_remote(create_env("local", content="kept", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("local"), content="kept", hlc=(2, 0)))
         store.set_cursor(WS, 5)
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is False
-        row = store.node(WS, "local")
+        row = store.node(WS, uid("local"))
         assert row is not None and row.content_plain == "kept"
         assert store.cursor(WS) == 5
 
     def test_snapshot_older_than_cursor_is_skipped(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": "n1", "workspace_id": WS, "node_type": "page", "updated_at": None}]
+            [{"id": uid("n1"), "workspace_id": WS, "node_type": "page", "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
         store.set_cursor(WS, 100)
@@ -507,7 +515,7 @@ class TestClockMerge:
     def test_pull_advances_shared_clock_past_received_hlc(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         future = (10**15, 0)  # far-future server clock, ahead of any wall time
-        relay.receive_remote(create_env("remote-node", hlc=future))
+        relay.receive_remote(create_env(uid("remote-node"), hlc=future))
         clock = Clock("device-under-test")
         make_engine(relay, store, clock=clock).pull()
         stamped = new_envelope(
@@ -515,7 +523,7 @@ class TestClockMerge:
             actor_id=ACTOR_A,
             device_id="device-under-test",
             op_type="object.update",
-            payload={"objectId": "remote-node", "contentAst": []},
+            payload={"objectId": uid("remote-node"), "contentAst": []},
             clock=clock,
         )
         assert (stamped.hlc.physical, stamped.hlc.logical) > future
@@ -523,8 +531,8 @@ class TestClockMerge:
     def test_pull_merges_across_pages(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.receive_remote(
-            create_env("a", hlc=(10**15, 0)),
-            create_env("b", hlc=(10**15, 5)),
+            create_env(uid("a"), hlc=(10**15, 0)),
+            create_env(uid("b"), hlc=(10**15, 5)),
         )
         clock = Clock("device-under-test")
         make_engine(relay, store, clock=clock, page_size=1).pull()
@@ -533,7 +541,7 @@ class TestClockMerge:
             actor_id=ACTOR_A,
             device_id="device-under-test",
             op_type="object.update",
-            payload={"objectId": "a", "contentAst": []},
+            payload={"objectId": uid("a"), "contentAst": []},
             clock=clock,
         )
         assert (stamped.hlc.physical, stamped.hlc.logical) > (10**15, 5)
@@ -555,7 +563,7 @@ class _NoProgressRelay(FakeRelayClient):
     def catch_up(self, workspace_id: str, after_seq: int = 0, limit: int = 1000) -> CatchUpPaginatedResponse:
         self.catch_up_calls.append(after_seq)
         return CatchUpPaginatedResponse(
-            envelopes=[create_env("stuck")],
+            envelopes=[create_env(uid("stuck"))],
             next_after_seq=after_seq,
             has_more=True,
         )
@@ -593,15 +601,15 @@ class TestRealtime:
     def test_start_realtime_applies_remote_ops_frame_end_to_end(self, store: LocalStore, tmp_path: Path) -> None:
         def on_connect(conn: object, _index: int) -> None:
             conn.send(json.dumps(_hello(0, 0)))
-            conn.send(json.dumps(_ops_frame(create_env("live-node", content="live"))))
+            conn.send(json.dumps(_ops_frame(create_env(uid("live-node"), content="live"))))
 
         with WsRelayStub(on_connect=on_connect) as stub:
             relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
             engine = make_engine(relay, store)
             engine.start_realtime()
             try:
-                assert wait_until(lambda: store.node(WS, "live-node") is not None)
-                assert store.node(WS, "live-node").content_plain == "live"
+                assert wait_until(lambda: store.node(WS, uid("live-node")) is not None)
+                assert store.node(WS, uid("live-node")).content_plain == "live"
             finally:
                 engine.stop_realtime()
             assert stub.close_codes == [1000]
@@ -612,12 +620,12 @@ class TestRealtime:
 
         with WsRelayStub(on_connect=on_connect) as stub:
             relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
-            relay.receive_remote(create_env("pulled-node", content="via catch-up"))
+            relay.receive_remote(create_env(uid("pulled-node"), content="via catch-up"))
             engine = make_engine(relay, store)
             engine.start_realtime()
             try:
-                assert wait_until(lambda: store.node(WS, "pulled-node") is not None)
-                assert store.node(WS, "pulled-node").content_plain == "via catch-up"
+                assert wait_until(lambda: store.node(WS, uid("pulled-node")) is not None)
+                assert store.node(WS, uid("pulled-node")).content_plain == "via catch-up"
                 assert relay.catch_up_calls == [0]  # the pull ran from the stored cursor
             finally:
                 engine.stop_realtime()
@@ -629,14 +637,14 @@ class TestRealtime:
         with WsRelayStub(on_connect=on_connect) as stub:
             relay = FakeRelayClient(WS, base_url=f"http://127.0.0.1:{stub.port}", api_key="k")
             relay.restore_epoch = 7  # consistent with the hello the stub sends
-            relay.receive_remote(create_env("post-restore-node"))
-            store.apply_remote(create_env("stale-local"))
+            relay.receive_remote(create_env(uid("post-restore-node")))
+            store.apply_remote(create_env(uid("stale-local")))
             store.set_restore_epoch(WS, 0)
             engine = make_engine(relay, store)
             engine.start_realtime()
             try:
-                assert wait_until(lambda: store.node(WS, "post-restore-node") is not None)
-                assert store.node(WS, "stale-local") is None  # wiped
+                assert wait_until(lambda: store.node(WS, uid("post-restore-node")) is not None)
+                assert store.node(WS, uid("stale-local")) is None  # wiped
                 assert store.stored_restore_epoch(WS) == 7
                 assert engine.realtime_restore_epoch == 7
             finally:
@@ -664,12 +672,12 @@ class TestRealtime:
 
         with WsRelayStub(on_connect=on_connect) as stub:
             relay = RtRelay(WS, stub)
-            shared = create_env("overlap-node", content="once")
+            shared = create_env(uid("overlap-node"), content="once")
             relay.receive_remote(shared)
             engine = make_engine(relay, store)
             engine.start_realtime()
             try:
-                assert wait_until(lambda: store.node(WS, "overlap-node") is not None)
+                assert wait_until(lambda: store.node(WS, uid("overlap-node")) is not None)
                 assert wait_until(lambda: relay.pushed_during_pull)
                 assert wait_until(lambda: not engine._pull_in_flight)  # pull + drain finished
                 with sqlite3.connect(tmp_path / "store.db") as raw:
@@ -696,13 +704,13 @@ class TestRealtime:
         """A catch-up page advertising a new restore epoch wipes and restarts
         from seq 0 (HTTP path — no realtime needed)."""
         relay = FakeRelayClient(WS)
-        relay.receive_remote(create_env("post-epoch-node"))
+        relay.receive_remote(create_env(uid("post-epoch-node")))
         relay.restore_epoch = 5
-        store.apply_remote(create_env("stale-local"))
+        store.apply_remote(create_env(uid("stale-local")))
         store.set_restore_epoch(WS, 0)
         store.set_cursor(WS, 9)
         result = make_engine(relay, store).pull()
-        assert store.node(WS, "stale-local") is None  # wiped
-        assert store.node(WS, "post-epoch-node") is not None  # re-pulled from 0
+        assert store.node(WS, uid("stale-local")) is None  # wiped
+        assert store.node(WS, uid("post-epoch-node")) is not None  # re-pulled from 0
         assert store.stored_restore_epoch(WS) == 5
         assert result.cursor == 1

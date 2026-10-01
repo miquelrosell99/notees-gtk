@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 #: Verbatim copy of the server derived schema's ``node`` table
-#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo). A snapshot
+#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo, SCHEMA_VERSION 7). A snapshot
 #: blob is a serialized derived database, so snapshot fakes MUST be built from
 #: the real DDL — inventing a ``nodes``-plural table here once hid a restore
 #: bug that only surfaces against a real server.
@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS node (
         CHECK (node_type IN ('page', 'block', 'class')),
     parent_id TEXT REFERENCES node(id),
     class_ids TEXT NOT NULL DEFAULT '[]',
+    class_order TEXT NOT NULL DEFAULT '[]',
+    tag_ids TEXT NOT NULL DEFAULT '[]',
     name TEXT,
     content TEXT NOT NULL DEFAULT '[]',
     icon TEXT,

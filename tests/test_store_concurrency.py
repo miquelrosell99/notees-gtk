@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import PROTOCOL_VERSION, RelayEnvelope
@@ -52,11 +53,19 @@ def test_concurrent_enqueue_and_apply(tmp_path: Path) -> None:
     store = LocalStore(tmp_path / "threads.db")
 
     enqueue_envs = [
-        make_envelope("object.create", {"objectId": f"n-{index}", "nodeType": "page"}, logical=index)
+        make_envelope(
+            "object.create",
+            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n-{index}")), "nodeType": "page"},
+            logical=index,
+        )
         for index in range(ENQUEUE_THREADS * ENQUEUES_PER_THREAD)
     ]
     apply_envs = [
-        make_envelope("object.create", {"objectId": f"a-{index}", "nodeType": "page"}, logical=10_000 + index)
+        make_envelope(
+            "object.create",
+            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/a-{index}")), "nodeType": "page"},
+            logical=10_000 + index,
+        )
         for index in range(APPLIED_NODES)
     ]
 

@@ -236,8 +236,16 @@ def _store_dump(store: LocalStore) -> dict[str, list[tuple[str, ...]]]:
 def _seed_device_a(device: Device) -> None:
     """The shared workspace: classes + extends, a page with two blocks (one
     carrying a mention token), class membership, and a property value."""
-    device.produce("class.create", {"classId": CLASS_SOURCE, "name": "Source"}, affected=(CLASS_SOURCE,))
-    device.produce("class.create", {"classId": CLASS_ANNOTATED, "name": "Annotated"}, affected=(CLASS_ANNOTATED,))
+    device.produce(
+        "class.create",
+        {"classId": CLASS_SOURCE, "contentAst": [{"type": "text", "text": "Source"}]},
+        affected=(CLASS_SOURCE,),
+    )
+    device.produce(
+        "class.create",
+        {"classId": CLASS_ANNOTATED, "contentAst": [{"type": "text", "text": "Annotated"}]},
+        affected=(CLASS_ANNOTATED,),
+    )
     device.produce(
         "class.setExtends",
         {"classId": CLASS_ANNOTATED, "parentClassIds": [CLASS_SOURCE]},
@@ -245,12 +253,23 @@ def _seed_device_a(device: Device) -> None:
     )
     device.produce(
         "object.create",
-        {"objectId": PAGE_MAIN, "nodeType": "page", "name": "Live Page", "classIds": [CLASS_SOURCE], "parentId": None},
+        {
+            "objectId": PAGE_MAIN,
+            "nodeType": "page",
+            "contentAst": [{"type": "text", "text": "Live Page"}],
+            "classIds": [CLASS_SOURCE],
+            "parentId": None,
+        },
         affected=(PAGE_MAIN,),
     )
     device.produce(
         "object.create",
-        {"objectId": PAGE_TARGET, "nodeType": "page", "name": "Target Page", "parentId": None},
+        {
+            "objectId": PAGE_TARGET,
+            "nodeType": "page",
+            "contentAst": [{"type": "text", "text": "Target Page"}],
+            "parentId": None,
+        },
         affected=(PAGE_TARGET,),
     )
     device.produce(
@@ -310,7 +329,7 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     assert _store_dump(device_a.store) == _store_dump(device_b.store)
     page_row = device_b.store.node(WORKSPACE_ID, PAGE_MAIN)
     assert page_row is not None
-    assert page_row.name == "Live Page"
+    assert page_row.content_plain == "Live Page"  # title-is-content
     assert page_row.class_ids == (CLASS_SOURCE,)
     block_one = device_b.store.node(WORKSPACE_ID, BLOCK_ONE)
     assert block_one is not None and block_one.parent_id == PAGE_MAIN
@@ -319,7 +338,7 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     # --- 4: the server's object API agrees — three-way equality. ---
     main = device_a.client._get_json(f"/api/v1/objects/{PAGE_MAIN}")["object"]
     assert main["nodeType"] == "page"
-    assert main["name"] == "Live Page"
+    assert main["name"] == "Live Page"  # server object API still exposes the derived name
     assert main["classIds"] == [CLASS_SOURCE]
     assert main["parentId"] is None
     block = device_a.client._get_json(f"/api/v1/objects/{BLOCK_ONE}")["object"]
@@ -334,7 +353,7 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     page_ids = {entry["id"] for entry in pages}
     assert {PAGE_MAIN, PAGE_TARGET} <= page_ids
     annotated = device_a.client._get_json(f"/api/v1/classes/{CLASS_ANNOTATED}")["class"]
-    assert annotated["name"] == "Annotated"
+    assert annotated["name"] == "Annotated"  # registry name cache = content excerpt
     assert annotated["parentClassIds"] == [CLASS_SOURCE]
     # classIds OR-Set membership: PAGE_MAIN joined Source (Annotated has none).
     source = device_a.client._get_json(f"/api/v1/classes/{CLASS_SOURCE}")
@@ -394,10 +413,20 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
             "options": [{"id": "low", "label": "low"}, {"id": "medium", "label": "medium"}],
         },
     )
-    device_a.produce("class.create", {"classId": CLASS_KIND, "name": "Kind"}, affected=(CLASS_KIND,))
+    device_a.produce(
+        "class.create",
+        {"classId": CLASS_KIND, "contentAst": [{"type": "text", "text": "Kind"}]},
+        affected=(CLASS_KIND,),
+    )
     device_a.produce(
         "object.create",
-        {"objectId": PAGE_PROPS, "nodeType": "page", "name": "Props Page", "classIds": [CLASS_KIND], "parentId": None},
+        {
+            "objectId": PAGE_PROPS,
+            "nodeType": "page",
+            "contentAst": [{"type": "text", "text": "Props Page"}],
+            "classIds": [CLASS_KIND],
+            "parentId": None,
+        },
         affected=(PAGE_PROPS,),
     )
     device_a.produce(
@@ -405,7 +434,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
         {
             "objectId": PAGE_DEFAULTS,
             "nodeType": "page",
-            "name": "Defaults Page",
+            "contentAst": [{"type": "text", "text": "Defaults Page"}],
             "classIds": [CLASS_KIND],
             "parentId": None,
         },

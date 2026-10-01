@@ -1,5 +1,5 @@
 {
-  "comment": "Acceptance scenario formerly covered by relation-delete.json: the association dies with its word. The marked word was deleted from the block; the edge index removes the derived edge with this content op. Honest lifecycle (01-knowledge-model.md §9).",
+  "comment": "Acceptance scenario formerly covered by relation-delete.json: the association dies with its word. The marked word was deleted from the block; the edge index removes the derived edge with this content op. Honest lifecycle (01-knowledge-model.md \u00a79).",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000102",
@@ -8,14 +8,22 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",
       "client": "web",
-      "hlc": { "physical": 1727200003000, "logical": 1 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000010"],
+      "hlc": {
+        "physical": 1727200003000,
+        "logical": 1
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000010"
+      ],
       "opType": "object.update",
       "timestamp": "2026-09-24T12:00:03.000Z",
       "payload": {
-        "objectId": "0192a000-0000-7000-8000-000000000010",
+        "objectId": "0192a000-0000-7000-8000-000000000020",
         "contentAst": [
-          { "type": "text", "text": "Kuhn cites earlier work." }
+          {
+            "type": "text",
+            "text": "Kuhn cites earlier work."
+          }
         ]
       }
     }

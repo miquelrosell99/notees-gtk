@@ -10,6 +10,7 @@ from __future__ import annotations
 
 __all__ = [
     "CycleError",
+    "EnvelopeValidationError",
     "MoveGuardError",
     "NotFoundError",
     "PlacementError",
@@ -24,6 +25,14 @@ class StoreError(Exception):
     def __init__(self, message: str, op_type: str | None = None) -> None:
         self.op_type = op_type
         super().__init__(message)
+
+
+class EnvelopeValidationError(StoreError):
+    """An envelope payload deviates from the op's strict wire schema.
+
+    The apply-time half of the 422 ``validation_failed`` gate (the web
+    store's ``validateEnvelope``): the sync engine treats it like any other
+    guard violation — log, skip, keep pulling."""
 
 
 class CycleError(StoreError):

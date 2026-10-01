@@ -36,6 +36,7 @@ REPLAY_EXCLUDED = {"class-extends-cycle.json"}
 WS = "0192a000-0000-7000-8000-000000000001"
 NODE_PAGE = "0192a000-0000-7000-8000-000000000010"
 NODE_BOOK = "0192a000-0000-7000-8000-000000000011"
+NODE_BLOCK = "0192a000-0000-7000-8000-000000000020"  # block under NODE_PAGE (typed-link fixtures)
 PROP_SCHEMA = "0192a000-0000-7000-8000-0000000000a1"
 BOOK_CLASS = "00000000-0000-0000-0001-000000000025"
 
@@ -74,10 +75,16 @@ def raw(store: LocalStore, sql: str, params: tuple[Any, ...] = ()) -> list[tuple
 
 
 def base_store(tmp_path: Path) -> LocalStore:
-    """The monorepo tests seed two pages before replaying most fixtures."""
+    """The monorepo tests seed two pages (plus the typed-link block) before
+    replaying most fixtures."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     instance = LocalStore(tmp_path / "base.db")
-    for node_id, physical in ((NODE_PAGE, 1727200000000), (NODE_BOOK, 1727200001000)):
+    seeds = [
+        ({"objectId": NODE_PAGE, "nodeType": "page", "classIds": []}, 1727200000000),
+        ({"objectId": NODE_BOOK, "nodeType": "page", "classIds": []}, 1727200001000),
+        ({"objectId": NODE_BLOCK, "nodeType": "block", "parentId": NODE_PAGE}, 1727200000500),
+    ]
+    for payload, physical in seeds:
         envelope = RelayEnvelope.model_validate(
             {
                 "protocolVersion": 2,
@@ -87,7 +94,7 @@ def base_store(tmp_path: Path) -> LocalStore:
                 "hlc": {"physical": physical, "logical": 0},
                 "opType": "object.create",
                 "timestamp": "2026-09-24T12:00:00.000Z",
-                "payload": {"objectId": node_id, "nodeType": "page", "classIds": []},
+                "payload": payload,
             }
         )
         assert instance.apply_remote(envelope) is True
@@ -95,14 +102,17 @@ def base_store(tmp_path: Path) -> LocalStore:
 
 
 class TestObjectCreateFixtures:
-    def test_pages_land_with_names_and_or_set_class_ids(self, store: LocalStore) -> None:
+    def test_pages_land_with_content_and_or_set_class_ids(self, store: LocalStore) -> None:
         for envelope in load_fixture("envelope-minimal.json") + load_fixture("object-create.json"):
             assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
         page = store.node(WS, NODE_PAGE)
         book = store.node(WS, NODE_BOOK)
         assert page is not None and page.node_type == "page"
         assert book is not None and book.node_type == "page"
-        assert book.name == "The Structure of Scientific Revolutions"
+        # Title-is-content: the fixture's title rides as a text token of the
+        # node's content (no name field on the wire).
+        assert book.content == json.dumps([{"type": "text", "text": "The Structure of Scientific Revolutions"}])
+        assert book.content_plain == "The Structure of Scientific Revolutions"
         # classIds seed the OR-Set membership, projected into node.class_ids.
         assert book.class_ids == (BOOK_CLASS,)
 
@@ -139,9 +149,9 @@ class TestTypedLinkFixtures:
         for name in ("typed-link-mark.json", "typed-link-mark-deleted.json"):
             for envelope in load_fixture(name):
                 assert instance.apply_remote(RelayEnvelope.model_validate(envelope)) is True
-        content = json.loads(instance.node(WS, NODE_PAGE).content or "[]")
+        content = json.loads(instance.node(WS, NODE_BLOCK).content or "[]")
         assert content == [{"type": "text", "text": "Kuhn cites earlier work."}]
-        assert instance.node(WS, NODE_PAGE).content_plain == "Kuhn cites earlier work."
+        assert instance.node(WS, NODE_BLOCK).content_plain == "Kuhn cites earlier work."
         instance.close()
 
     def test_content_updates_converge_regardless_of_order(self, tmp_path: Path) -> None:
@@ -153,8 +163,8 @@ class TestTypedLinkFixtures:
         second = base_store(tmp_path / "second")
         second.apply_remote(deleted)
         second.apply_remote(mark)
-        assert first.node(WS, NODE_PAGE).content == second.node(WS, NODE_PAGE).content
-        assert json.loads(first.node(WS, NODE_PAGE).content or "[]") == [
+        assert first.node(WS, NODE_BLOCK).content == second.node(WS, NODE_BLOCK).content
+        assert json.loads(first.node(WS, NODE_BLOCK).content or "[]") == [
             {"type": "text", "text": "Kuhn cites earlier work."}
         ]
         first.close()
@@ -340,8 +350,10 @@ class TestReplayIdempotence:
         # dropped by row LWW on first replay — convergence, not a bug.
         for envelope in envelopes:
             store.apply_remote(envelope)
-        content = json.loads(store.node(WS, NODE_PAGE).content or "[]")
-        assert content == [{"type": "text", "text": "Kuhn cites earlier work."}]
+        # Sanity: the move fixture's subtree landed (the typed-link fixture
+        # updates lose the row LWW to object-move's newer HLCs here — the
+        # per-fixture tests cover their own outcomes).
+        assert store.node(WS, MOVE_C).parent_id == MOVE_A
         before = raw(store, "SELECT id, content, class_ids, name FROM nodes ORDER BY id")
         assert [store.apply_remote(envelope) for envelope in envelopes] == [False] * len(envelopes)
         assert raw(store, "SELECT id, content, class_ids, name FROM nodes ORDER BY id") == before

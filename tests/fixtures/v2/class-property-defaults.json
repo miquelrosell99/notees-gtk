@@ -1,5 +1,5 @@
 {
-  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings — the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
+  "comment": "Class properties \u2014 bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings \u2014 the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000111",
@@ -8,7 +8,10 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011000, "logical": 0 },
+      "hlc": {
+        "physical": 1727200011000,
+        "logical": 0
+      },
       "affectedNodeIds": [],
       "opType": "propertySchema.create",
       "timestamp": "2026-09-24T12:00:11.000Z",
@@ -19,9 +22,18 @@
         "multi": false,
         "scope": "global",
         "options": [
-          { "id": "low", "label": "low" },
-          { "id": "medium", "label": "medium" },
-          { "id": "high", "label": "high" }
+          {
+            "id": "low",
+            "label": "low"
+          },
+          {
+            "id": "medium",
+            "label": "medium"
+          },
+          {
+            "id": "high",
+            "label": "high"
+          }
         ]
       }
     },
@@ -32,13 +44,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011100, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "hlc": {
+        "physical": 1727200011100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000302"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:11.100Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000302",
-        "name": "Task"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Task"
+          }
+        ]
       }
     },
     {
@@ -48,13 +70,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011200, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000303"],
+      "hlc": {
+        "physical": 1727200011200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000303"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:11.200Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000303",
-        "name": "Project"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Project"
+          }
+        ]
       }
     },
     {
@@ -64,15 +96,27 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011300, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000304"],
+      "hlc": {
+        "physical": 1727200011300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000304"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:11.300Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000304",
         "nodeType": "page",
-        "name": "Ship v2",
-        "classIds": ["0192a000-0000-7000-8000-000000000302"]
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000302"
+        ],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Ship v2"
+          }
+        ]
       }
     },
     {
@@ -82,8 +126,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011400, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "hlc": {
+        "physical": 1727200011400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000302"
+      ],
       "opType": "class.property.set",
       "timestamp": "2026-09-24T12:00:11.400Z",
       "payload": {
@@ -100,8 +149,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",
       "client": "web",
-      "hlc": { "physical": 1727200011500, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000303"],
+      "hlc": {
+        "physical": 1727200011500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000303"
+      ],
       "opType": "class.property.set",
       "timestamp": "2026-09-24T12:00:11.500Z",
       "payload": {
@@ -118,14 +172,21 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",
       "client": "web",
-      "hlc": { "physical": 1727200011600, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000304"],
+      "hlc": {
+        "physical": 1727200011600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000304"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:11.600Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000304",
         "nodeType": "page",
-        "classIds": ["0192a000-0000-7000-8000-000000000303"]
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000303"
+        ]
       }
     },
     {
@@ -135,8 +196,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200011700, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000302"],
+      "hlc": {
+        "physical": 1727200011700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000302"
+      ],
       "opType": "class.property.unset",
       "timestamp": "2026-09-24T12:00:11.700Z",
       "payload": {

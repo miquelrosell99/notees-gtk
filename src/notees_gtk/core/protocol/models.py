@@ -24,6 +24,7 @@ from pydantic.alias_generators import to_camel
 from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.op_types import KNOWN_OP_TYPES
+from notees_gtk.core.protocol.payloads import validate_payload
 
 __all__ = [
     "MAX_ENVELOPE_SIZE_BYTES",
@@ -315,7 +316,9 @@ def new_envelope(
         op_type: Operation type; producers should stick to ``KNOWN_OP_TYPES``
             (unknown types are rejected at ingest with 422).
         payload: Operation payload; rejected when it exceeds the serialized
-            size limit (WIRE.md §3). May be the E2EE slot ``{"$e": ...}``.
+            size limit (WIRE.md §3) or deviates from the op's strict payload
+            schema (the relay's 422 ``validation_failed`` gate, client-side).
+            May be the E2EE slot ``{"$e": ...}`` (shape-checked only).
         clock: Local HLC clock; advanced with ``now_ms()`` to stamp causality.
         client: Optional provenance claim (``"gtk"`` by default).
         affected_node_ids: Node ids the operation touches.
@@ -327,6 +330,11 @@ def new_envelope(
     check_payload_size(payload)
     if op_type not in KNOWN_OP_TYPES:
         raise ValueError(f"Unknown op_type: {op_type!r}")
+    if "$e" not in payload:
+        # Producer-side half of the relay's 422 gate: the strict op payload
+        # schemas (op-types.ts parity) reject retired/renamed keys before the
+        # envelope can enter the outbox.
+        validate_payload(op_type, payload)
     data: dict[str, Any] = {
         "protocolVersion": PROTOCOL_VERSION,
         "workspaceId": workspace_id,

@@ -8,7 +8,10 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012000, "logical": 0 },
+      "hlc": {
+        "physical": 1727200012000,
+        "logical": 0
+      },
       "affectedNodeIds": [],
       "opType": "propertySchema.create",
       "timestamp": "2026-09-24T12:00:12.000Z",
@@ -27,7 +30,10 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012100, "logical": 0 },
+      "hlc": {
+        "physical": 1727200012100,
+        "logical": 0
+      },
       "affectedNodeIds": [],
       "opType": "propertySchema.create",
       "timestamp": "2026-09-24T12:00:12.100Z",
@@ -46,13 +52,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012200, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "hlc": {
+        "physical": 1727200012200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000412"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:12.200Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000412",
-        "name": "Task"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Task"
+          }
+        ]
       }
     },
     {
@@ -62,15 +78,27 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012300, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "hlc": {
+        "physical": 1727200012300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000413"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:12.300Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000413",
         "nodeType": "page",
-        "name": "Unassign demo",
-        "classIds": ["0192a000-0000-7000-8000-000000000412"]
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000412"
+        ],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Unassign demo"
+          }
+        ]
       }
     },
     {
@@ -80,8 +108,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012400, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "hlc": {
+        "physical": 1727200012400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000412"
+      ],
       "opType": "class.property.set",
       "timestamp": "2026-09-24T12:00:12.400Z",
       "payload": {
@@ -98,8 +131,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012500, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000412"],
+      "hlc": {
+        "physical": 1727200012500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000412"
+      ],
       "opType": "class.property.set",
       "timestamp": "2026-09-24T12:00:12.500Z",
       "payload": {
@@ -116,8 +154,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012600, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "hlc": {
+        "physical": 1727200012600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000413"
+      ],
       "opType": "property.set",
       "timestamp": "2026-09-24T12:00:12.600Z",
       "payload": {
@@ -134,8 +177,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012700, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "hlc": {
+        "physical": 1727200012700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000413"
+      ],
       "opType": "class.unassign",
       "timestamp": "2026-09-24T12:00:12.700Z",
       "payload": {
@@ -150,14 +198,21 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200012800, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000413"],
+      "hlc": {
+        "physical": 1727200012800,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000413"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:12.800Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000413",
         "nodeType": "page",
-        "classIds": ["0192a000-0000-7000-8000-000000000412"]
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000412"
+        ]
       }
     }
   ]

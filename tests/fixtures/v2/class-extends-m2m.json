@@ -1,5 +1,5 @@
 {
-  "comment": "Designed m2m class extends (01-knowledge-model.md §6; reconciles the SCHEMA.md deviation register entry): class.setExtends carries parentClassIds and REPLACES the class's full parent set (LWW slot by envelope HLC; idempotent via applied_envelope). C extends BOTH A and B — multiple inheritance; with A and B sharing the workspace vocabulary the hierarchy is a diamond. The class_hierarchy closure carries only set membership (self-row + ancestors, no order); diamond resolution (own binding -> shortest extends-path -> earliest-authored HLC) happens at read time in the bindings read model, so nothing extra is built for M1.",
+  "comment": "Designed m2m class extends (01-knowledge-model.md \u00a76; reconciles the SCHEMA.md deviation register entry): class.setExtends carries parentClassIds and REPLACES the class's full parent set (LWW slot by envelope HLC; idempotent via applied_envelope). C extends BOTH A and B \u2014 multiple inheritance; with A and B sharing the workspace vocabulary the hierarchy is a diamond. The class_hierarchy closure carries only set membership (self-row + ancestors, no order); diamond resolution (own binding -> shortest extends-path -> earliest-authored HLC) happens at read time in the bindings read model, so nothing extra is built for M1.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000105",
@@ -8,13 +8,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200006000, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000c5"],
+      "hlc": {
+        "physical": 1727200006000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000c5"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:06.000Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-0000000000c5",
-        "name": "Entity"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Entity"
+          }
+        ]
       }
     },
     {
@@ -24,13 +34,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200006100, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000c6"],
+      "hlc": {
+        "physical": 1727200006100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000c6"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:06.100Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-0000000000c6",
-        "name": "Source"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Source"
+          }
+        ]
       }
     },
     {
@@ -40,13 +60,23 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200006200, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000c7"],
+      "hlc": {
+        "physical": 1727200006200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000c7"
+      ],
       "opType": "class.create",
       "timestamp": "2026-09-24T12:00:06.200Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-0000000000c7",
-        "name": "Annotated Source"
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Annotated Source"
+          }
+        ]
       }
     },
     {
@@ -56,8 +86,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200006300, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-0000000000c7"],
+      "hlc": {
+        "physical": 1727200006300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000c7"
+      ],
       "opType": "class.setExtends",
       "timestamp": "2026-09-24T12:00:06.300Z",
       "payload": {

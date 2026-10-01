@@ -5,16 +5,27 @@
   "actorId": "0192a000-0000-7000-8000-000000000002",
   "deviceId": "test-device-laptop",
   "client": "web",
-  "hlc": { "physical": 1727200001000, "logical": 0 },
-  "affectedNodeIds": ["0192a000-0000-7000-8000-000000000011"],
+  "hlc": {
+    "physical": 1727200001000,
+    "logical": 0
+  },
+  "affectedNodeIds": [
+    "0192a000-0000-7000-8000-000000000011"
+  ],
   "opType": "object.create",
   "timestamp": "2026-09-24T12:00:01.000Z",
   "payload": {
     "objectId": "0192a000-0000-7000-8000-000000000011",
     "nodeType": "page",
-    "classIds": ["00000000-0000-0000-0001-000000000025"],
-    "name": "The Structure of Scientific Revolutions",
-    "contentAst": [],
+    "classIds": [
+      "00000000-0000-0000-0001-000000000025"
+    ],
+    "contentAst": [
+      {
+        "type": "text",
+        "text": "The Structure of Scientific Revolutions"
+      }
+    ],
     "parentId": null
   }
 }

@@ -4,10 +4,13 @@ Owns the offline-capable client cache: the relay outbox (pending/quarantined
 envelopes), the op-id dedupe log, the sync watermark (seq cursor +
 ``restore_epoch``), and the mirrored v2 node table with the applier semantics
 ported from v2 ``packages/store/src/appliers.ts``: row-level last-write-wins by
-``(hlc_physical, hlc_logical, actor_id)``, OR-Set class/collection membership,
-m2m class extends with an applier-maintained transitive closure (cycles fail
-loud), fractional child-order positions, property values with tombstones, and
-soft/permanent deletes with trash retention.
+``(hlc_physical, hlc_logical, actor_id)``, OR-Set class/tag/collection
+membership, user-defined class order (``class.reorder``, LWW-by-arrival),
+title-is-content (a node's title IS its content — no ``name`` writes; pages
+and classes carry text-only content), m2m class extends with an
+applier-maintained transitive closure (cycles fail loud), fractional
+child-order positions, property values with tombstones, and soft/permanent
+deletes with trash retention.
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -42,10 +45,16 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate
 
-from notees_gtk.core.protocol.content import parse_content_ast, plaintext_excerpt
+from notees_gtk.core.protocol.content import (
+    parse_content_ast,
+    plaintext_excerpt,
+    stringify_content_ast,
+)
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.protocol.payloads import validate_payload
 from notees_gtk.data.errors import (
     CycleError,
+    EnvelopeValidationError,
     MoveGuardError,
     NotFoundError,
     PlacementError,
@@ -57,7 +66,9 @@ __all__ = ["EffectiveProperty", "EffectivePropertySchema", "LocalStore", "NodeRo
 _log = logging.getLogger(__name__)
 
 #: Latest schema version applied to the database (see ``_MIGRATIONS``).
-SCHEMA_VERSION = 4
+#: v5 adds the tag OR-Set (web schema v5→v6 parity); v6 adds the per-node
+#: class order list (web schema v6→v7 parity).
+SCHEMA_VERSION = 6
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -72,12 +83,16 @@ _SNAPSHOT_TABLES = frozenset({"node"})
 #: v2 derived schema: same names, same polarity (``is_active`` is active on
 #: both sides now); ``updated_at`` falls back to an empty string literal and
 #: the LWW columns seed the row baseline when the snapshot carries them.
+#: ``tag_ids``/``class_order`` ride along when the snapshot was taken from a
+#: schema v6+/v7+ store (absent columns are skipped, the cache defaults win).
 _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "id": "id",
     "workspace_id": "workspace_id",
     "parent_id": "parent_id",
     "node_type": "node_type",
     "class_ids": "class_ids",
+    "class_order": "class_order",
+    "tag_ids": "tag_ids",
     "name": "name",
     "icon": "icon",
     "color": "color",
@@ -119,8 +134,14 @@ class NodeRow:
         workspace_id: Workspace the node belongs to.
         parent_id: Parent node id, or ``None`` for roots (legal for pages only).
         node_type: ``page`` | ``block`` | ``class``.
-        name: Stored display name, or ``None`` when never set.
-        class_ids: OR-Set class membership projected from ``class_member_set``.
+        name: Legacy display-name cache, never written by the v2 appliers
+            (title-is-content: a node's title IS its content). Remaining
+            readers are transition-only; snapshot restores may populate it.
+        class_ids: OR-Set class membership projected from ``class_member_set``
+            (ordered members first when ``class.reorder`` wrote a user order,
+            then any unlisted present members sorted by id).
+        tag_ids: OR-Set tag membership projected from ``tag_member_set``
+            (sorted by id).
         icon: Emoji/icon string or ``None``.
         color: Color string or ``None``.
         is_active: False once the node (soft-)deleted; the trash table keeps
@@ -136,6 +157,7 @@ class NodeRow:
     node_type: str
     name: str | None
     class_ids: tuple[str, ...]
+    tag_ids: tuple[str, ...]
     icon: str | None
     color: str | None
     is_active: bool
@@ -188,15 +210,6 @@ def _envelope_ts(env: RelayEnvelope) -> str:
     return env.timestamp.isoformat() if env.timestamp is not None else _now_iso()
 
 
-def _content_to_string(value: Any) -> str | None:
-    """Serialize a carried ``contentAst`` list to its stored string form."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False)
-
-
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
     """Run a :class:`LocalStore` public method while holding the instance lock.
 
@@ -242,6 +255,8 @@ class LocalStore:
             "class.update": self._apply_class_update,
             "class.delete": self._apply_class_delete,
             "class.unassign": self._apply_class_unassign,
+            "class.reorder": self._apply_class_reorder,
+            "tag.unassign": self._apply_tag_unassign,
             "class.setExtends": self._apply_class_set_extends,
             "class.property.set": self._apply_class_property_set,
             "class.property.unset": self._apply_class_property_unset,
@@ -291,13 +306,22 @@ class LocalStore:
         The producer-side guard mirrors the server-side payload validation: an
         ``object.update`` carrying no writable field (empty payload beyond
         ``objectId``, or all-``None`` fields) would be rejected with 422 and
-        quarantined, so it is skipped here and logged.
+        quarantined, so it is skipped here and logged. Payloads of every known
+        op type are also validated against the strict wire schemas
+        (``core.protocol.payloads``): a retired/renamed key (e.g. the
+        title-is-content ``name`` field) or a malformed value fails loud here
+        instead of riding the outbox to a certain 422.
         """
         if env.op_type == "object.update":
             writable = [key for key, value in env.payload.items() if key != "objectId" and value is not None]
             if not writable:
                 _log.warning("Skipping enqueue of %s: object.update carries no writable field", env.id)
                 return
+        if env.op_type in self._appliers and "$e" not in env.payload:
+            try:
+                validate_payload(env.op_type, env.payload)
+            except ValueError as exc:
+                raise EnvelopeValidationError(f"invalid {env.op_type} payload: {exc}", env.op_type) from exc
         with self._conn:
             self._conn.execute(
                 "INSERT INTO relay_outbox (envelope_json, workspace_id, state, created_at) VALUES (?, ?, 'pending', ?)",
@@ -397,6 +421,7 @@ class LocalStore:
                 )
                 for table in (
                     "class_member_set",
+                    "tag_member_set",
                     "property_value",
                     "property_value_tombstone",
                     "node_asset",
@@ -421,23 +446,35 @@ class LocalStore:
         """Apply one remote envelope to the local cache.
 
         The envelope id is recorded in ``relay_operations`` first, making the
-        apply idempotent across catch-up/live overlap. A guard violation
-        (cycle close, move guard, placement) raises the corresponding typed
-        error and rolls the whole apply back — including the dedupe record, so
-        the envelope can be retried after a wipe/resync. Returns ``True`` when
-        an applier mutated state, ``False`` for dedupe hits, unknown op types
-        (logged and skipped), and LWW/re-create drops.
+        apply idempotent across catch-up/live overlap. Known op payloads are
+        validated against the strict wire schemas before anything is recorded
+        (the web store's ``validateEnvelope``): a deviation raises
+        :class:`~notees_gtk.data.errors.EnvelopeValidationError` and nothing
+        is written. A guard violation (cycle close, move guard, placement)
+        raises the corresponding typed error and rolls the whole apply back —
+        including the dedupe record, so the envelope can be retried after a
+        wipe/resync. Returns ``True`` when an applier mutated state, ``False``
+        for dedupe hits, unknown op types (logged and skipped), and
+        LWW/re-create drops.
         """
+        applier = self._appliers.get(env.op_type)
+        if applier is None:
+            _log.warning("Skipping unknown op type %s (envelope %s)", env.op_type, env.id)
+            return False
+        if "$e" in env.payload:
+            raise EnvelopeValidationError(
+                "encrypted payload slot ($e) is reserved for M3 E2EE and cannot be applied yet",
+                env.op_type,
+            )
+        try:
+            validate_payload(env.op_type, env.payload)
+        except ValueError as exc:
+            raise EnvelopeValidationError(f"invalid {env.op_type} payload: {exc}", env.op_type) from exc
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO relay_operations (op_id, workspace_id, seq, applied_at) VALUES (?, ?, NULL, ?)",
             (env.id, env.workspace_id, _now_iso()),
         )
         if cursor.rowcount == 0:
-            return False
-        applier = self._appliers.get(env.op_type)
-        if applier is None:
-            _log.warning("Skipping unknown op type %s (envelope %s)", env.op_type, env.id)
-            self._conn.commit()
             return False
         with self._conn:
             return applier(env)
@@ -513,42 +550,52 @@ class LocalStore:
         parent_id = payload.get("parentId")
         parent_id = str(parent_id) if parent_id is not None else None
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
+        tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
         node_type = str(payload.get("nodeType") or ("page" if parent_id is None else "block"))
         ts = _envelope_ts(env)
+
+        # Title-is-content constraint (SCHEMA.md): pages and classes carry
+        # text-only content. A node created straight as page/class gets its
+        # (possibly rich) content flattened; a block keeps the full token
+        # stream.
+        content_ast = payload.get("contentAst")
+        tokens: Any = (content_ast or []) if node_type == "block" else stringify_content_ast(content_ast)
+        content = json.dumps(tokens, ensure_ascii=False)
+        content_plain = plaintext_excerpt(tokens)
 
         # First create wins for duplicate node ids (v1 INSERT OR IGNORE): a
         # re-create must not touch the TREE — the earlier half-apply added a
         # second child_order row under the new parent while node.parent_id
-        # stayed stale, rendering the node under TWO parents. The one
-        # exception is the classIds OR-Set seed below, the convergence carrier
-        # for concurrent creates (it cannot move the node).
+        # stayed stale, rendering the node under TWO parents. The exceptions
+        # are the classIds/tagIds OR-Set seeds below, the convergence carriers
+        # for concurrent creates (they cannot move the node).
         for class_id in class_ids:
             self._class_member_upsert(object_id, class_id, env)
+        for tag_id in tag_ids:
+            self._tag_member_upsert(object_id, tag_id, env)
         if self._node_row(env.workspace_id, object_id) is not None:
             if class_ids:
                 self._recompute_class_ids(object_id)
+            if tag_ids:
+                self._recompute_tag_ids(object_id)
             return False
 
         self._check_placement(node_type, parent_id, op_type)
         if parent_id is not None:
             self._check_parent_allowed(env.workspace_id, parent_id, op_type)
 
-        content_ast = payload.get("contentAst")
-        content = _content_to_string(content_ast) if content_ast is not None else "[]"
-        content_plain = plaintext_excerpt(parse_content_ast(content)) if content is not None else ""
         with self._conn:
             self._conn.execute(
                 """INSERT INTO nodes
                      (workspace_id, id, parent_id, node_type, name, class_ids, content, content_plain,
                       icon, color, is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, ?, ?, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, NULL, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     object_id,
                     parent_id,
                     node_type,
-                    payload.get("name"),
                     content,
                     content_plain,
                     ts,
@@ -561,6 +608,7 @@ class LocalStore:
                 ),
             )
             self._recompute_class_ids(object_id)
+            self._recompute_tag_ids(object_id)
             if parent_id is not None:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
@@ -586,6 +634,7 @@ class LocalStore:
             return False
 
         node_type = str(payload.get("nodeType")) if payload.get("nodeType") is not None else None
+        resulting_type = node_type or str(row[3])
         if node_type is not None:
             # Flipping block<->page / declaring a class must respect placement
             # against the node's CURRENT parent (an update never moves the node).
@@ -596,23 +645,29 @@ class LocalStore:
         if node_type is not None:
             sets.append("node_type = ?")
             values.append(node_type)
-        if payload.get("name") is not None:
-            sets.append("name = ?")
-            values.append(payload["name"])
+            if node_type != "block" and str(row[3]) == "block":
+                # Title-is-content: promoting a BLOCK flattens its rich token
+                # stream to plain text in the same op; a page/class already
+                # carries text-only content.
+                flattened = json.dumps(stringify_content_ast(parse_content_ast(row[9])), ensure_ascii=False)
+                sets.append("content = ?")
+                values.append(flattened)
+                sets.append("content_plain = ?")
+                values.append(plaintext_excerpt(parse_content_ast(flattened)))
         if payload.get("icon") is not None:
             sets.append("icon = ?")
             values.append(payload["icon"])
         if payload.get("color") is not None:
             sets.append("color = ?")
             values.append(payload["color"])
-        content_plain: str | None = None
         if payload.get("contentAst") is not None:
-            content = _content_to_string(payload["contentAst"])
+            tokens: Any = (
+                payload["contentAst"] if resulting_type == "block" else stringify_content_ast(payload["contentAst"])
+            )
             sets.append("content = ?")
-            values.append(content)
-            content_plain = plaintext_excerpt(parse_content_ast(content))
+            values.append(json.dumps(tokens, ensure_ascii=False))
             sets.append("content_plain = ?")
-            values.append(content_plain)
+            values.append(plaintext_excerpt(tokens))
         sets.append("updated_at = ?")
         values.append(_envelope_ts(env))
         sets.append("updated_by = ?")
@@ -654,6 +709,7 @@ class LocalStore:
             )
             for table in (
                 "class_member_set",
+                "tag_member_set",
                 "property_value",
                 "property_value_tombstone",
                 "node_asset",
@@ -791,12 +847,74 @@ class LocalStore:
         )
 
     def _recompute_class_ids(self, node_id: str) -> None:
+        """Recompute ``nodes.class_ids`` from the OR-Set's present rows.
+
+        User order (``class_order``, written by class.reorder, LWW-by-arrival)
+        wins: ordered members first (filtered to present members), then any
+        unlisted present members sorted by id (``recomputeClassIds`` in the
+        web appliers)."""
         rows = self._conn.execute(
             "SELECT class_id FROM class_member_set WHERE node_id = ? AND present = 1 ORDER BY class_id",
             (node_id,),
         ).fetchall()
-        class_ids = [str(row[0]) for row in rows]
-        self._conn.execute("UPDATE nodes SET class_ids = ? WHERE id = ?", (json.dumps(class_ids), node_id))
+        present = [str(row[0]) for row in rows]
+        order_row = self._conn.execute("SELECT class_order FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        raw_order = order_row[0] if order_row is not None else None
+        try:
+            parsed = json.loads(raw_order) if isinstance(raw_order, str) else []
+            ordered = [str(item) for item in parsed if isinstance(item, str)]
+        except (TypeError, ValueError):
+            ordered = []
+        present_set = set(present)
+        effective = [class_id for class_id in ordered if class_id in present_set]
+        effective.extend(class_id for class_id in present if class_id not in ordered)
+        self._conn.execute("UPDATE nodes SET class_ids = ? WHERE id = ?", (json.dumps(effective), node_id))
+
+    def _tag_member_upsert(self, node_id: str, tag_id: str, env: RelayEnvelope) -> None:
+        """Seed OR-Set tag membership from an object.create's tagIds — the tag
+        convergence carrier, mirroring the classIds ``class_member_set``
+        seeding above: pair row present=1, HLC-gated add-wins (the add's
+        comparator is >= on the actor tiebreak so an exact-HLC add beats a
+        tag.unassign remove in either delivery order)."""
+        self._conn.execute(
+            """INSERT INTO tag_member_set (node_id, tag_id, present, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(node_id, tag_id) DO UPDATE SET
+                 present = 1, hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id >= COALESCE(actor_id, ''))""",
+            (node_id, tag_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+
+    def _tag_member_remove(self, node_id: str, tag_id: str, env: RelayEnvelope) -> None:
+        """tag.unassign tombstone: strictly-greater gate (including the actor
+        tiebreak), identical to the class.unassign applier — a remove at an
+        equal (hlc, actor) to the standing add loses, so ties resolve
+        add-wins regardless of delivery order."""
+        self._conn.execute(
+            """INSERT INTO tag_member_set (node_id, tag_id, present, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, 0, ?, ?, ?)
+               ON CONFLICT(node_id, tag_id) DO UPDATE SET
+                 present = 0, hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id > COALESCE(actor_id, ''))""",
+            (node_id, tag_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+
+    def _recompute_tag_ids(self, node_id: str) -> None:
+        """Recompute ``nodes.tag_ids`` from the tag OR-Set's present rows."""
+        rows = self._conn.execute(
+            "SELECT tag_id FROM tag_member_set WHERE node_id = ? AND present = 1 ORDER BY tag_id",
+            (node_id,),
+        ).fetchall()
+        tag_ids = [str(row[0]) for row in rows]
+        self._conn.execute("UPDATE nodes SET tag_ids = ? WHERE id = ?", (json.dumps(tag_ids), node_id))
 
     def _upsert_class_node(
         self,
@@ -806,19 +924,29 @@ class LocalStore:
     ) -> None:
         """The class node (node_type='class') is the structural authority for
         the class_list read model; the registry row carries class-only config.
-        Node fields update only when the envelope wins the row-level LWW."""
+
+        Title-is-content: the class's title IS its (text-only) content — the
+        node's ``content`` flattens the create/update ``contentAst``
+        (``stringifyContentAst``), and the retired ``name`` column is never
+        written (``NULL``; remaining readers are transition-only). Node
+        fields update only when the envelope wins the row-level LWW."""
         ts = _envelope_ts(env)
+        has_content = fields.get("content_ast") is not None
+        flattened = stringify_content_ast(fields.get("content_ast")) if has_content else []
+        content = json.dumps(flattened, ensure_ascii=False)
+        content_plain = plaintext_excerpt(flattened)
         with self._conn:
             self._conn.execute(
                 """INSERT OR IGNORE INTO nodes
                      (workspace_id, id, parent_id, node_type, class_ids, name, content, content_plain,
                       is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, NULL, 'class', '[]', ?, '[]', '', 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, NULL, 'class', '[]', NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     class_id,
-                    fields.get("name"),
+                    content,
+                    content_plain,
                     ts,
                     ts,
                     env.actor_id,
@@ -830,7 +958,12 @@ class LocalStore:
             )
             sets: list[str] = []
             values: list[Any] = []
-            for column in ("name", "icon", "color"):
+            if has_content:
+                sets.append("content = ?")
+                values.append(content)
+                sets.append("content_plain = ?")
+                values.append(content_plain)
+            for column in ("icon", "color"):
                 if fields.get(column) is not None:
                     sets.append(f"{column} = ?")
                     values.append(fields[column])
@@ -864,6 +997,10 @@ class LocalStore:
         payload = env.payload
         class_id = str(payload["classId"])
         ts = _envelope_ts(env)
+        # Registry ``name`` is a denormalized cache of the class node's title
+        # text (the authority is node.content): the excerpt of the create's
+        # (text-only) contentAst.
+        title_text = plaintext_excerpt(payload.get("contentAst") or [])
         with self._conn:
             self._conn.execute(
                 """INSERT INTO class (id, workspace_id, name, icon, color, description, active, created_at, updated_at)
@@ -871,10 +1008,12 @@ class LocalStore:
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, icon = excluded.icon, color = excluded.color,
                      description = excluded.description, active = 1, updated_at = excluded.updated_at""",
-                (class_id, env.workspace_id, payload.get("name"), payload.get("icon"), payload.get("color"), ts, ts),
+                (class_id, env.workspace_id, title_text, payload.get("icon"), payload.get("color"), ts, ts),
             )
         self._upsert_class_node(
-            env, class_id, {"name": payload.get("name"), "icon": payload.get("icon"), "color": payload.get("color")}
+            env,
+            class_id,
+            {"content_ast": payload.get("contentAst"), "icon": payload.get("icon"), "color": payload.get("color")},
         )
         return True
 
@@ -884,7 +1023,10 @@ class LocalStore:
         with self._conn:
             sets: list[str] = []
             values: list[Any] = []
-            for column in ("name", "icon", "color", "description"):
+            if payload.get("contentAst") is not None:
+                sets.append("name = ?")
+                values.append(plaintext_excerpt(payload["contentAst"]))
+            for column in ("icon", "color", "description"):
                 if payload.get(column) is not None:
                     sets.append(f"{column} = ?")
                     values.append(payload[column])
@@ -894,7 +1036,9 @@ class LocalStore:
             values.extend((_envelope_ts(env), class_id))
             self._conn.execute(f"UPDATE class SET {', '.join(sets)} WHERE id = ?", values)
         self._upsert_class_node(
-            env, class_id, {"name": payload.get("name"), "icon": payload.get("icon"), "color": payload.get("color")}
+            env,
+            class_id,
+            {"content_ast": payload.get("contentAst"), "icon": payload.get("icon"), "color": payload.get("color")},
         )
         return True
 
@@ -928,6 +1072,41 @@ class LocalStore:
         with self._conn:
             self._class_member_remove(object_id, class_id, env)
             self._recompute_class_ids(object_id)
+        return True
+
+    def _apply_class_reorder(self, env: RelayEnvelope) -> bool:
+        """Class ORDER (class.reorder): display-only user ordering,
+        LWW-by-arrival — the applier writes ``class_order``
+        unconditionally, so it is deterministic per op order and convergent
+        replicas agree. The class_ids projection merges: ordered members
+        first, then unlisted present members sorted by id
+        (``_recompute_class_ids``)."""
+        op_type = "class.reorder"
+        payload = env.payload
+        object_id = str(payload["objectId"])
+        self._require_node(env.workspace_id, object_id, op_type)
+        class_ids = [str(class_id) for class_id in payload.get("classIds") or []]
+        with self._conn:
+            self._conn.execute(
+                "UPDATE nodes SET class_order = ? WHERE id = ?",
+                (json.dumps(class_ids), object_id),
+            )
+            self._recompute_class_ids(object_id)
+        return True
+
+    def _apply_tag_unassign(self, env: RelayEnvelope) -> bool:
+        """Tag removal (tag.unassign): the OR-Set remove complement of the
+        re-issued object.create add carrier — identical gating to
+        class.unassign, own table — then ``tag_ids`` is recomputed from the
+        surviving present rows."""
+        op_type = "tag.unassign"
+        payload = env.payload
+        object_id = str(payload["objectId"])
+        tag_id = str(payload["tagId"])
+        self._require_node(env.workspace_id, object_id, op_type)
+        with self._conn:
+            self._tag_member_remove(object_id, tag_id, env)
+            self._recompute_tag_ids(object_id)
         return True
 
     def _apply_class_set_extends(self, env: RelayEnvelope) -> bool:
@@ -1308,7 +1487,7 @@ class LocalStore:
         excluded unless ``include_inactive`` is set.
         """
         sql = (
-            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
+            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, tag_ids, icon, color, is_active,"
             " content, content_plain FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
@@ -1324,8 +1503,8 @@ class LocalStore:
     def children(self, workspace_id: str, parent_id: str) -> list[NodeRow]:
         """Direct children in child-order position order (the outliner read)."""
         rows = self._conn.execute(
-            """SELECT n.id, n.workspace_id, n.parent_id, n.node_type, n.name, n.class_ids, n.icon, n.color,
-                      n.is_active, n.content, n.content_plain
+            """SELECT n.id, n.workspace_id, n.parent_id, n.node_type, n.name, n.class_ids, n.tag_ids,
+                      n.icon, n.color, n.is_active, n.content, n.content_plain
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
                WHERE n.workspace_id = ? AND o.parent_id = ?
@@ -1338,7 +1517,7 @@ class LocalStore:
     def node(self, workspace_id: str, node_id: str) -> NodeRow | None:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
+            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, tag_ids, icon, color, is_active,"
             " content, content_plain FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -1351,6 +1530,11 @@ class LocalStore:
             class_ids = tuple(str(item) for item in json.loads(raw_class_ids)) if raw_class_ids else ()
         except (TypeError, ValueError):
             class_ids = ()
+        raw_tag_ids = row[6]
+        try:
+            tag_ids = tuple(str(item) for item in json.loads(raw_tag_ids)) if raw_tag_ids else ()
+        except (TypeError, ValueError):
+            tag_ids = ()
         return NodeRow(
             id=str(row[0]),
             workspace_id=str(row[1]),
@@ -1358,11 +1542,12 @@ class LocalStore:
             node_type=str(row[3]),
             name=row[4],
             class_ids=class_ids,
-            icon=row[6],
-            color=row[7],
-            is_active=bool(row[8]),
-            content=row[9],
-            content_plain=str(row[10] or ""),
+            tag_ids=tag_ids,
+            icon=row[7],
+            color=row[8],
+            is_active=bool(row[9]),
+            content=row[10],
+            content_plain=str(row[11] or ""),
         )
 
     # ------------------------------------------------- effective properties
@@ -1681,6 +1866,13 @@ CREATE TABLE IF NOT EXISTS nodes (
         CHECK (node_type IN ('page', 'block', 'class')),
     name TEXT,
     class_ids TEXT NOT NULL DEFAULT '[]',
+    -- User-defined class ORDER (class.reorder, LWW-by-arrival); the
+    -- effective class_ids = ordered members first, then unlisted members
+    -- sorted by id (schema v6, web v6→v7 parity).
+    class_order TEXT NOT NULL DEFAULT '[]',
+    -- Tag OR-Set membership projected sorted by id (schema v5, web v5→v6
+    -- parity).
+    tag_ids TEXT NOT NULL DEFAULT '[]',
     icon TEXT,
     color TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
@@ -1718,6 +1910,20 @@ CREATE TABLE IF NOT EXISTS class_member_set (
     PRIMARY KEY (node_id, class_id)
 );
 CREATE INDEX IF NOT EXISTS idx_class_member_set_class ON class_member_set (class_id);
+
+-- OR-Set of tag assignments (tags are pages assigned to a page — the same
+-- membership semantics as classes, own table, no role overlap). The applier
+-- projects present rows into node.tag_ids sorted by id.
+CREATE TABLE IF NOT EXISTS tag_member_set (
+    node_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    present INTEGER NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (node_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tag_member_set_tag ON tag_member_set (tag_id);
 
 -- Direct extends edges (m2m; class.setExtends replaces the full row set).
 CREATE TABLE IF NOT EXISTS class_extends (
@@ -1881,10 +2087,43 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
     conn.executescript(_CLASS_PROPERTY_DDL)
 
 
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """Tags (web schema v5→v6 parity): the tag OR-Set table plus the
+    ``nodes.tag_ids`` projection column, guarded for upgrade paths whose
+    CREATE TABLE already ran at the previous shape."""
+    conn.executescript(_TAG_MEMBER_SET_DDL)
+    LocalStore._add_column_if_missing(conn, "nodes", "tag_ids", "TEXT NOT NULL DEFAULT '[]'")
+
+
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Class order (web schema v6→v7 parity): the per-node ``class_order``
+    list written by class.reorder (LWW-by-arrival); the effective class_ids
+    merges ordered members first, then unlisted members sorted by id."""
+    LocalStore._add_column_if_missing(conn, "nodes", "class_order", "TEXT NOT NULL DEFAULT '[]'")
+
+
+_TAG_MEMBER_SET_DDL = """
+-- OR-Set of tag assignments; the applier projects present rows into
+-- node.tag_ids sorted by id (web schema v5→v6, 2026-10-01 lockstep).
+CREATE TABLE IF NOT EXISTS tag_member_set (
+    node_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    present INTEGER NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (node_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tag_member_set_tag ON tag_member_set (tag_id);
+"""
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
+    (5, _migrate_v5),
+    (6, _migrate_v6),
 )

@@ -95,7 +95,11 @@ def _seed_source_family(store: LocalStore) -> None:
     """The delta classes' extends parent must exist before the edges land."""
     assert (
         store.apply_remote(
-            seed_env("class.create", {"classId": SOURCE, "name": "source", "icon": "mdiBookOpenVariant"}, 1)
+            seed_env(
+                "class.create",
+                {"classId": SOURCE, "contentAst": [{"type": "text", "text": "source"}], "icon": "mdiBookOpenVariant"},
+                1,
+            )
         )
         is True
     )
@@ -133,7 +137,11 @@ class TestNewSourceSubclasses:
         for offset, (class_id, name, icon) in enumerate(classes):
             assert (
                 store.apply_remote(
-                    seed_env("class.create", {"classId": class_id, "name": name, "icon": icon}, 2 + offset)
+                    seed_env(
+                        "class.create",
+                        {"classId": class_id, "contentAst": [{"type": "text", "text": name}], "icon": icon},
+                        2 + offset,
+                    )
                 )
                 is True
             )
@@ -149,7 +157,7 @@ class TestNewSourceSubclasses:
             row = store.node(WS, class_id)
             assert row is not None
             assert row.node_type == "class"
-            assert row.name == name
+            assert row.content_plain == name  # title-is-content: the label IS the content
             assert row.parent_id is None  # classes are tree-external
         with sqlite3.connect(_db_path(store)) as raw:
             edges = raw.execute("SELECT class_id, parent_class_id FROM class_extends ORDER BY class_id").fetchall()

@@ -60,6 +60,8 @@ class TestOpTypeRegistry:
                     "class.update",
                     "class.delete",
                     "class.unassign",
+                    "class.reorder",
+                    "tag.unassign",
                     "class.setExtends",
                     "class.property.set",
                     "class.property.unset",
@@ -282,7 +284,7 @@ class TestNewEnvelope:
             "actor_id": "actor-1",
             "device_id": "device-a",
             "op_type": "object.create",
-            "payload": {"objectId": "n-1", "nodeType": "page"},
+            "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "nodeType": "page"},
             "clock": Clock("device-a"),
             "now_ms": lambda: 1767225600000,
         }

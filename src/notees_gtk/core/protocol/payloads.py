@@ -1,0 +1,424 @@
+"""Strict op payload schemas and builders — the zod ``.strict()`` parity layer.
+
+Mirrors ``v2/packages/protocol/src/op-types.ts`` (``OP_PAYLOAD_SCHEMAS``):
+every known op type has a pydantic model with ``extra="forbid"`` (an unknown
+or renamed wire key fails validation instead of drifting silently), uuid
+fields are format-checked, and the ``object.update`` refines ride along
+(at least one writable field; exactly one content carrier). This is the
+client-side half of the relay's 422 ``validation_failed`` gate: producers
+(``new_envelope``, the store outbox) validate before an envelope can leave
+the client, and the local appliers validate again at apply time, mirroring
+the web store's ``validateEnvelope``.
+
+Builders are the write-side conveniences (web parity: ``WorkspaceClient``
+``createObject``/``createClass``/``reorderClasses``). Title-is-content
+(SCHEMA.md, 2026-10-01): no op payload carries a ``name`` — the builders
+keep an optional ``name`` parameter that wraps into a single text token
+(``[{"type": "text", "text": name}]``) when no explicit ``content_ast`` is
+given; when both are given, ``content_ast`` wins and ``name`` is dropped.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+__all__ = [
+    "PAYLOAD_SCHEMAS",
+    "build_class_create",
+    "build_class_reorder",
+    "build_class_unassign",
+    "build_class_update",
+    "build_object_create",
+    "build_object_delete",
+    "build_object_move",
+    "build_object_update",
+    "build_tag_unassign",
+    "payload_schema_for",
+    "validate_payload",
+]
+
+_NODE_TYPE = Literal["page", "block", "class"]
+_PROPERTY_TYPE = Literal[
+    "text",
+    "number",
+    "boolean",
+    "date",
+    "date_range",
+    "url",
+    "email",
+    "select",
+    "multi_select",
+    "object",
+    "image",
+]
+_SCOPE = Literal["global", "class", "object"]
+_DATE_PRECISION = Literal["year", "month", "day"]
+
+
+class _Strict(BaseModel):
+    """Base for every payload model: strict keys, camelCase wire names as-is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ObjectCreatePayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    node_type: _NODE_TYPE | None = Field(default=None, alias="nodeType")
+    class_ids: list[UUID] = Field(default_factory=list, alias="classIds")
+    tag_ids: list[UUID] = Field(default_factory=list, alias="tagIds")
+    content_ast: list[Any] | None = Field(default=None, alias="contentAst")
+    parent_id: UUID | None = Field(default=None, alias="parentId")
+
+
+class ObjectUpdatePayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    node_type: _NODE_TYPE | None = Field(default=None, alias="nodeType")
+    icon: str | None = Field(default=None, max_length=64)
+    color: str | None = Field(default=None, max_length=32)
+    content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
+    content_ast: list[Any] | None = Field(default=None, alias="contentAst")
+
+    @model_validator(mode="after")
+    def _check_writable_and_single_carrier(self) -> ObjectUpdatePayload:
+        provided = self.model_fields_set - {"object_id"}
+        if not provided:
+            raise ValueError("object.update requires at least one field")
+        if self.content_delta_b64 is not None and self.content_ast is not None:
+            raise ValueError("exactly one content carrier per update")
+        return self
+
+
+class ObjectDeletePayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    permanent: bool = False
+
+
+class ObjectMovePayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    parent_id: UUID | None = Field(alias="parentId")
+    after_id: UUID | None = Field(default=None, alias="afterId")
+
+
+class ClassCreatePayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+    content_ast: list[Any] | None = Field(default=None, alias="contentAst")
+    icon: str | None = Field(default=None, max_length=64)
+    color: str | None = Field(default=None, max_length=32)
+    description: str | None = Field(default=None, max_length=4096)
+
+
+class ClassUpdatePayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+    content_ast: list[Any] | None = Field(default=None, alias="contentAst")
+    icon: str | None = Field(default=None, max_length=64)
+    color: str | None = Field(default=None, max_length=32)
+    description: str | None = Field(default=None, max_length=4096)
+
+
+class ClassDeletePayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+
+
+class ClassUnassignPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    class_id: UUID = Field(alias="classId")
+
+
+class ClassReorderPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    class_ids: list[UUID] = Field(alias="classIds")
+
+
+class TagUnassignPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    tag_id: UUID = Field(alias="tagId")
+
+
+class ClassSetExtendsPayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+    parent_class_ids: list[UUID] = Field(alias="parentClassIds")
+
+
+class ClassPropertySetPayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+    sequence: int | None = None
+    required: bool | None = None
+    readonly: bool | None = None
+    hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
+    default_value: Any = Field(default=None, alias="defaultValue")
+
+
+class ClassPropertyUnsetPayload(_Strict):
+    class_id: UUID = Field(alias="classId")
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+
+
+class _OptionEntry(_Strict):
+    id: str
+    label: str
+
+
+class PropertySchemaCreatePayload(_Strict):
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+    name: str = Field(min_length=1, max_length=256)
+    type: _PROPERTY_TYPE
+    multi: bool = False
+    scope: _SCOPE = "global"
+    options: list[_OptionEntry] | None = None
+    target_class_filter: list[UUID] | None = Field(default=None, alias="targetClassFilter")
+    date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
+    date_qualified: bool | None = Field(default=None, alias="dateQualified")
+
+
+class PropertySchemaUpdatePayload(_Strict):
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    options: list[_OptionEntry] | None = None
+    date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
+    date_qualified: bool | None = Field(default=None, alias="dateQualified")
+
+
+class PropertySchemaDeletePayload(_Strict):
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+
+
+class PropertySetPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+    value: Any
+    idx: int = Field(default=0, ge=0)
+    metadata: dict[str, Any] | None = None
+
+
+class PropertyUnsetPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    property_schema_id: UUID = Field(alias="propertySchemaId")
+    idx: int = Field(default=0, ge=0)
+
+
+class AssetAttachPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    asset_id: UUID = Field(alias="assetId")
+    hash: str = Field(min_length=64, max_length=64)
+    mime_type: str = Field(min_length=1, alias="mimeType")
+    size: int = Field(ge=0)
+    original_name: str = Field(min_length=1, max_length=1024, alias="originalName")
+
+
+class AssetDetachPayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
+    asset_id: UUID = Field(alias="assetId")
+
+
+class CollectionMemberAddPayload(_Strict):
+    collection_id: UUID = Field(alias="collectionId")
+    object_id: UUID = Field(alias="objectId")
+
+
+class CollectionMemberRemovePayload(_Strict):
+    collection_id: UUID = Field(alias="collectionId")
+    object_id: UUID = Field(alias="objectId")
+
+
+#: Registry mirroring ``OP_PAYLOAD_SCHEMAS`` (op-types.ts) one-for-one.
+PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
+    "object.create": ObjectCreatePayload,
+    "object.update": ObjectUpdatePayload,
+    "object.delete": ObjectDeletePayload,
+    "object.move": ObjectMovePayload,
+    "class.create": ClassCreatePayload,
+    "class.update": ClassUpdatePayload,
+    "class.delete": ClassDeletePayload,
+    "class.unassign": ClassUnassignPayload,
+    "class.reorder": ClassReorderPayload,
+    "tag.unassign": TagUnassignPayload,
+    "class.setExtends": ClassSetExtendsPayload,
+    "class.property.set": ClassPropertySetPayload,
+    "class.property.unset": ClassPropertyUnsetPayload,
+    "propertySchema.create": PropertySchemaCreatePayload,
+    "propertySchema.update": PropertySchemaUpdatePayload,
+    "propertySchema.delete": PropertySchemaDeletePayload,
+    "property.set": PropertySetPayload,
+    "property.unset": PropertyUnsetPayload,
+    "asset.attach": AssetAttachPayload,
+    "asset.detach": AssetDetachPayload,
+    "collection.member.add": CollectionMemberAddPayload,
+    "collection.member.remove": CollectionMemberRemovePayload,
+}
+
+
+def payload_schema_for(op_type: str) -> type[BaseModel] | None:
+    """Return the strict payload model for ``op_type`` (``None`` when unknown)."""
+    return PAYLOAD_SCHEMAS.get(op_type)
+
+
+def validate_payload(op_type: str, payload: dict[str, Any]) -> None:
+    """Validate ``payload`` against the strict schema for ``op_type``.
+
+    Raises:
+        ValueError: Unknown op type, or the payload deviates from the wire
+            schema (extra keys — e.g. a retired ``name`` field —, bad uuid
+            shapes, violated refines). The message names the deviation.
+    """
+    schema = PAYLOAD_SCHEMAS.get(op_type)
+    if schema is None:
+        raise ValueError(f"unknown opType: {op_type}")
+    schema.model_validate(payload)
+
+
+# --------------------------------------------------------------------- builders
+
+_UNSET: Any = object()
+
+
+def _validated(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Gate a builder's output through the strict schema (fail loud)."""
+    validate_payload(op_type, payload)
+    return payload
+
+
+def build_object_create(
+    object_id: str,
+    *,
+    node_type: str | None = None,
+    class_ids: list[str] | None = None,
+    tag_ids: list[str] | None = None,
+    name: str | None = None,
+    content_ast: list[Any] | None = None,
+    parent_id: str | None | object = _UNSET,
+) -> dict[str, Any]:
+    """Build an ``object.create`` payload (web ``WorkspaceClient.createObject``).
+
+    Title-is-content: the protocol has no object ``name``. The ``name``
+    convenience becomes the node's initial text content (a single text
+    token) when no explicit ``content_ast`` is given; when both are given,
+    ``content_ast`` wins and ``name`` is dropped.
+    """
+    payload: dict[str, Any] = {"objectId": object_id}
+    if node_type is not None:
+        payload["nodeType"] = node_type
+    if class_ids is not None:
+        payload["classIds"] = list(class_ids)
+    if tag_ids is not None:
+        payload["tagIds"] = list(tag_ids)
+    initial_text = [{"type": "text", "text": name}] if name is not None and content_ast is None else None
+    if initial_text is not None:
+        payload["contentAst"] = initial_text
+    if content_ast is not None:
+        payload["contentAst"] = content_ast
+    if parent_id is not _UNSET:
+        payload["parentId"] = parent_id
+    return _validated("object.create", payload)
+
+
+def build_object_update(
+    object_id: str,
+    *,
+    node_type: str | None = None,
+    content_ast: list[Any] | None = None,
+    content_delta_b64: str | None = None,
+    icon: str | None = None,
+    color: str | None = None,
+) -> dict[str, Any]:
+    """Build an ``object.update`` payload (at least one field required)."""
+    payload: dict[str, Any] = {"objectId": object_id}
+    if node_type is not None:
+        payload["nodeType"] = node_type
+    if content_ast is not None:
+        payload["contentAst"] = content_ast
+    if content_delta_b64 is not None:
+        payload["contentDeltaB64"] = content_delta_b64
+    if icon is not None:
+        payload["icon"] = icon
+    if color is not None:
+        payload["color"] = color
+    return _validated("object.update", payload)
+
+
+def build_object_delete(object_id: str, *, permanent: bool = False) -> dict[str, Any]:
+    """Build an ``object.delete`` payload (soft delete unless ``permanent``)."""
+    return _validated("object.delete", {"objectId": object_id, "permanent": permanent})
+
+
+def build_object_move(object_id: str, parent_id: str | None, *, after_id: str | None = None) -> dict[str, Any]:
+    """Build an ``object.move`` payload (``parent_id`` None = workspace root)."""
+    payload: dict[str, Any] = {"objectId": object_id, "parentId": parent_id}
+    if after_id is not None:
+        payload["afterId"] = after_id
+    return _validated("object.move", payload)
+
+
+def build_class_create(
+    class_id: str,
+    *,
+    name: str | None = None,
+    content_ast: list[Any] | None = None,
+    icon: str | None = None,
+    color: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Build a ``class.create`` payload (web ``WorkspaceClient.createClass``).
+
+    The class's title IS its (text-only) content: the ``name`` convenience
+    wraps into a single text token unless an explicit ``content_ast`` wins.
+    """
+    payload: dict[str, Any] = {"classId": class_id}
+    if name is not None and content_ast is None:
+        payload["contentAst"] = [{"type": "text", "text": name}]
+    if content_ast is not None:
+        payload["contentAst"] = content_ast
+    if icon is not None:
+        payload["icon"] = icon
+    if color is not None:
+        payload["color"] = color
+    if description is not None:
+        payload["description"] = description
+    return _validated("class.create", payload)
+
+
+def build_class_update(
+    class_id: str,
+    *,
+    name: str | None = None,
+    content_ast: list[Any] | None = None,
+    icon: str | None = None,
+    color: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Build a ``class.update`` payload (same name convenience as create)."""
+    payload: dict[str, Any] = {"classId": class_id}
+    if name is not None and content_ast is None:
+        payload["contentAst"] = [{"type": "text", "text": name}]
+    if content_ast is not None:
+        payload["contentAst"] = content_ast
+    if icon is not None:
+        payload["icon"] = icon
+    if color is not None:
+        payload["color"] = color
+    if description is not None:
+        payload["description"] = description
+    return _validated("class.update", payload)
+
+
+def build_class_unassign(object_id: str, class_id: str) -> dict[str, Any]:
+    """Build a ``class.unassign`` payload (OR-Set remove complement)."""
+    return _validated("class.unassign", {"objectId": object_id, "classId": class_id})
+
+
+def build_class_reorder(object_id: str, class_ids: list[str]) -> dict[str, Any]:
+    """Build a ``class.reorder`` payload (web ``WorkspaceClient.reorderClasses``).
+
+    Display-only user order, LWW-by-arrival: the full ordered member list;
+    the applier keeps ordered members first and appends any unlisted present
+    members sorted by id.
+    """
+    return _validated("class.reorder", {"objectId": object_id, "classIds": list(class_ids)})
+
+
+def build_tag_unassign(object_id: str, tag_id: str) -> dict[str, Any]:
+    """Build a ``tag.unassign`` payload (OR-Set remove, own table)."""
+    return _validated("tag.unassign", {"objectId": object_id, "tagId": tag_id})

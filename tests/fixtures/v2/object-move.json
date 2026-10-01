@@ -8,15 +8,24 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007000, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000020"],
+      "hlc": {
+        "physical": 1727200007000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000020"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:07.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000020",
         "nodeType": "page",
-        "name": "Move Fixture",
-        "contentAst": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Move Fixture"
+          }
+        ],
         "parentId": null
       }
     },
@@ -27,14 +36,24 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007100, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000021"],
+      "hlc": {
+        "physical": 1727200007100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000021"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:07.100Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000021",
         "parentId": "0192a000-0000-7000-8000-000000000020",
-        "contentAst": [{ "type": "text", "text": "A" }]
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "A"
+          }
+        ]
       }
     },
     {
@@ -44,14 +63,24 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007200, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000022"],
+      "hlc": {
+        "physical": 1727200007200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000022"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:07.200Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000022",
         "parentId": "0192a000-0000-7000-8000-000000000020",
-        "contentAst": [{ "type": "text", "text": "B" }]
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "B"
+          }
+        ]
       }
     },
     {
@@ -61,14 +90,24 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007300, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000023"],
+      "hlc": {
+        "physical": 1727200007300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000023"
+      ],
       "opType": "object.create",
       "timestamp": "2026-09-24T12:00:07.300Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000023",
         "parentId": "0192a000-0000-7000-8000-000000000020",
-        "contentAst": [{ "type": "text", "text": "C" }]
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "C"
+          }
+        ]
       }
     },
     {
@@ -78,8 +117,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007400, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000023"],
+      "hlc": {
+        "physical": 1727200007400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000023"
+      ],
       "opType": "object.move",
       "timestamp": "2026-09-24T12:00:07.400Z",
       "payload": {
@@ -94,8 +138,13 @@
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
       "client": "web",
-      "hlc": { "physical": 1727200007500, "logical": 0 },
-      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000022"],
+      "hlc": {
+        "physical": 1727200007500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000022"
+      ],
       "opType": "object.move",
       "timestamp": "2026-09-24T12:00:07.500Z",
       "payload": {
