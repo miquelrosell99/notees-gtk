@@ -872,10 +872,12 @@ class LocalStore:
 
     def _tag_member_upsert(self, node_id: str, tag_id: str, env: RelayEnvelope) -> None:
         """Seed OR-Set tag membership from an object.create's tagIds — the tag
-        convergence carrier, mirroring the classIds ``class_member_set``
-        seeding above: pair row present=1, HLC-gated add-wins (the add's
-        comparator is >= on the actor tiebreak so an exact-HLC add beats a
-        tag.unassign remove in either delivery order)."""
+        convergence carrier, mirroring the web ``tagMemberUpsert`` exactly
+        (packages/store/src/appliers.ts): strictly-greater actor tiebreak, so
+        an exact-(hlc, actor) tie between the add and a tag.unassign resolves
+        first-in-log-wins. The relay log is the single global order, so every
+        replica converges to the same winner regardless of delivery order
+        (the classIds seeding uses >= add-wins — a deliberate web asymmetry)."""
         self._conn.execute(
             """INSERT INTO tag_member_set (node_id, tag_id, present, hlc_physical, hlc_logical, actor_id)
                VALUES (?, ?, 1, ?, ?, ?)
@@ -885,7 +887,7 @@ class LocalStore:
                WHERE excluded.hlc_physical > hlc_physical
                   OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
                   OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
-                      AND excluded.actor_id >= COALESCE(actor_id, ''))""",
+                      AND excluded.actor_id > COALESCE(actor_id, ''))""",
             (node_id, tag_id, env.hlc.physical, env.hlc.logical, env.actor_id),
         )
 

@@ -1045,16 +1045,23 @@ class TestTagOps:
             (NODE, uid("t-a")),
         ) == [(1, 6)]
 
-    def test_exact_hlc_tie_add_wins_in_either_delivery_order(self, store: LocalStore) -> None:
+    def test_exact_hlc_tie_first_in_log_wins(self, store: LocalStore) -> None:
+        """Web parity (``tagMemberUpsert`` in packages/store/src/appliers.ts):
+        the tag add's actor tiebreak is strictly-greater, so an exact
+        (hlc, actor) tie resolves first-in-log-wins — deterministic per op
+        order, and the relay log is the single global order, so every replica
+        converges to the same winner. (The classIds seeding uses >= add-wins;
+        that asymmetry is deliberate on the web.)"""
         store.apply_remote(create_env(tag_ids=(uid("t-a"),), hlc=(1, 0)))
-        # Order 1: remove first, then the re-issued create at the SAME
-        # (hlc, actor) — the add's >= comparator wins.
+        # Log order 1: remove first, then the re-issued create at the SAME
+        # (hlc, actor) — the add's strictly-greater gate fails, the remove
+        # stands.
         store.apply_remote(make_env("tag.unassign", {"objectId": NODE, "tagId": uid("t-a")}, hlc=(7, 0)))
         store.apply_remote(create_env(tag_ids=(uid("t-a"),), hlc=(7, 0)))
-        assert store.node(WS_A, NODE).tag_ids == (uid("t-a"),)
+        assert store.node(WS_A, NODE).tag_ids == ()
 
-        # Order 2: the add lands first, then the equal-(hlc, actor) remove
-        # (strictly-greater gate) is dropped.
+        # Log order 2: the add lands first, then the equal-(hlc, actor)
+        # remove (strictly-greater gate) is dropped.
         other = uid("n-y")
         store.apply_remote(
             make_env("object.create", {"objectId": other, "nodeType": "page", "tagIds": [uid("t-a")]}, hlc=(8, 0))
