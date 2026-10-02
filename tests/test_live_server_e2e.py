@@ -17,16 +17,17 @@ The flow mirrors a two-device sync scenario:
    extends edge, a page with two blocks — one carrying a mention token — and a
    property value) and pushes it over HTTP;
 3. Device B catches up — B's store dump must equal A's for every derived table;
-4. the server-side object API (``/api/v1/objects``, ``/api/v1/classes``) must
-   agree with the client stores on names, node types, parents, classIds, and
-   parentClassIds — three-way equality;
+4. the server-side object API (``/api/objects``, ``/api/classes``) must
+   agree with the client stores on names, render state (isClass /
+   presentAsMain), parents, classIds, and parentClassIds — three-way
+   equality;
 5. Device B subscribes over WS; Device A pushes another block — B must receive
    it through the live ops frame;
 6. a fresh Device C re-pulls the whole log from seq 0 and must converge to the
    identical dump (replay determinism against the live server log).
 
 A second test exercises the newer write surface end-to-end: a property write
-through the server's REST endpoint (``POST /api/v1/objects/:id/properties`` —
+through the server's REST endpoint (``POST /api/objects/:id/properties`` —
 a server-stamped ``property.set`` envelope), and a ``class.property.set``
 binding authored through the GTK engine's own write path, converging into
 Device B's effective-properties read model.
@@ -255,7 +256,6 @@ def _seed_device_a(device: Device) -> None:
         "object.create",
         {
             "objectId": PAGE_MAIN,
-            "nodeType": "page",
             "contentAst": [{"type": "text", "text": "Live Page"}],
             "classIds": [CLASS_SOURCE],
             "parentId": None,
@@ -266,7 +266,6 @@ def _seed_device_a(device: Device) -> None:
         "object.create",
         {
             "objectId": PAGE_TARGET,
-            "nodeType": "page",
             "contentAst": [{"type": "text", "text": "Target Page"}],
             "parentId": None,
         },
@@ -276,7 +275,6 @@ def _seed_device_a(device: Device) -> None:
         "object.create",
         {
             "objectId": BLOCK_ONE,
-            "nodeType": "block",
             "parentId": PAGE_MAIN,
             "contentAst": [
                 {"type": "text", "text": "See "},
@@ -290,7 +288,6 @@ def _seed_device_a(device: Device) -> None:
         "object.create",
         {
             "objectId": BLOCK_TWO,
-            "nodeType": "block",
             "parentId": PAGE_MAIN,
             "contentAst": [{"type": "text", "text": "Second block."}],
         },
@@ -336,29 +333,31 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     assert block_one.content_plain == "See Target Page for context."
 
     # --- 4: the server's object API agrees — three-way equality. ---
-    main = device_a.client._get_json(f"/api/v1/objects/{PAGE_MAIN}")["object"]
-    assert main["nodeType"] == "page"
+    main = device_a.client._get_json(f"/api/objects/{PAGE_MAIN}")["object"]
+    assert main["isClass"] is False
+    assert main["presentAsMain"] is True
     assert main["name"] == "Live Page"  # server object API still exposes the derived name
     assert main["classIds"] == [CLASS_SOURCE]
     assert main["parentId"] is None
-    block = device_a.client._get_json(f"/api/v1/objects/{BLOCK_ONE}")["object"]
-    assert block["nodeType"] == "block"
+    block = device_a.client._get_json(f"/api/objects/{BLOCK_ONE}")["object"]
+    assert block["isClass"] is False
+    assert block["presentAsMain"] is False
     assert block["parentId"] == PAGE_MAIN
     assert block["contentAst"] == [
         {"type": "text", "text": "See "},
         {"type": "mention", "targetNodeId": PAGE_TARGET, "text": "Target Page"},
         {"type": "text", "text": " for context."},
     ]
-    pages = device_a.client._get_json("/api/v1/objects", params={"nodeType": "page"})["objects"]
+    pages = device_a.client._get_json("/api/objects", params={"isClass": False})["objects"]
     page_ids = {entry["id"] for entry in pages}
     assert {PAGE_MAIN, PAGE_TARGET} <= page_ids
-    annotated = device_a.client._get_json(f"/api/v1/classes/{CLASS_ANNOTATED}")["class"]
+    annotated = device_a.client._get_json(f"/api/classes/{CLASS_ANNOTATED}")["class"]
     assert annotated["name"] == "Annotated"  # registry name cache = content excerpt
     assert annotated["parentClassIds"] == [CLASS_SOURCE]
     # classIds OR-Set membership: PAGE_MAIN joined Source (Annotated has none).
-    source = device_a.client._get_json(f"/api/v1/classes/{CLASS_SOURCE}")
+    source = device_a.client._get_json(f"/api/classes/{CLASS_SOURCE}")
     assert {entry["id"] for entry in source["members"]} == {PAGE_MAIN}
-    assert device_a.client._get_json(f"/api/v1/classes/{CLASS_ANNOTATED}")["members"] == []
+    assert device_a.client._get_json(f"/api/classes/{CLASS_ANNOTATED}")["members"] == []
 
     # --- 5: realtime — B subscribes, A pushes a new block over HTTP. ---
     device_b.engine.start_realtime()
@@ -367,7 +366,6 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
         "object.create",
         {
             "objectId": BLOCK_LIVE,
-            "nodeType": "block",
             "parentId": PAGE_MAIN,
             "contentAst": [{"type": "text", "text": "Arrived over the socket."}],
         },
@@ -422,7 +420,6 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
         "object.create",
         {
             "objectId": PAGE_PROPS,
-            "nodeType": "page",
             "contentAst": [{"type": "text", "text": "Props Page"}],
             "classIds": [CLASS_KIND],
             "parentId": None,
@@ -433,7 +430,6 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
         "object.create",
         {
             "objectId": PAGE_DEFAULTS,
-            "nodeType": "page",
             "contentAst": [{"type": "text", "text": "Defaults Page"}],
             "classIds": [CLASS_KIND],
             "parentId": None,
@@ -450,7 +446,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
 
     # --- 1: property write over the REST endpoint (server-stamped envelope). ---
     written = device_a.client._post_json(
-        f"/api/v1/objects/{PAGE_PROPS}/properties",
+        f"/api/objects/{PAGE_PROPS}/properties",
         {
             "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
             "value": {"label": "high"},
@@ -516,7 +512,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     # lives in the store's getEffectiveProperties, which has no REST exposure
     # yet. So Defaults Page shows no properties server-side while every
     # client's effective read returns "medium".
-    props_server = device_a.client._get_json(f"/api/v1/objects/{PAGE_PROPS}")["object"]["properties"]
+    props_server = device_a.client._get_json(f"/api/objects/{PAGE_PROPS}")["object"]["properties"]
     assert [entry["value"] for entry in props_server] == [{"label": "high"}]
-    defaults_server = device_a.client._get_json(f"/api/v1/objects/{PAGE_DEFAULTS}")["object"]["properties"]
+    defaults_server = device_a.client._get_json(f"/api/objects/{PAGE_DEFAULTS}")["object"]["properties"]
     assert defaults_server == []

@@ -3,7 +3,7 @@
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000102",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",

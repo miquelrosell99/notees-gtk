@@ -3,7 +3,7 @@
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000109",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -19,7 +19,7 @@
       "timestamp": "2026-09-24T12:00:07.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000020",
-        "nodeType": "page",
+        "presentAsMain": true,
         "contentAst": [
           {
             "type": "text",
@@ -31,7 +31,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-00000000010a",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -58,7 +58,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-00000000010b",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -85,7 +85,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-00000000010c",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -112,7 +112,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-00000000010d",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -133,7 +133,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-00000000010e",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",

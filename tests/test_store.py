@@ -3,10 +3,12 @@
 The applier semantics asserted here are the v2 convergence rules ported from
 ``v2/packages/store/src/appliers.ts``: row-level LWW by (hlc, actor), OR-Set
 class/tag/collection membership, user-defined class order (class.reorder,
-LWW-by-arrival), title-is-content (no ``name`` writes; pages/classes carry
-text-only content), m2m class extends with a maintained closure (cycles fail
-loud), fractional child-order positions, property tombstones, and
-soft/permanent deletes with trash retention.
+LWW-by-arrival), title-is-content (no ``name`` writes; document-chrome nodes
+carry text-only content), the Revision-11 render-state model (``is_class``
+identity + ``present_as_main`` render bit; classes are containers and always
+roots), m2m class extends with a maintained closure (cycles fail loud),
+fractional child-order positions, property tombstones, and soft/permanent
+deletes with trash retention.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ from notees_gtk.data.errors import (
     EnvelopeValidationError,
     MoveGuardError,
     NotFoundError,
-    PlacementError,
     UnsupportedCarrierError,
 )
 from notees_gtk.data.store import LocalStore, NodeRow
@@ -103,7 +104,7 @@ def create_env(
     node_id: str = NODE,
     *,
     parent_id: str | None = None,
-    node_type: str = "page",
+    present_as_main: bool | None = None,
     content: Any = UNSET,
     class_ids: tuple[str, ...] = (),
     tag_ids: tuple[str, ...] = (),
@@ -117,9 +118,13 @@ def create_env(
 
     Mirrors the client builder (``build_object_create``): the ``name``
     convenience becomes a single text token when no explicit content is
-    given; when both are given, content wins and name is dropped.
+    given; when both are given, content wins and name is dropped. The
+    Revision-11 render bit rides ``presentAsMain``; when omitted the applier
+    defaults it by context (parentless → main, parented → inline).
     """
-    payload: dict[str, Any] = {"objectId": node_id, "nodeType": node_type, "parentId": parent_id}
+    payload: dict[str, Any] = {"objectId": node_id, "parentId": parent_id}
+    if present_as_main is not None:
+        payload["presentAsMain"] = present_as_main
     if class_ids:
         payload["classIds"] = list(class_ids)
     if tag_ids:
@@ -230,13 +235,15 @@ class TestMigrations:
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
         assert tables >= {"relay_outbox", "relay_operations", "sync_watermark", "nodes"}
         assert tables >= V2_TABLES
-        assert version == 6
+        assert version == 7
         # v2 node column names: is_active replaces archived; row-LWW columns
         # replace the v1 node_content_hlc watermark.
         assert {"is_active", "class_ids", "content_plain", "hlc_physical", "hlc_logical", "actor_id"} <= columns
-        # v5 tags + v6 class order (web schema v5→v6 / v6→v7 parity).
-        assert {"tag_ids", "class_order"} <= columns
+        # v5 tags + v6 class order (web schema v5→v6 / v6→v7 parity) and the
+        # Revision-11 render-state booleans (web schema v7→v8 parity).
+        assert {"tag_ids", "class_order", "is_class", "present_as_main"} <= columns
         assert "archived" not in columns
+        assert "node_type" not in columns
         assert "node_content_hlc" not in tables
 
     def test_opening_same_database_twice_is_idempotent(self, tmp_path: Path) -> None:
@@ -295,10 +302,79 @@ class TestMigrations:
         assert row is not None
         assert row.is_active is False  # archived=1 → is_active=0
         assert row.content == '"old"'
-        assert row.node_type == "page"
+        # Revision-11 mapping straight from the v1 reshape: page → presents
+        # as main (the v7 rebuild is a no-op on this path).
+        assert row.is_class is False
+        assert row.present_as_main is True
         upgraded.close()
         with sqlite3.connect(path) as raw:
             assert "node_content_hlc" not in {r[0] for r in raw.execute("SELECT name FROM sqlite_master")}
+
+    def test_v6_to_v7_migration_maps_node_type_to_the_render_bits(self, tmp_path: Path) -> None:
+        """The Revision-11 table rebuild: page → (0, 1), block → (0, 0),
+        class → (1, 0); parented pages keep their parent (the render bit is
+        independent of placement) and classes stay roots."""
+        path = tmp_path / "v6.db"
+        with sqlite3.connect(path) as raw:
+            raw.executescript(
+                """
+                CREATE TABLE nodes (
+                    workspace_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    parent_id TEXT,
+                    node_type TEXT NOT NULL DEFAULT 'block'
+                        CHECK (node_type IN ('page', 'block', 'class')),
+                    name TEXT,
+                    class_ids TEXT NOT NULL DEFAULT '[]',
+                    class_order TEXT NOT NULL DEFAULT '[]',
+                    tag_ids TEXT NOT NULL DEFAULT '[]',
+                    icon TEXT,
+                    color TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    content TEXT,
+                    content_plain TEXT NOT NULL DEFAULT '',
+                    created_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_by TEXT,
+                    updated_by TEXT,
+                    hlc_physical INTEGER NOT NULL DEFAULT 0,
+                    hlc_logical INTEGER NOT NULL DEFAULT 0,
+                    actor_id TEXT,
+                    PRIMARY KEY (workspace_id, id)
+                );
+                INSERT INTO nodes (workspace_id, id, parent_id, node_type, content_plain, updated_at)
+                VALUES ('ws-a', 'v6-root-page', NULL, 'page', 'root', '2026-01-01'),
+                       ('ws-a', 'v6-child-page', 'v6-root-page', 'page', 'child page', '2026-01-01'),
+                       ('ws-a', 'v6-block', 'v6-root-page', 'block', 'block', '2026-01-01'),
+                       ('ws-a', 'v6-class', NULL, 'class', 'class', '2026-01-01');
+                PRAGMA user_version = 6;
+                """
+            )
+        upgraded = LocalStore(path)
+        with sqlite3.connect(path) as raw:
+            version = raw.execute("PRAGMA user_version").fetchone()[0]
+            columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
+        assert version == 7
+        assert "node_type" not in columns
+        assert {"is_class", "present_as_main"} <= columns
+        root_page = upgraded.node(WS_A, "v6-root-page")
+        assert root_page is not None
+        assert (root_page.is_class, root_page.present_as_main) == (False, True)
+        assert root_page.parent_id is None
+        child_page = upgraded.node(WS_A, "v6-child-page")
+        assert child_page is not None
+        # Parented page: bit preserved as main, parent edge untouched.
+        assert (child_page.is_class, child_page.present_as_main) == (False, True)
+        assert child_page.parent_id == "v6-root-page"
+        block = upgraded.node(WS_A, "v6-block")
+        assert block is not None
+        assert (block.is_class, block.present_as_main) == (False, False)
+        assert block.parent_id == "v6-root-page"
+        class_row = upgraded.node(WS_A, "v6-class")
+        assert class_row is not None
+        assert (class_row.is_class, class_row.present_as_main) == (True, False)
+        assert class_row.parent_id is None
+        upgraded.close()
 
 
 class TestOutbox:
@@ -367,7 +443,7 @@ class TestWipe:
     def test_wipe_clears_every_table_for_workspace(self, store: LocalStore, tmp_path: Path) -> None:
         store.enqueue(create_env())
         store.apply_remote(create_env(uid("parent"), content="hello", hlc=(2, 0)))
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(3, 0)))
         store.apply_remote(create_env(tag_ids=(uid("t-a"),), hlc=(4, 0)))
         store.apply_remote(property_set_env(uid("parent"), uid("schema-1"), value={"v": 1}, hlc=(5, 0)))
         store.set_cursor(WS_A, 9)
@@ -396,14 +472,15 @@ class TestObjectCreate:
     def test_create_inserts_v2_row(self, store: LocalStore) -> None:
         # The builder's name convenience is the node's initial text content
         # (title-is-content: no name column write).
-        store.apply_remote(create_env(parent_id=None, node_type="page", name="My Page"))
+        store.apply_remote(create_env(parent_id=None, name="My Page"))
         store.apply_remote(update_env(NODE, hlc=(2, 0), icon="📄", color="red"))
         row = store.node(WS_A, NODE)
         assert row == NodeRow(
             id=NODE,
             workspace_id=WS_A,
             parent_id=None,
-            node_type="page",
+            is_class=False,
+            present_as_main=True,  # parentless create defaults to main
             name=None,  # title-is-content: the retired cache is never written
             class_ids=(),
             tag_ids=(),
@@ -422,9 +499,11 @@ class TestObjectCreate:
         assert row.content == json.dumps([{"type": "text", "text": "Winner"}])
         assert row.content_plain == "Winner"
 
-    def test_page_create_flattens_rich_content_to_text_only(self, store: LocalStore) -> None:
-        """Title-is-content: pages/classes carry text-only content — a page
-        created with rich tokens flattens to a single text token."""
+    def test_parentless_create_flattens_rich_content_to_text_only(self, store: LocalStore) -> None:
+        """Content flatten invariant (SCHEMA.md): document-chrome nodes
+        (is_class or present_as_main) carry text-only content — a parentless
+        node (present_as_main defaults to 1) created with rich tokens
+        flattens to a single text token."""
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(content=rich))
         row = store.node(WS_A, NODE)
@@ -435,17 +514,17 @@ class TestObjectCreate:
     def test_block_create_keeps_the_full_token_stream(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), node_type="block", content=rich))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), content=rich))
         row = store.node(WS_A, uid("child"))
         assert row is not None
         assert json.loads(row.content or "") == rich
         assert row.content_plain == "Bob said hi"
 
-    def test_create_defaults_child_node_type_to_block(self, store: LocalStore) -> None:
+    def test_create_defaults_present_as_main_by_context(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        # The applier defaults nodeType by context (workspace root → page,
-        # child → block); the wire payload simply omits it (an explicit
-        # nodeType must be one of page|block|class — the strict schema
+        # The applier defaults the render bit by context (workspace root →
+        # main, child → inline); the wire payload simply omits it (an
+        # explicit presentAsMain must be a boolean — the strict schema
         # rejects anything else, like the server's).
         store.apply_remote(
             make_env(
@@ -455,11 +534,18 @@ class TestObjectCreate:
                 affected=(uid("child"),),
             )
         )
-        assert store.node(WS_A, uid("child")).node_type == "block"
+        assert store.node(WS_A, uid("parent")).present_as_main is True
+        assert store.node(WS_A, uid("child")).present_as_main is False
+
+    def test_create_explicit_present_as_main_wins_over_the_default(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("parent"), parent_id=None))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, hlc=(2, 0)))
+        assert store.node(WS_A, uid("child")).present_as_main is True
 
     def test_create_content_ast_stored_as_json_with_derived_plaintext(self, store: LocalStore) -> None:
-        # Title-is-content: a PAGE flattens rich tokens to text-only content
-        # (blocks keep the full stream — see test_block_create_keeps_the_full_token_stream).
+        # Content flatten invariant: a PARENTLESS node (present_as_main=1)
+        # flattens rich tokens to text-only content (inline blocks keep the
+        # full stream — see test_block_create_keeps_the_full_token_stream).
         store.apply_remote(
             create_env(
                 content=[{"type": "text", "text": "hello"}, {"type": "hard_break"}, {"type": "text", "text": "world"}]
@@ -479,27 +565,63 @@ class TestObjectCreate:
             (NODE,),
         ) == sorted([(uid("c-a"), 1), (uid("c-b"), 1)])
 
-    def test_block_without_parent_raises_placement_error(self, store: LocalStore) -> None:
-        with pytest.raises(PlacementError, match="block must have a parent"):
-            store.apply_remote(create_env(node_type="block", parent_id=None))
+    def test_parentless_create_is_legal_and_defaults_to_main(self, store: LocalStore) -> None:
+        """Semantic inversion (Revision 11): parentless non-class nodes are
+        legal — they render with document chrome by the second cascade
+        branch, and the render bit defaults to main."""
+        store.apply_remote(create_env(uid("lone"), parent_id=None, hlc=(1, 0)))
+        row = store.node(WS_A, uid("lone"))
+        assert row is not None
+        assert row.parent_id is None
+        assert (row.is_class, row.present_as_main) == (False, True)
 
-    def test_class_with_parent_raises_placement_error(self, store: LocalStore) -> None:
-        store.apply_remote(create_env(uid("parent"), parent_id=None))
-        with pytest.raises(PlacementError, match="class is tree-external"):
-            store.apply_remote(create_env(uid("cls"), node_type="class", parent_id=uid("parent")))
+    def test_retired_node_type_key_rejected_by_strict_validation(self, store: LocalStore) -> None:
+        """No wire compat of any kind: object.create/update payloads carrying
+        the retired nodeType key fail strict validation like any other
+        unknown key (pydantic extra="forbid", the zod .strict() parity)."""
+        store.apply_remote(create_env(uid("parent"), parent_id=None, hlc=(1, 0)))
+        with pytest.raises(EnvelopeValidationError, match="nodeType"):
+            store.apply_remote(
+                make_env(
+                    "object.create",
+                    {"objectId": uid("legacy"), "nodeType": "page", "parentId": uid("parent")},
+                    hlc=(2, 0),
+                    affected=(uid("legacy"),),
+                )
+            )
+        with pytest.raises(EnvelopeValidationError, match="nodeType"):
+            store.apply_remote(
+                make_env(
+                    "object.update",
+                    {"objectId": uid("parent"), "nodeType": "page"},
+                    hlc=(2, 0),
+                    affected=(uid("parent"),),
+                )
+            )
+        assert store.node(WS_A, uid("legacy")) is None
+        assert raw_rows(store, "SELECT COUNT(*) FROM relay_operations") == [(1,)]
 
     def test_missing_parent_raises_not_found(self, store: LocalStore) -> None:
         with pytest.raises(NotFoundError, match="parent"):
             store.apply_remote(create_env(uid("child"), parent_id=uid("missing")))
 
-    def test_class_parent_raises_move_guard(self, store: LocalStore) -> None:
+    def test_class_parent_is_legal_for_non_class_children(self, store: LocalStore) -> None:
+        """Semantic inversion (Revision 11, spec I4): classes are containers —
+        a class node may parent non-class children (object.create only ever
+        makes is_class=0 nodes)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Tag"))
-        with pytest.raises(MoveGuardError, match="tree-external"):
-            store.apply_remote(create_env(uid("child"), parent_id=uid("cls-1")))
+        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        store.apply_remote(create_env(uid("child"), parent_id=uid("cls-1"), content=rich, hlc=(2, 0)))
+        row = store.node(WS_A, uid("child"))
+        assert row is not None
+        assert row.parent_id == uid("cls-1")
+        assert (row.is_class, row.present_as_main) == (False, False)
+        # Inline child of a class keeps its full rich token stream.
+        assert json.loads(row.content or "") == rich
 
     def test_recreate_is_a_tree_no_op_but_unions_class_ids(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), node_type="block", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(2, 0)))
         before = raw_rows(store, "SELECT COUNT(*) FROM node_child_order")
         # Re-issue under a DIFFERENT parent with payload drift: tree untouched.
         assert store.apply_remote(create_env(uid("child"), parent_id=NODE, name="drift", hlc=(3, 0))) is False
@@ -522,12 +644,12 @@ class TestObjectCreate:
         lands immediately before that sibling (midpoint below the first
         child when the anchor is first)."""
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(2, 0)))
-        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), hlc=(2, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), hlc=(3, 0)))
         store.apply_remote(
             make_env(
                 "object.create",
-                {"objectId": uid("z"), "nodeType": "block", "parentId": uid("p"), "beforeId": uid("x")},
+                {"objectId": uid("z"), "parentId": uid("p"), "beforeId": uid("x")},
                 hlc=(4, 0),
                 affected=(uid("z"),),
             )
@@ -565,19 +687,33 @@ class TestObjectUpdate:
         assert raw_rows(store, "SELECT COUNT(*) FROM relay_operations") == [(1,)]
         assert store.apply_remote(update_env(NODE, hlc=(11, 0), icon="ok")) is True
 
-    def test_promoting_a_block_flattens_its_content_to_text_only(self, store: LocalStore) -> None:
+    def test_promotion_toggle_flattens_content_to_text_only(self, store: LocalStore) -> None:
+        """The presentAsMain toggle is promotion/demotion: a 0→1 flip
+        (promotion) stringifies the rich token stream in the same op."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
-        store.apply_remote(
-            create_env(uid("child"), parent_id=uid("parent"), node_type="block", content=rich, hlc=(2, 0))
-        )
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), nodeType="page")) is True
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), content=rich, hlc=(2, 0)))
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
         row = store.node(WS_A, uid("child"))
         assert row is not None
-        assert row.node_type == "page"
+        assert row.present_as_main is True
         assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
 
-    def test_page_content_update_flattens_rich_tokens(self, store: LocalStore) -> None:
+    def test_demotion_does_not_unflatten_content(self, store: LocalStore) -> None:
+        """A 1→0 demotion leaves the (already flattened) content untouched —
+        demotion never un-flattens."""
+        store.apply_remote(create_env(uid("parent"), parent_id=None))
+        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, content=rich, hlc=(2, 0)))
+        # Created straight as main: content flattened at create time.
+        assert json.loads(store.node(WS_A, uid("child")).content or "") == [{"type": "text", "text": "Bob said hi"}]
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=False)) is True
+        row = store.node(WS_A, uid("child"))
+        assert row is not None
+        assert row.present_as_main is False
+        assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
+
+    def test_main_presenting_content_update_flattens_rich_tokens(self, store: LocalStore) -> None:
         store.apply_remote(create_env(hlc=(10, 0)))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
         assert store.apply_remote(update_env(NODE, hlc=(11, 0), contentAst=rich)) is True
@@ -614,27 +750,35 @@ class TestObjectUpdate:
         with pytest.raises(UnsupportedCarrierError, match="Yjs"):
             store.apply_remote(update_env(NODE, hlc=(11, 0), contentDeltaB64="AAAA"))
 
-    def test_node_type_flip_respects_placement(self, store: LocalStore) -> None:
+    def test_present_as_main_toggle_promotes_and_demotes_in_place(self, store: LocalStore) -> None:
+        """The toggle joins the row LWW set and preserves identity — the node
+        stays parented in place; only the render bit flips."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), node_type="block", hlc=(2, 0)))
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), nodeType="page")) is True
-        assert store.node(WS_A, uid("child")).node_type == "page"
-        assert store.apply_remote(update_env(uid("child"), hlc=(4, 0), nodeType="block")) is True
-        assert store.node(WS_A, uid("child")).node_type == "block"
-        # Demoting a PARENTLESS page to a block violates placement.
-        store.apply_remote(create_env(uid("lone-page"), parent_id=None, hlc=(2, 0)))
-        with pytest.raises(PlacementError):
-            store.apply_remote(update_env(uid("lone-page"), hlc=(5, 0), nodeType="block"))
-        # Declaring a parented node a class violates placement.
-        with pytest.raises(PlacementError):
-            store.apply_remote(update_env(uid("child"), hlc=(6, 0), nodeType="class"))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(2, 0)))
+        assert store.node(WS_A, uid("child")).present_as_main is False
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
+        assert store.node(WS_A, uid("child")).present_as_main is True
+        assert store.node(WS_A, uid("child")).parent_id == uid("parent")
+        assert store.apply_remote(update_env(uid("child"), hlc=(4, 0), presentAsMain=False)) is True
+        assert store.node(WS_A, uid("child")).present_as_main is False
+
+    def test_present_as_main_toggle_respects_row_lww(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("parent"), parent_id=None))
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(2, 0)))
+        assert store.apply_remote(update_env(uid("child"), hlc=(2, 0), presentAsMain=True)) is False
+        assert store.node(WS_A, uid("child")).present_as_main is False
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
+        assert store.node(WS_A, uid("child")).present_as_main is True
+        # A stale toggle at an older HLC never regresses the bit.
+        assert store.apply_remote(update_env(uid("child"), hlc=(2, 5), presentAsMain=False)) is False
+        assert store.node(WS_A, uid("child")).present_as_main is True
 
 
 class TestObjectMove:
     def test_reparent_and_after_id_midpoint(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
-            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+            store.apply_remote(create_env(node, parent_id=uid("p"), hlc=(2 + index, 0)))
         # Enter placement: z jumps the queue to sit right after x.
         assert store.apply_remote(move_env(uid("z"), parent_id=uid("p"), after_id=uid("x"), hlc=(9, 0))) is True
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("z"), uid("y")]
@@ -645,8 +789,8 @@ class TestObjectMove:
 
     def test_append_at_end_when_after_id_is_last(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(2, 0)))
-        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), hlc=(2, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), hlc=(3, 0)))
         store.apply_remote(move_env(uid("x"), parent_id=uid("p"), after_id=uid("y"), hlc=(4, 0)))
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("y"), uid("x")]
         assert raw_rows(
@@ -657,15 +801,15 @@ class TestObjectMove:
     def test_after_id_not_a_sibling_falls_back_to_append(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("other"), parent_id=None, hlc=(2, 0)))
-        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
-        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(4, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), hlc=(3, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), hlc=(4, 0)))
         store.apply_remote(move_env(uid("y"), parent_id=uid("p"), after_id=uid("other"), hlc=(5, 0)))
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("y")]
 
     def test_before_id_places_the_node_immediately_before_the_anchor(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
-            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+            store.apply_remote(create_env(node, parent_id=uid("p"), hlc=(2 + index, 0)))
         # z jumps the queue to sit right before y.
         assert store.apply_remote(move_env(uid("z"), parent_id=uid("p"), before_id=uid("y"), hlc=(9, 0))) is True
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("z"), uid("y")]
@@ -677,7 +821,7 @@ class TestObjectMove:
     def test_before_id_against_the_first_child_yields_a_position_below_it(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
-            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+            store.apply_remote(create_env(node, parent_id=uid("p"), hlc=(2 + index, 0)))
         assert store.apply_remote(move_env(uid("z"), parent_id=uid("p"), before_id=uid("x"), hlc=(9, 0))) is True
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("z"), uid("x"), uid("y")]
         (position,) = raw_rows(
@@ -690,15 +834,15 @@ class TestObjectMove:
     def test_before_id_not_a_sibling_falls_back_to_append(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("other"), parent_id=None, hlc=(2, 0)))
-        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
-        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(4, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), hlc=(3, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), hlc=(4, 0)))
         store.apply_remote(move_env(uid("y"), parent_id=uid("p"), before_id=uid("other"), hlc=(5, 0)))
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("y")]
 
     def test_after_id_wins_when_both_anchors_are_present(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
-            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+            store.apply_remote(create_env(node, parent_id=uid("p"), hlc=(2 + index, 0)))
         # At most one anchor is meaningful: afterId is looked up first, so
         # the append-after-z branch wins over the before-y branch.
         assert (
@@ -716,7 +860,7 @@ class TestObjectMove:
     def test_reparent_carries_a_single_child_order_row(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("a"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("b"), parent_id=None, hlc=(2, 0)))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("a"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("a"), hlc=(3, 0)))
         store.apply_remote(move_env(uid("c"), parent_id=uid("b"), hlc=(4, 0)))
         assert store.node(WS_A, uid("c")).parent_id == uid("b")
         assert raw_rows(
@@ -725,39 +869,65 @@ class TestObjectMove:
         ) == [(1,)]
         assert [row.id for row in store.children(WS_A, uid("b"))] == [uid("c")]
 
-    def test_block_to_root_raises_placement_error(self, store: LocalStore, tmp_path: Path) -> None:
+    def test_move_to_root_is_legal_and_drops_child_order_row(self, store: LocalStore, tmp_path: Path) -> None:
+        """Semantic inversion (Revision 11): moving a parented non-class node
+        to the workspace root is legal — it renders with document chrome by
+        the second cascade branch; the throw-rollback behavior of the old
+        guard is pinned by test_own_descendant_move_raises_move_guard."""
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), node_type="block", hlc=(2, 0)))
-        with pytest.raises(PlacementError):
-            store.apply_remote(move_env(uid("c"), parent_id=None, hlc=(3, 0)))
-        # The throw rolls back: still parented, one child_order row.
-        assert store.node(WS_A, uid("c")).parent_id == uid("p")
-        assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(1,)]
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), hlc=(2, 0)))
+        assert store.apply_remote(move_env(uid("c"), parent_id=None, hlc=(3, 0))) is True
+        row = store.node(WS_A, uid("c"))
+        assert row is not None
+        assert row.parent_id is None
+        # Moves never write the render bit: the bit stays inline (unread for
+        # parentless nodes — benign by construction).
+        assert row.present_as_main is False
+        assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(0,)]
 
-    def test_root_move_of_page_drops_child_order_row(self, store: LocalStore, tmp_path: Path) -> None:
+    def test_root_move_of_main_presenting_node_keeps_the_bit(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("sub"), parent_id=uid("p"), node_type="page", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("sub"), parent_id=uid("p"), present_as_main=True, hlc=(2, 0)))
         store.apply_remote(move_env(uid("sub"), parent_id=None, hlc=(3, 0)))
-        assert store.node(WS_A, uid("sub")).parent_id is None
-        assert raw_rows(store, "SELECT COUNT(*) FROM node_child_order WHERE child_id = 'sub'") == [(0,)]
+        row = store.node(WS_A, uid("sub"))
+        assert row is not None
+        assert row.parent_id is None
+        # Moves never write the bit: parentless-with-bit-set is benign.
+        assert row.present_as_main is True
+        assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('sub')}'") == [(0,)]
 
-    def test_class_parent_raises_move_guard(self, store: LocalStore) -> None:
+    def test_move_under_class_parent_is_legal(self, store: LocalStore) -> None:
+        """Semantic inversion (Revision 11, spec I4): classes are containers —
+        moving a non-class node under a class parent is legal."""
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(2, 0), name="Tag"))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
-        with pytest.raises(MoveGuardError):
-            store.apply_remote(move_env(uid("c"), parent_id=uid("cls-1"), hlc=(4, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), hlc=(3, 0)))
+        assert store.apply_remote(move_env(uid("c"), parent_id=uid("cls-1"), hlc=(4, 0))) is True
+        row = store.node(WS_A, uid("c"))
+        assert row is not None
+        assert row.parent_id == uid("cls-1")
+
+    def test_class_node_move_to_parent_raises_move_guard(self, store: LocalStore) -> None:
+        """Classes are always roots: moving an is_class=1 node under any
+        parent is rejected (the DB CHECK would fire anyway — the guard
+        surfaces it friendly)."""
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(2, 0), name="Tag"))
+        with pytest.raises(MoveGuardError, match="classes are always roots"):
+            store.apply_remote(move_env(uid("cls-1"), parent_id=uid("p"), hlc=(3, 0)))
+        # The throw rolls back: the class node stays parentless.
+        assert store.node(WS_A, uid("cls-1")).parent_id is None
 
     def test_own_descendant_move_raises_move_guard(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("outer"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("inner"), parent_id=uid("outer"), node_type="block", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("inner"), parent_id=uid("outer"), hlc=(2, 0)))
         with pytest.raises(MoveGuardError, match="own subtree"):
             store.apply_remote(move_env(uid("outer"), parent_id=uid("inner"), hlc=(3, 0)))
 
     def test_older_move_after_newer_is_dropped(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("q"), parent_id=None, hlc=(2, 0)))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), hlc=(3, 0)))
         store.apply_remote(move_env(uid("c"), parent_id=uid("q"), hlc=(4, 0)))
         assert store.node(WS_A, uid("c")).parent_id == uid("q")
         store.apply_remote(move_env(uid("c"), parent_id=uid("p"), hlc=(5, 0)))
@@ -771,7 +941,7 @@ class TestObjectMove:
 class TestObjectDelete:
     def test_soft_delete_trashes_subtree(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), node_type="block", content="child", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
         store.apply_remote(delete_env(uid("p"), hlc=(3, 0)))
         assert store.node(WS_A, uid("p")).is_active is False
         assert store.node(WS_A, uid("c")).is_active is False
@@ -784,7 +954,7 @@ class TestObjectDelete:
 
     def test_permanent_delete_hard_removes_subtree(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), node_type="block", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), hlc=(2, 0)))
         store.apply_remote(property_set_env(uid("c"), uid("s-1"), value=1, hlc=(3, 0)))
         store.apply_remote(delete_env(uid("p"), permanent=True, hlc=(4, 0)))
         assert store.node(WS_A, uid("p")) is None
@@ -802,7 +972,8 @@ class TestClassOps:
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Book", icon="📕", color="blue"))
         row = store.node(WS_A, uid("cls-1"))
         assert row is not None
-        assert row.node_type == "class"
+        assert row.is_class is True
+        assert row.present_as_main is False
         assert row.parent_id is None
         # Title-is-content: the class title IS its content; the registry
         # ``name`` is a derived cache of that text (never the node column).
@@ -1010,7 +1181,7 @@ class TestClassUnassign:
         )
         store.apply_remote(
             make_env(
-                "object.create", {"objectId": node_id, "nodeType": "page", "classIds": [uid("cls-x")]}, hlc=(4, 0)
+                "object.create", {"objectId": node_id, "classIds": [uid("cls-x")]}, hlc=(4, 0)
             ),
         )
 
@@ -1067,7 +1238,7 @@ class TestClassUnassign:
 
         # Order 2: the add lands first, then the equal-(hlc, actor) remove
         # (strictly-greater gate) is dropped.
-        store.apply_remote(make_env("object.create", {"objectId": uid("n-y"), "nodeType": "page"}, hlc=(8, 0)))
+        store.apply_remote(make_env("object.create", {"objectId": uid("n-y")}, hlc=(8, 0)))
         store.apply_remote(make_env("object.create", {"objectId": uid("n-y"), "classIds": [uid("cls-x")]}, hlc=(9, 0)))
         store.apply_remote(make_env("class.unassign", {"objectId": uid("n-y"), "classId": uid("cls-x")}, hlc=(9, 0)))
         assert store.node(WS_A, uid("n-y")).class_ids == (uid("cls-x"),)
@@ -1139,7 +1310,7 @@ class TestTagOps:
         # remove (strictly-greater gate) is dropped.
         other = uid("n-y")
         store.apply_remote(
-            make_env("object.create", {"objectId": other, "nodeType": "page", "tagIds": [uid("t-a")]}, hlc=(8, 0))
+            make_env("object.create", {"objectId": other, "tagIds": [uid("t-a")]}, hlc=(8, 0))
         )
         store.apply_remote(make_env("tag.unassign", {"objectId": other, "tagId": uid("t-a")}, hlc=(8, 0)))
         assert store.node(WS_A, other).tag_ids == (uid("t-a"),)
@@ -1398,7 +1569,7 @@ class TestApplyRemote:
 class TestNodesQuery:
     def test_nodes_filters_by_parent(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("n1"), parent_id=None))
-        store.apply_remote(create_env(uid("n2"), parent_id=uid("n1"), node_type="block"))
+        store.apply_remote(create_env(uid("n2"), parent_id=uid("n1")))
         assert sorted(row.id for row in store.nodes(WS_A)) == [uid("n1"), uid("n2")]
         assert [row.id for row in store.nodes(WS_A, parent_id=uid("n1"))] == [uid("n2")]
 
@@ -1414,7 +1585,8 @@ class TestSnapshotRestore:
                 {
                     "id": uid("n1"),
                     "workspace_id": WS_A,
-                    "node_type": "page",
+                    "is_class": 0,
+                    "present_as_main": 1,
                     "parent_id": None,
                     "class_ids": json.dumps([uid("c-1")]),
                     "name": "Snap Page",
@@ -1428,19 +1600,29 @@ class TestSnapshotRestore:
                     "hlc_logical": 2,
                     "actor_id": ACTOR,
                 },
-                {"id": uid("n2"), "workspace_id": WS_A, "node_type": "block", "parent_id": uid("n1"), "content": "[]"},
+                {
+                    "id": uid("n2"),
+                    "workspace_id": WS_A,
+                    "is_class": 0,
+                    "present_as_main": 0,
+                    "parent_id": uid("n1"),
+                    "content": "[]",
+                },
             ]
         )
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
         rows = {row.id: row for row in store.nodes(WS_A, include_inactive=True)}
-        # Same-name, same-polarity mapping: node_type/is_active/class_ids/name
-        # copy verbatim and the row-LWW columns seed the LWW baseline.
-        assert rows[uid("n1")].node_type == "page"
+        # Same-name, same-polarity mapping: is_class/present_as_main/
+        # is_active/class_ids/name copy verbatim and the row-LWW columns seed
+        # the LWW baseline.
+        assert rows[uid("n1")].present_as_main is True
+        assert rows[uid("n1")].is_class is False
         assert rows[uid("n1")].is_active is False  # is_active=0
         assert rows[uid("n1")].content == mirror
         assert rows[uid("n1")].class_ids == (uid("c-1"),)
         assert rows[uid("n1")].name == "Snap Page"
-        assert rows[uid("n2")].node_type == "block"
+        assert rows[uid("n2")].present_as_main is False
+        assert rows[uid("n2")].is_class is False
         assert rows[uid("n2")].is_active is True
         # Seeded LWW baseline (hlc 5,2): lower/equal writes must lose.
         assert (
@@ -1463,7 +1645,8 @@ class TestSnapshotRestore:
             CREATE TABLE node (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
-                node_type TEXT NOT NULL CHECK (node_type IN ('page', 'block', 'class')),
+                is_class INTEGER NOT NULL DEFAULT 0,
+                present_as_main INTEGER NOT NULL DEFAULT 0,
                 parent_id TEXT,
                 content TEXT NOT NULL DEFAULT '[]',
                 is_active INTEGER NOT NULL DEFAULT 1
@@ -1471,14 +1654,14 @@ class TestSnapshotRestore:
             """
         )
         conn.execute(
-            f"INSERT INTO node (id, workspace_id, node_type, content) VALUES ('{uid('legacy')}', ?, 'page', 'old')",
+            f"INSERT INTO node (id, workspace_id, present_as_main, content) VALUES ('{uid('legacy')}', ?, 1, 'old')",
             (WS_A,),
         )
         blob = conn.serialize()
         conn.close()
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
         row = store.node(WS_A, uid("legacy"))
-        assert row is not None and row.node_type == "page" and row.content == "old"
+        assert row is not None and row.present_as_main is True and row.content == "old"
         # No baseline → any later update wins.
         assert (
             store.apply_remote(update_env(uid("legacy"), hlc=(1, 0), contentAst=[{"type": "text", "text": "new"}]))
@@ -1489,8 +1672,8 @@ class TestSnapshotRestore:
     def test_restore_filters_by_workspace(self, store: LocalStore) -> None:
         blob = make_server_snapshot(
             [
-                {"id": uid("n1"), "workspace_id": WS_A, "node_type": "page", "content": "[]"},
-                {"id": uid("n2"), "workspace_id": WS_B, "node_type": "page", "content": "[]"},
+                {"id": uid("n1"), "workspace_id": WS_A, "is_class": 0, "present_as_main": 1, "content": "[]"},
+                {"id": uid("n2"), "workspace_id": WS_B, "is_class": 0, "present_as_main": 1, "content": "[]"},
             ]
         )
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
@@ -1508,8 +1691,8 @@ class TestSnapshotRestore:
         # The plural ``nodes`` table is a client-cache invention, not a server
         # snapshot — accepting it is how the original double-fake bug hid.
         conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE nodes (id TEXT, workspace_id TEXT, node_type TEXT)")
-        conn.execute("INSERT INTO nodes VALUES ('x', ?, 'page')", (WS_A,))
+        conn.execute("CREATE TABLE nodes (id TEXT, workspace_id TEXT, is_class INTEGER)")
+        conn.execute("INSERT INTO nodes VALUES ('x', ?, 0)", (WS_A,))
         blob = conn.serialize()
         conn.close()
         assert store.restore_snapshot(blob, workspace_id=WS_A) is False

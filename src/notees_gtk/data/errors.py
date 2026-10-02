@@ -2,8 +2,8 @@
 
 Guard violations fail loud with a typed error so callers (and tests) can tell
 a convergence-relevant rejection from a bug: cycle closes, cross-row move
-guards, placement CHECK equivalents, unknown targets, and the reserved CRDT
-carrier all have their own class.
+guards, unknown targets, and the reserved CRDT carrier all have their own
+class.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ __all__ = [
     "EnvelopeValidationError",
     "MoveGuardError",
     "NotFoundError",
-    "PlacementError",
     "StoreError",
     "UnsupportedCarrierError",
 ]
@@ -40,18 +39,14 @@ class CycleError(StoreError):
 
 
 class MoveGuardError(StoreError):
-    """Cross-row tree guard: a class may never parent, and a node may never
-    move under itself or its own descendant."""
+    """Cross-row tree guard: a node may never move under itself or its own
+    descendant, and a class node may never move under any parent (classes
+    are always roots — the friendly surface of the node table's
+    ``is_class = 0 OR parent_id IS NULL`` CHECK)."""
 
 
 class NotFoundError(StoreError):
     """The op targets a node (or parent) that does not exist in the cache."""
-
-
-class PlacementError(StoreError):
-    """Placement CHECK equivalent: a block must have a parent, a class must not
-    (the server enforces these as CHECK constraints on its derived schema; the
-    client cache enforces them in the applier)."""
 
 
 class UnsupportedCarrierError(StoreError):

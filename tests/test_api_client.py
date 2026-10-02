@@ -336,7 +336,7 @@ class TestSubmitBatch:
 
     def test_oversized_envelope_rejected_before_wire(self) -> None:
         env = RelayEnvelope(
-            protocolVersion=2,
+            protocolVersion=3,
             workspaceId=WORKSPACE_ID,
             actorId=ACTOR_ID,
             deviceId="api-test-device",

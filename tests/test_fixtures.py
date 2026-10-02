@@ -116,7 +116,7 @@ def test_every_fixture_file_is_covered() -> None:
     )
 
 
-def test_v2_envelopes_declare_protocol_version_two() -> None:
+def test_v2_envelopes_declare_protocol_version_three() -> None:
     for fixture_name in V2_SINGLE_ENVELOPE_FIXTURES:
         raw = json.loads((FIXTURES_DIR / fixture_name).read_text())
         assert raw["protocolVersion"] == PROTOCOL_VERSION

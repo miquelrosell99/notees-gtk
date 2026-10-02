@@ -1,12 +1,13 @@
-"""Pydantic wire models for the Notees relay sync protocol v2.
+"""Pydantic wire models for the Notees relay sync protocol v3.
 
 Mirrors ``v2/packages/protocol/src/envelope.ts`` and the v2 ``WIRE.md``
-(camelCase everywhere on the wire, ``protocolVersion: 2`` mandatory,
-first-class ``deviceId``, optional ``client`` provenance claim, and the M3
-E2EE payload slot ``{"$e": {iv, ct}}``). The envelope schema accepts only
-camelCase keys (``populate_by_name`` is deliberately off) and forbids extra
-keys — the fail-loud parity of the zod ``.strict()`` schemas. ``seq`` never
-appears inside an envelope; it rides on catch-up responses and WS frames.
+(camelCase everywhere on the wire, ``protocolVersion: 3`` mandatory — only 3
+is accepted, Revision 11, 2026-10-02 — first-class ``deviceId``, optional
+``client`` provenance claim, and the M3 E2EE payload slot ``{"$e": {iv, ct}}``).
+The envelope schema accepts only camelCase keys (``populate_by_name`` is
+deliberately off) and forbids extra keys — the fail-loud parity of the zod
+``.strict()`` schemas. ``seq`` never appears inside an envelope; it rides on
+catch-up responses and WS frames.
 """
 
 from __future__ import annotations
@@ -45,8 +46,9 @@ __all__ = [
 ]
 
 #: Version of the relay envelope schema (``envelope.ts`` PROTOCOL_VERSION).
-#: Mandatory on every envelope; receivers fail loud on a newer version.
-PROTOCOL_VERSION = 2
+#: Mandatory on every envelope; only 3 is accepted (Revision 11) — a missing
+#: version or any other value fails loud.
+PROTOCOL_VERSION = 3
 
 #: Version of the WebSocket message framing (``WIRE.md`` §2). Versioned
 #: independently of PROTOCOL_VERSION; a newer framing version fails loud.
@@ -99,7 +101,7 @@ class RelayEnvelope(BaseModel):
     @field_validator("protocol_version")
     @classmethod
     def _validate_protocol_version(cls, value: int) -> int:
-        """Fail loudly on missing or non-v2 envelope versions (WIRE.md §3)."""
+        """Fail loudly on missing or non-v3 envelope versions (WIRE.md §3)."""
         if value > PROTOCOL_VERSION:
             raise ValueError(
                 f"Unsupported protocol_version {value}: this client speaks v{PROTOCOL_VERSION} "
@@ -306,7 +308,7 @@ def new_envelope(
     affected_node_ids: Sequence[str] = (),
     now_ms: Callable[[], int] = _wall_clock_ms,
 ) -> RelayEnvelope:
-    """Build a new outbound v2 envelope, stamping id, HLC, and timestamp.
+    """Build a new outbound v3 envelope, stamping id, HLC, and timestamp.
 
     Args:
         workspace_id: Workspace the operation belongs to.

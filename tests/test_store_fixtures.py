@@ -87,14 +87,14 @@ def base_store(tmp_path: Path) -> LocalStore:
     tmp_path.mkdir(parents=True, exist_ok=True)
     instance = LocalStore(tmp_path / "base.db")
     seeds = [
-        ({"objectId": NODE_PAGE, "nodeType": "page", "classIds": []}, 1727200000000),
-        ({"objectId": NODE_BOOK, "nodeType": "page", "classIds": []}, 1727200001000),
-        ({"objectId": NODE_BLOCK, "nodeType": "block", "parentId": NODE_PAGE}, 1727200000500),
+        ({"objectId": NODE_PAGE, "classIds": []}, 1727200000000),
+        ({"objectId": NODE_BOOK, "classIds": []}, 1727200001000),
+        ({"objectId": NODE_BLOCK, "parentId": NODE_PAGE}, 1727200000500),
     ]
     for payload, physical in seeds:
         envelope = RelayEnvelope.model_validate(
             {
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "workspaceId": WS,
                 "actorId": "0192a000-0000-7000-8000-000000000002",
                 "deviceId": "fixture-test-device",
@@ -114,8 +114,8 @@ class TestObjectCreateFixtures:
             assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
         page = store.node(WS, NODE_PAGE)
         book = store.node(WS, NODE_BOOK)
-        assert page is not None and page.node_type == "page"
-        assert book is not None and book.node_type == "page"
+        assert page is not None and (page.is_class, page.present_as_main) == (False, True)
+        assert book is not None and (book.is_class, book.present_as_main) == (False, True)
         # Title-is-content: the fixture's title rides as a text token of the
         # node's content (no name field on the wire).
         assert book.content == json.dumps([{"type": "text", "text": "The Structure of Scientific Revolutions"}])

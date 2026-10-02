@@ -156,9 +156,10 @@ class TestNewSourceSubclasses:
         for class_id, name, _icon in classes:
             row = store.node(WS, class_id)
             assert row is not None
-            assert row.node_type == "class"
+            assert row.is_class is True
+            assert row.present_as_main is False
             assert row.content_plain == name  # title-is-content: the label IS the content
-            assert row.parent_id is None  # classes are tree-external
+            assert row.parent_id is None  # classes are always roots
         with sqlite3.connect(_db_path(store)) as raw:
             edges = raw.execute("SELECT class_id, parent_class_id FROM class_extends ORDER BY class_id").fetchall()
             closure = raw.execute(

@@ -1,10 +1,10 @@
-"""Validation tests for the v2 relay wire models and ``new_envelope``.
+"""Validation tests for the v3 relay wire models and ``new_envelope``.
 
-Covers the WIRE.md §3 / envelope.ts invariants: ``protocolVersion: 2``
-mandatory (missing rejected, newer fails loud), ``deviceId`` (1–128) and
-``timestamp`` mandatory, the M3 E2EE slot ``{"$e": {iv, ct}}`` shape,
-camelCase-only keys, extra keys forbidden, and the ``wsProtocolVersion``
-framing on WS hello/ops frames.
+Covers the WIRE.md §3 / envelope.ts invariants: ``protocolVersion: 3``
+mandatory (missing rejected, only 3 accepted — Revision 11, no backward
+compatibility), ``deviceId`` (1–128) and ``timestamp`` mandatory, the M3 E2EE
+slot ``{"$e": {iv, ct}}`` shape, camelCase-only keys, extra keys forbidden,
+and the ``wsProtocolVersion`` framing on WS hello/ops frames.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from notees_gtk.core.protocol.op_types import KNOWN_OP_TYPES
 
 VALID_ENVELOPE: dict[str, Any] = {
     "id": "0192a000-0000-7000-8000-0000000000f1",
-    "protocolVersion": 2,
+    "protocolVersion": 3,
     "workspaceId": "0192a000-0000-7000-8000-000000000001",
     "actorId": "0192a000-0000-7000-8000-000000000002",
     "deviceId": "gtk-device-0001",
@@ -42,7 +42,7 @@ VALID_ENVELOPE: dict[str, Any] = {
     "affectedNodeIds": ["0192a000-0000-7000-8000-000000000010"],
     "opType": "object.create",
     "timestamp": "2026-09-24T12:00:00.000Z",
-    "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "nodeType": "page", "classIds": []},
+    "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "presentAsMain": True, "classIds": []},
 }
 
 
@@ -99,20 +99,25 @@ class TestOpTypeRegistry:
 
 
 class TestProtocolVersion:
-    def test_v2_accepted(self) -> None:
-        assert RelayEnvelope.model_validate(VALID_ENVELOPE).protocol_version == 2
+    def test_v3_accepted(self) -> None:
+        assert RelayEnvelope.model_validate(VALID_ENVELOPE).protocol_version == 3
 
     def test_missing_version_rejected(self) -> None:
         raw = {key: value for key, value in VALID_ENVELOPE.items() if key != "protocolVersion"}
         with pytest.raises(ValidationError, match="protocolVersion"):
             RelayEnvelope.model_validate(raw)
 
-    def test_v3_rejected_fail_loud(self) -> None:
-        with pytest.raises(ValidationError, match="Unsupported protocol_version 3"):
-            RelayEnvelope.model_validate({**VALID_ENVELOPE, "protocolVersion": 3})
+    def test_v2_rejected_no_backward_compatibility(self) -> None:
+        """Revision 11 is a clean break: only v3 is accepted."""
+        with pytest.raises(ValidationError, match="Unsupported protocol_version 2"):
+            RelayEnvelope.model_validate({**VALID_ENVELOPE, "protocolVersion": 2})
+
+    def test_v4_rejected_fail_loud(self) -> None:
+        with pytest.raises(ValidationError, match="Unsupported protocol_version 4"):
+            RelayEnvelope.model_validate({**VALID_ENVELOPE, "protocolVersion": 4})
 
     def test_older_version_rejected(self) -> None:
-        """v2 is a clean break: v1 envelopes are not parseable."""
+        """v2/v3 are clean breaks: v1 envelopes are not parseable."""
         with pytest.raises(ValidationError, match="Unsupported protocol_version 1"):
             RelayEnvelope.model_validate({**VALID_ENVELOPE, "protocolVersion": 1})
 
@@ -234,7 +239,7 @@ class TestCamelCaseOnly:
     def test_snake_case_keys_rejected(self) -> None:
         snake = {
             "id": VALID_ENVELOPE["id"],
-            "protocol_version": 2,
+            "protocol_version": 3,
             "workspace_id": VALID_ENVELOPE["workspaceId"],
             "actor_id": VALID_ENVELOPE["actorId"],
             "device_id": VALID_ENVELOPE["deviceId"],
@@ -284,7 +289,7 @@ class TestNewEnvelope:
             "actor_id": "actor-1",
             "device_id": "device-a",
             "op_type": "object.create",
-            "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "nodeType": "page"},
+            "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "presentAsMain": True},
             "clock": Clock("device-a"),
             "now_ms": lambda: 1767225600000,
         }

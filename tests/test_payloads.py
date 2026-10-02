@@ -108,6 +108,29 @@ class TestObjectUpdateRefines:
         validate_payload("object.update", {"objectId": UUID_1, "contentDeltaB64": "AAAA"})
 
 
+class TestRenderStateModelStrictness:
+    """Revision 11: object.create/update dropped the ``nodeType`` enumeration
+    and gained the optional ``presentAsMain`` render bit — the retired key is
+    rejected outright (``extra="forbid"``), no wire compat of any kind."""
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
+    def test_node_type_key_rejected(self, op_type: str) -> None:
+        payload: dict[str, Any] = {"objectId": UUID_1, "nodeType": "page"}
+        if op_type == "object.update":
+            payload["icon"] = "📄"  # satisfy the at-least-one-field refine
+        with pytest.raises(ValidationError) as excinfo:
+            validate_payload(op_type, payload)
+        assert "nodeType" in str(excinfo.value)
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
+    def test_present_as_main_accepted(self, op_type: str) -> None:
+        payload: dict[str, Any] = {"objectId": UUID_1, "presentAsMain": True}
+        if op_type == "object.update":
+            validate_payload(op_type, payload)
+        else:
+            validate_payload(op_type, {**payload, "parentId": UUID_2})
+
+
 class TestSiblingAnchorFields:
     """object.create/object.move sibling placement anchors: ``afterId`` and
     ``beforeId`` are accepted by the strict schemas (uuid-checked) on both
@@ -146,7 +169,7 @@ class TestBuilders:
     def test_object_create_full_shape(self) -> None:
         payload = build_object_create(
             UUID_1,
-            node_type="block",
+            present_as_main=False,
             class_ids=[UUID_2],
             tag_ids=[UUID_3],
             content_ast=[{"type": "text", "text": "hi"}],
@@ -154,7 +177,7 @@ class TestBuilders:
         )
         assert payload == {
             "objectId": UUID_1,
-            "nodeType": "block",
+            "presentAsMain": False,
             "classIds": [UUID_2],
             "tagIds": [UUID_3],
             "contentAst": [{"type": "text", "text": "hi"}],

@@ -10,18 +10,29 @@ from datetime import datetime
 from typing import Any
 
 #: Verbatim copy of the server derived schema's ``node`` table
-#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo, SCHEMA_VERSION 7). A snapshot
-#: blob is a serialized derived database, so snapshot fakes MUST be built from
-#: the real DDL — inventing a ``nodes``-plural table here once hid a restore
-#: bug that only surfaces against a real server.
+#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo, SCHEMA_VERSION 8 —
+#: the Revision-11 render-state model). A snapshot blob is a serialized
+#: derived database, so snapshot fakes MUST be built from the real DDL —
+#: inventing a ``nodes``-plural table here once hid a restore bug that only
+#: surfaces against a real server.
 SERVER_NODE_DDL = """
 CREATE TABLE IF NOT EXISTS node (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
-    node_type TEXT NOT NULL DEFAULT 'block'
-        CHECK (node_type IN ('page', 'block', 'class')),
+    -- Revision-11 render-state model (replaces the node_type enumeration):
+    -- is_class is the ONLY identity marker — classes are always roots;
+    -- present_as_main is the render bit read by the third cascade branch
+    -- for parented non-class nodes: 1 = the parent's main-children zone +
+    -- document chrome when zoomed, 0 = inline body + block chrome. The bit
+    -- is unread for parentless nodes (document chrome by the second branch)
+    -- and for classes (ClassView by the first branch).
+    is_class INTEGER NOT NULL DEFAULT 0,
+    present_as_main INTEGER NOT NULL DEFAULT 0,
     parent_id TEXT REFERENCES node(id),
     class_ids TEXT NOT NULL DEFAULT '[]',
+    -- User-defined class ORDER (class.reorder, LWW-by-arrival); the
+    -- effective class_ids = ordered members first, then unlisted members
+    -- sorted by id (recomputeClassIds).
     class_order TEXT NOT NULL DEFAULT '[]',
     tag_ids TEXT NOT NULL DEFAULT '[]',
     name TEXT,
@@ -33,13 +44,14 @@ CREATE TABLE IF NOT EXISTS node (
     updated_at TEXT,
     created_by TEXT,
     updated_by TEXT,
-    -- Server-only: used for last-write-wins merges.
+    -- Winning-op causality for row-level last-write-wins merges.
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
-    CHECK (node_type <> 'block' OR parent_id IS NOT NULL),
-    CHECK (node_type <> 'class' OR parent_id IS NULL)
-)
+    -- Classes are always roots; every other node may sit anywhere in the
+    -- tree, parentless nodes included (they render with document chrome).
+    CHECK (is_class = 0 OR parent_id IS NULL)
+);
 """
 
 
@@ -47,8 +59,9 @@ def make_server_snapshot(rows: list[dict[str, Any]]) -> bytes:
     """Serialize a fake server snapshot DB built from the real derived DDL.
 
     Args:
-        rows: ``node`` rows as column→value dicts. ``kind`` is required by
-            the real CHECK constraint; omitted columns take the server defaults.
+        rows: ``node`` rows as column→value dicts; omitted columns take the
+            server defaults (the placement CHECK still applies: a class row
+            must be parentless).
     """
     conn = sqlite3.connect(":memory:")
     conn.execute(SERVER_NODE_DDL)

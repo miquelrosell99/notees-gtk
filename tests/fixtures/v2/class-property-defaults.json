@@ -3,7 +3,7 @@
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000111",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -39,7 +39,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000112",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -65,7 +65,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000113",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -91,7 +91,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000114",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -107,7 +107,7 @@
       "timestamp": "2026-09-24T12:00:11.300Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000304",
-        "nodeType": "page",
+        "presentAsMain": true,
         "classIds": [
           "0192a000-0000-7000-8000-000000000302"
         ],
@@ -121,7 +121,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000115",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",
@@ -144,7 +144,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000116",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",
@@ -167,7 +167,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000117",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-phone",
@@ -183,7 +183,7 @@
       "timestamp": "2026-09-24T12:00:11.600Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000304",
-        "nodeType": "page",
+        "presentAsMain": true,
         "classIds": [
           "0192a000-0000-7000-8000-000000000303"
         ]
@@ -191,7 +191,7 @@
     },
     {
       "id": "0192a000-0000-7000-8000-000000000118",
-      "protocolVersion": 2,
+      "protocolVersion": 3,
       "workspaceId": "0192a000-0000-7000-8000-000000000001",
       "actorId": "0192a000-0000-7000-8000-000000000002",
       "deviceId": "test-device-laptop",

@@ -55,7 +55,7 @@ def test_concurrent_enqueue_and_apply(tmp_path: Path) -> None:
     enqueue_envs = [
         make_envelope(
             "object.create",
-            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n-{index}")), "nodeType": "page"},
+            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/n-{index}"))},
             logical=index,
         )
         for index in range(ENQUEUE_THREADS * ENQUEUES_PER_THREAD)
@@ -63,7 +63,7 @@ def test_concurrent_enqueue_and_apply(tmp_path: Path) -> None:
     apply_envs = [
         make_envelope(
             "object.create",
-            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/a-{index}")), "nodeType": "page"},
+            {"objectId": str(uuid5(NAMESPACE_URL, f"notees-gtk/test/a-{index}"))},
             logical=10_000 + index,
         )
         for index in range(APPLIED_NODES)

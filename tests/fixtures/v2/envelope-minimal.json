@@ -1,6 +1,6 @@
 {
   "id": "0192a000-0000-7000-8000-0000000000f1",
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "workspaceId": "0192a000-0000-7000-8000-000000000001",
   "actorId": "0192a000-0000-7000-8000-000000000002",
   "deviceId": "test-device-laptop",
@@ -11,7 +11,7 @@
   "timestamp": "2026-09-24T12:00:00.000Z",
   "payload": {
     "objectId": "0192a000-0000-7000-8000-000000000010",
-    "nodeType": "page",
+    "presentAsMain": true,
     "classIds": []
   }
 }

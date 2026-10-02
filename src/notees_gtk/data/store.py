@@ -1,13 +1,15 @@
-"""Local SQLite store for the Notees GTK client (relay protocol v2).
+"""Local SQLite store for the Notees GTK client (relay protocol v3).
 
 Owns the offline-capable client cache: the relay outbox (pending/quarantined
 envelopes), the op-id dedupe log, the sync watermark (seq cursor +
-``restore_epoch``), and the mirrored v2 node table with the applier semantics
+``restore_epoch``), and the mirrored node table with the applier semantics
 ported from v2 ``packages/store/src/appliers.ts``: row-level last-write-wins by
 ``(hlc_physical, hlc_logical, actor_id)``, OR-Set class/tag/collection
 membership, user-defined class order (``class.reorder``, LWW-by-arrival),
-title-is-content (a node's title IS its content — no ``name`` writes; pages
-and classes carry text-only content), m2m class extends with an
+title-is-content (a node's title IS its content — no ``name`` writes; nodes
+with document chrome carry text-only content), the Revision-11 render-state
+model (``is_class`` identity + ``present_as_main`` render bit; classes are
+containers and always roots), m2m class extends with an
 applier-maintained transitive closure (cycles fail loud), fractional
 child-order positions, property values with tombstones, and soft/permanent
 deletes with trash retention.
@@ -22,10 +24,11 @@ Schema notes: the client cache keeps its own table shapes where they match the
 v2 derived schema — the ``nodes`` mirror is keyed ``(workspace_id, id)`` (the
 v2 server keys ``id`` alone; node ids are uuid7, so the difference is
 theoretical) and carries the same v2 column names. Placement invariants the
-server enforces as CHECK constraints ("bullet-proof schema") are enforced in
-the applier here (:class:`~notees_gtk.data.errors.PlacementError`), so a
-corrupt local row stays repairable via the restore-epoch wipe instead of
-wedging a table rebuild.
+server enforces as CHECK constraints (Revision 11: the single
+``is_class = 0 OR parent_id IS NULL`` check) are enforced in the applier here
+(:class:`~notees_gtk.data.errors.MoveGuardError`), so a corrupt local row
+stays repairable via the restore-epoch wipe instead of wedging a table
+rebuild.
 """
 
 from __future__ import annotations
@@ -57,7 +60,6 @@ from notees_gtk.data.errors import (
     EnvelopeValidationError,
     MoveGuardError,
     NotFoundError,
-    PlacementError,
     UnsupportedCarrierError,
 )
 
@@ -67,8 +69,10 @@ _log = logging.getLogger(__name__)
 
 #: Latest schema version applied to the database (see ``_MIGRATIONS``).
 #: v5 adds the tag OR-Set (web schema v5→v6 parity); v6 adds the per-node
-#: class order list (web schema v6→v7 parity).
-SCHEMA_VERSION = 6
+#: class order list (web schema v6→v7 parity); v7 is the Revision-11
+#: render-state model (web schema v7→v8 parity): the node_type enumeration is
+#: replaced by ``is_class`` + ``present_as_main``.
+SCHEMA_VERSION = 7
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -85,11 +89,13 @@ _SNAPSHOT_TABLES = frozenset({"node"})
 #: the LWW columns seed the row baseline when the snapshot carries them.
 #: ``tag_ids``/``class_order`` ride along when the snapshot was taken from a
 #: schema v6+/v7+ store (absent columns are skipped, the cache defaults win).
+#: Revision 11: ``is_class``/``present_as_main`` replace the retired node_type.
 _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "id": "id",
     "workspace_id": "workspace_id",
+    "is_class": "is_class",
+    "present_as_main": "present_as_main",
     "parent_id": "parent_id",
-    "node_type": "node_type",
     "class_ids": "class_ids",
     "class_order": "class_order",
     "tag_ids": "tag_ids",
@@ -132,8 +138,15 @@ class NodeRow:
     Attributes:
         id: Node id (uuid7).
         workspace_id: Workspace the node belongs to.
-        parent_id: Parent node id, or ``None`` for roots (legal for pages only).
-        node_type: ``page`` | ``block`` | ``class``.
+        parent_id: Parent node id, or ``None`` for roots (legal for any
+            non-class node; classes are always roots).
+        is_class: Identity marker (Revision 11) — true = class node, always a
+            root, renders the ClassView.
+        present_as_main: Render bit read only for parented non-class nodes:
+            true = the parent's main-children zone + document chrome when
+            zoomed; false = inline body + block chrome. Unread for parentless
+            nodes (document chrome by the second cascade branch) and classes
+            (ClassView by the first branch).
         name: Legacy display-name cache, never written by the v2 appliers
             (title-is-content: a node's title IS its content). Remaining
             readers are transition-only; snapshot restores may populate it.
@@ -154,7 +167,8 @@ class NodeRow:
     id: str
     workspace_id: str
     parent_id: str | None
-    node_type: str
+    is_class: bool
+    present_as_main: bool
     name: str | None
     class_ids: tuple[str, ...]
     tag_ids: tuple[str, ...]
@@ -482,9 +496,12 @@ class LocalStore:
     # ------------------------------------------------------------- applier utils
 
     def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
+        # Column order is the contract: is_class/present_as_main sit at 3/4
+        # (the LWW appliers read them positionally) and the row-LWW triple at
+        # 12/13/14.
         row: tuple[Any, ...] | None = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, icon, color, is_active,"
-            " content, content_plain, hlc_physical, hlc_logical, actor_id"
+            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, icon, color,"
+            " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -519,27 +536,15 @@ class LocalStore:
         return [str(row[0]) for row in rows]
 
     def _check_parent_allowed(self, workspace_id: str, parent_id: str, op_type: str) -> tuple[Any, ...]:
-        """Shared placement guard for object.create/object.move: the parent must
-        exist and a class may never parent (classes are tree-external)."""
+        """Shared placement guard for object.create/object.move: the parent
+        must exist. Class parents are legal targets (Revision 11, spec I4:
+        classes are containers of non-class children); the complementary
+        guard — a class node itself may never have a parent — lives in
+        ``_apply_object_move`` (the moving side of the tree)."""
         parent = self._node_row(workspace_id, parent_id)
         if parent is None:
             raise NotFoundError(f"{op_type}: parent {parent_id} does not exist", op_type)
-        if parent[3] == "class":
-            raise MoveGuardError(
-                f"{op_type}: node {parent_id} is a class; classes are tree-external and cannot have children",
-                op_type,
-            )
         return parent
-
-    @staticmethod
-    def _check_placement(node_type: str, parent_id: str | None, op_type: str) -> None:
-        """Placement CHECK equivalents (the server enforces them as CHECK
-        constraints on its derived schema): a block must have a parent, a
-        class must not."""
-        if node_type == "block" and parent_id is None:
-            raise PlacementError(f"{op_type}: a block must have a parent", op_type)
-        if node_type == "class" and parent_id is not None:
-            raise PlacementError(f"{op_type}: a class is tree-external and must be parentless", op_type)
 
     # ------------------------------------------------------------------ object.*
 
@@ -551,19 +556,25 @@ class LocalStore:
         parent_id = str(parent_id) if parent_id is not None else None
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
         tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
-        node_type = str(payload.get("nodeType") or ("page" if parent_id is None else "block"))
+        # Render bit (Revision 11): the payload may carry presentAsMain; the
+        # applier defaults it by context — a parentless node presents as main
+        # (document chrome by the second cascade branch), a parented one
+        # starts inline (block chrome; the "hide from body" gloss is the
+        # 0→1 toggle). object.create always makes is_class = 0 nodes; class
+        # declaration remains the class.create op.
+        present_as_main = payload.get("presentAsMain")
+        present_as_main = (1 if parent_id is None else 0) if present_as_main is None else int(bool(present_as_main))
         after_id = payload.get("afterId")
         after_id = str(after_id) if after_id is not None else None
         before_id = payload.get("beforeId")
         before_id = str(before_id) if before_id is not None else None
         ts = _envelope_ts(env)
 
-        # Title-is-content constraint (SCHEMA.md): pages and classes carry
-        # text-only content. A node created straight as page/class gets its
-        # (possibly rich) content flattened; a block keeps the full token
-        # stream.
+        # Content flatten invariant (SCHEMA.md): document-chrome nodes
+        # (is_class or present_as_main) carry text-only content; an inline
+        # block keeps the full rich token stream.
         content_ast = payload.get("contentAst")
-        tokens: Any = (content_ast or []) if node_type == "block" else stringify_content_ast(content_ast)
+        tokens: Any = stringify_content_ast(content_ast) if present_as_main == 1 else (content_ast or [])
         content = json.dumps(tokens, ensure_ascii=False)
         content_plain = plaintext_excerpt(tokens)
 
@@ -584,22 +595,23 @@ class LocalStore:
                 self._recompute_tag_ids(object_id)
             return False
 
-        self._check_placement(node_type, parent_id, op_type)
         if parent_id is not None:
+            # Classes are containers (spec I4): a class parent is legal for
+            # non-class children — which is all object.create can make.
             self._check_parent_allowed(env.workspace_id, parent_id, op_type)
 
         with self._conn:
             self._conn.execute(
                 """INSERT INTO nodes
-                     (workspace_id, id, parent_id, node_type, name, class_ids, content, content_plain,
+                     (workspace_id, id, is_class, present_as_main, parent_id, name, class_ids, content, content_plain,
                       icon, color, is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, ?, NULL, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 0, ?, ?, NULL, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     object_id,
+                    present_as_main,
                     parent_id,
-                    node_type,
                     content,
                     content_plain,
                     ts,
@@ -634,26 +646,26 @@ class LocalStore:
             )
 
         # Row-level last-write-wins: lower or equal (hlc, actor) writes drop whole.
-        if not self._incoming_wins(env, row[11], row[12], row[13]):
+        if not self._incoming_wins(env, row[12], row[13], row[14]):
             return False
-
-        node_type = str(payload.get("nodeType")) if payload.get("nodeType") is not None else None
-        resulting_type = node_type or str(row[3])
-        if node_type is not None:
-            # Flipping block<->page / declaring a class must respect placement
-            # against the node's CURRENT parent (an update never moves the node).
-            self._check_placement(node_type, row[2], op_type)
 
         sets: list[str] = []
         values: list[Any] = []
-        if node_type is not None:
-            sets.append("node_type = ?")
-            values.append(node_type)
-            if node_type != "block" and str(row[3]) == "block":
-                # Title-is-content: promoting a BLOCK flattens its rich token
-                # stream to plain text in the same op; a page/class already
-                # carries text-only content.
-                flattened = json.dumps(stringify_content_ast(parse_content_ast(row[9])), ensure_ascii=False)
+        # Promotion/demotion (Revision 11) is the presentAsMain toggle: the bit
+        # joins the row-level LWW set; a 0→1 flip (promotion) stringifies the
+        # rich token stream to text-only in the same op (content flatten
+        # invariant), while a 1→0 demotion leaves the (already flattened)
+        # content untouched — demotion never un-flattens. On a class row the
+        # bit is inert (classes render ClassView regardless); applying it
+        # harmlessly keeps the op uniform.
+        present_as_main = payload.get("presentAsMain")
+        resulting_present_as_main = bool(row[4])
+        if present_as_main is not None:
+            resulting_present_as_main = bool(present_as_main)
+            sets.append("present_as_main = ?")
+            values.append(1 if present_as_main else 0)
+            if present_as_main and not bool(row[4]):
+                flattened = json.dumps(stringify_content_ast(parse_content_ast(row[10])), ensure_ascii=False)
                 sets.append("content = ?")
                 values.append(flattened)
                 sets.append("content_plain = ?")
@@ -665,8 +677,11 @@ class LocalStore:
             sets.append("color = ?")
             values.append(payload["color"])
         if payload.get("contentAst") is not None:
+            # Document-chrome content (class nodes and main-presenting nodes)
+            # is text-only; inline blocks keep the rich tokens they were sent.
+            flatten = bool(row[3]) or resulting_present_as_main
             tokens: Any = (
-                payload["contentAst"] if resulting_type == "block" else stringify_content_ast(payload["contentAst"])
+                payload["contentAst"] if not flatten else stringify_content_ast(payload["contentAst"])
             )
             sets.append("content = ?")
             values.append(json.dumps(tokens, ensure_ascii=False))
@@ -749,12 +764,22 @@ class LocalStore:
                     f"{op_type}: cannot move node {object_id} under {parent_id}, which is in its own subtree",
                     op_type,
                 )
-        self._check_placement(str(row[3]), parent_id, op_type)
+        if parent_id is not None and bool(row[3]):
+            # Classes are always roots (spec I4 makes class nodes containers
+            # of non-class children, but the class-under-a-class /
+            # class-with-parent shape stays illegal; the DB CHECK would fire
+            # anyway, so the guard surfaces it friendly).
+            raise MoveGuardError(
+                f"{op_type}: node {object_id} is a class; classes are always roots and cannot have a parent",
+                op_type,
+            )
 
         # Parent/position are row-level LWW by envelope (hlc, actor): the whole
         # move publishes or drops — a position write never outlives a newer
-        # parent write and vice versa.
-        if not self._incoming_wins(env, row[11], row[12], row[13]):
+        # parent write and vice versa. Moves never write the render bit: a
+        # parentless non-class node renders with document chrome by the second
+        # cascade branch regardless of present_as_main.
+        if not self._incoming_wins(env, row[12], row[13], row[14]):
             return False
 
         with self._conn:
@@ -958,8 +983,9 @@ class LocalStore:
         class_id: str,
         fields: dict[str, Any],
     ) -> None:
-        """The class node (node_type='class') is the structural authority for
-        the class_list read model; the registry row carries class-only config.
+        """The class node (is_class=1, present_as_main=0) is the structural
+        authority for the class_list read model; the registry row carries
+        class-only config.
 
         Title-is-content: the class's title IS its (text-only) content — the
         node's ``content`` flattens the create/update ``contentAst``
@@ -974,10 +1000,10 @@ class LocalStore:
         with self._conn:
             self._conn.execute(
                 """INSERT OR IGNORE INTO nodes
-                     (workspace_id, id, parent_id, node_type, class_ids, name, content, content_plain,
+                     (workspace_id, id, is_class, present_as_main, parent_id, class_ids, name, content, content_plain,
                       is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, NULL, 'class', '[]', NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 1, 0, NULL, '[]', NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     class_id,
@@ -1523,8 +1549,8 @@ class LocalStore:
         excluded unless ``include_inactive`` is set.
         """
         sql = (
-            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, tag_ids, icon, color, is_active,"
-            " content, content_plain FROM nodes WHERE workspace_id = ?"
+            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
+            " is_active, content, content_plain FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
         if parent_id is not None:
@@ -1539,7 +1565,7 @@ class LocalStore:
     def children(self, workspace_id: str, parent_id: str) -> list[NodeRow]:
         """Direct children in child-order position order (the outliner read)."""
         rows = self._conn.execute(
-            """SELECT n.id, n.workspace_id, n.parent_id, n.node_type, n.name, n.class_ids, n.tag_ids,
+            """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.present_as_main, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
@@ -1553,20 +1579,20 @@ class LocalStore:
     def node(self, workspace_id: str, node_id: str) -> NodeRow | None:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, node_type, name, class_ids, tag_ids, icon, color, is_active,"
-            " content, content_plain FROM nodes WHERE workspace_id = ? AND id = ?",
+            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
+            " is_active, content, content_plain FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
         return self._to_node_row(row) if row is not None else None
 
     @staticmethod
     def _to_node_row(row: tuple[Any, ...]) -> NodeRow:
-        raw_class_ids = row[5]
+        raw_class_ids = row[6]
         try:
             class_ids = tuple(str(item) for item in json.loads(raw_class_ids)) if raw_class_ids else ()
         except (TypeError, ValueError):
             class_ids = ()
-        raw_tag_ids = row[6]
+        raw_tag_ids = row[7]
         try:
             tag_ids = tuple(str(item) for item in json.loads(raw_tag_ids)) if raw_tag_ids else ()
         except (TypeError, ValueError):
@@ -1575,15 +1601,16 @@ class LocalStore:
             id=str(row[0]),
             workspace_id=str(row[1]),
             parent_id=row[2],
-            node_type=str(row[3]),
-            name=row[4],
+            is_class=bool(row[3]),
+            present_as_main=bool(row[4]),
+            name=row[5],
             class_ids=class_ids,
             tag_ids=tag_ids,
-            icon=row[7],
-            color=row[8],
-            is_active=bool(row[9]),
-            content=row[10],
-            content_plain=str(row[11] or ""),
+            icon=row[8],
+            color=row[9],
+            is_active=bool(row[10]),
+            content=row[11],
+            content_plain=str(row[12] or ""),
         )
 
     # ------------------------------------------------- effective properties
@@ -1737,15 +1764,16 @@ class LocalStore:
 
         The blob is a serialized copy of the server's v2 derived database,
         whose node table is ``node`` (singular) with the v2 column names
-        (``node_type``, ``is_active`` — same polarity as the cache, ``class_ids``,
-        and the row-LWW columns ``hlc_physical``/``hlc_logical``/``actor_id``
-        which seed the cache's LWW baseline when present). The table is
-        discovered from ``snapshot_src.sqlite_master`` but restricted to a
-        small allowlist, and every interpolated identifier is validated
-        against a strict pattern. Snapshot columns the mapping needs but the
-        blob lacks are skipped. On any error, unrecognized schema, or empty
-        column mapping the blob is detached and ``False`` is returned with
-        local state untouched.
+        (``is_class``/``present_as_main``, ``is_active`` — same polarity as
+        the cache, ``class_ids``, and the row-LWW columns
+        ``hlc_physical``/``hlc_logical``/``actor_id`` which seed the cache's
+        LWW baseline when present). The table is discovered from
+        ``snapshot_src.sqlite_master`` but restricted to a small allowlist,
+        and every interpolated identifier is validated against a strict
+        pattern. Snapshot columns the mapping needs but the blob lacks are
+        skipped. On any error, unrecognized schema, or empty column mapping
+        the blob is detached and ``False`` is returned with local state
+        untouched.
         """
         fd, path = tempfile.mkstemp(prefix="notees-snapshot-", suffix=".db")
         try:
@@ -1897,9 +1925,16 @@ _NODES_V2_DDL = """
 CREATE TABLE IF NOT EXISTS nodes (
     workspace_id TEXT NOT NULL,
     id TEXT NOT NULL,
+    -- Revision-11 render-state model (replaces the node_type enumeration):
+    -- is_class is the ONLY identity marker — classes are always roots;
+    -- present_as_main is the render bit read by the third cascade branch for
+    -- parented non-class nodes: 1 = the parent's main-children zone +
+    -- document chrome when zoomed, 0 = inline body + block chrome. The bit is
+    -- unread for parentless nodes (document chrome by the second branch) and
+    -- for classes (ClassView by the first branch).
+    is_class INTEGER NOT NULL DEFAULT 0,
+    present_as_main INTEGER NOT NULL DEFAULT 0,
     parent_id TEXT,
-    node_type TEXT NOT NULL DEFAULT 'block'
-        CHECK (node_type IN ('page', 'block', 'class')),
     name TEXT,
     class_ids TEXT NOT NULL DEFAULT '[]',
     -- User-defined class ORDER (class.reorder, LWW-by-arrival); the
@@ -1921,6 +1956,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
+    -- Classes are always roots; every other node may sit anywhere in the
+    -- tree, parentless nodes included (they render with document chrome).
+    CHECK (is_class = 0 OR parent_id IS NULL),
     PRIMARY KEY (workspace_id, id)
 );
 """
@@ -1976,7 +2014,7 @@ CREATE TABLE IF NOT EXISTS class_hierarchy (
 );
 
 -- Class registry rows (name/icon/color/description); the node row
--- (node_type='class') is the structural authority.
+-- (is_class=1) is the structural authority.
 CREATE TABLE IF NOT EXISTS class (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -2070,6 +2108,9 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     job is done by the row-LWW columns), and the v2 auxiliary tables
     (child_order, OR-Sets, class registry/extends/closure, property
     registry/values/tombstones, assets, collections, trash) are created.
+    The legacy ``node_type`` enumeration maps straight onto the Revision-11
+    booleans here (page → presents as main; block/class → not) — the v7
+    rebuild is a no-op for this path.
     """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
     if "is_active" in columns:
@@ -2078,9 +2119,17 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     conn.executescript(_NODES_V2_DDL + _AUX_V2_DDL)
     legacy = {row[1] for row in conn.execute("PRAGMA table_info(nodes_legacy)")}
     copy_exprs: dict[str, str] = {}
-    for column in ("id", "workspace_id", "parent_id", "node_type", "name", "icon", "color", "content", "updated_at"):
+    for column in ("id", "workspace_id", "parent_id", "name", "icon", "color", "content", "updated_at"):
         if column in legacy:
             copy_exprs[column] = _quote_ident(column)
+    # Revision-11 render-state model: the legacy node_type enumeration maps
+    # to the two booleans (page → is_class 0 + present_as_main 1).
+    if "node_type" in legacy:
+        copy_exprs["is_class"] = f"CASE WHEN {_quote_ident('node_type')} = 'class' THEN 1 ELSE 0 END"
+        copy_exprs["present_as_main"] = f"CASE WHEN {_quote_ident('node_type')} = 'page' THEN 1 ELSE 0 END"
+    else:
+        copy_exprs.setdefault("is_class", "0")
+        copy_exprs.setdefault("present_as_main", "0")
     if "archived" in legacy:
         copy_exprs["is_active"] = f"1 - {_quote_ident('archived')}"
     copy_exprs.setdefault("is_active", "1")
@@ -2138,6 +2187,66 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "nodes", "class_order", "TEXT NOT NULL DEFAULT '[]'")
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """Revision-11 render-state model (web schema v7→v8 parity): the
+    node_type enumeration is replaced by the two booleans. Table rebuild
+    (works on old SQLite builds — no DROP COLUMN): nodes_v7 carries
+    is_class / present_as_main, the rows map page → (0, 1), block → (0, 0),
+    class → (1, 0), and the single placement CHECK keeps classes as roots.
+    The old "block needs a parent" rule disappears with the column:
+    parentless non-class nodes are legal now (document chrome by the second
+    cascade branch)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    if "node_type" not in columns:
+        return  # already at the v7 shape (guarded re-run)
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE nodes_v7 (
+            workspace_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            is_class INTEGER NOT NULL DEFAULT 0,
+            present_as_main INTEGER NOT NULL DEFAULT 0,
+            parent_id TEXT,
+            name TEXT,
+            class_ids TEXT NOT NULL DEFAULT '[]',
+            class_order TEXT NOT NULL DEFAULT '[]',
+            tag_ids TEXT NOT NULL DEFAULT '[]',
+            icon TEXT,
+            color TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            content TEXT,
+            content_plain TEXT NOT NULL DEFAULT '',
+            created_at TEXT,
+            updated_at TEXT NOT NULL,
+            created_by TEXT,
+            updated_by TEXT,
+            hlc_physical INTEGER NOT NULL DEFAULT 0,
+            hlc_logical INTEGER NOT NULL DEFAULT 0,
+            actor_id TEXT,
+            CHECK (is_class = 0 OR parent_id IS NULL),
+            PRIMARY KEY (workspace_id, id)
+        );
+        INSERT INTO nodes_v7 (
+            workspace_id, id, is_class, present_as_main, parent_id, name,
+            class_ids, class_order, tag_ids, icon, color, is_active, content,
+            content_plain, created_at, updated_at, created_by, updated_by,
+            hlc_physical, hlc_logical, actor_id
+        )
+        SELECT workspace_id, id,
+            CASE WHEN node_type = 'class' THEN 1 ELSE 0 END,
+            CASE WHEN node_type = 'page' THEN 1 ELSE 0 END,
+            parent_id, name, class_ids, class_order, tag_ids, icon, color,
+            is_active, content, content_plain, created_at, updated_at,
+            created_by, updated_by, hlc_physical, hlc_logical, actor_id
+        FROM nodes;
+        DROP TABLE nodes;
+        ALTER TABLE nodes_v7 RENAME TO nodes;
+        PRAGMA foreign_keys = ON;
+        """
+    )
+
+
 _TAG_MEMBER_SET_DDL = """
 -- OR-Set of tag assignments; the applier projects present rows into
 -- node.tag_ids sorted by id (web schema v5→v6, 2026-10-01 lockstep).
@@ -2162,4 +2271,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (4, _migrate_v4),
     (5, _migrate_v5),
     (6, _migrate_v6),
+    (7, _migrate_v7),
 )

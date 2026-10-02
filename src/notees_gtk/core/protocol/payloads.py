@@ -10,6 +10,12 @@ client-side half of the relay's 422 ``validation_failed`` gate: producers
 the client, and the local appliers validate again at apply time, mirroring
 the web store's ``validateEnvelope``.
 
+Revision 11 (render-state model): ``object.create``/``object.update`` dropped
+the ``nodeType`` enumeration and gained the optional ``presentAsMain`` render
+bit — the retired ``nodeType`` key is rejected outright by these strict
+schemas (no wire compat of any kind; the stored log is rewritten in place by
+the one-time migration script).
+
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
 (SCHEMA.md, 2026-10-01): no op payload carries a ``name`` — the builders
@@ -40,7 +46,6 @@ __all__ = [
     "validate_payload",
 ]
 
-_NODE_TYPE = Literal["page", "block", "class"]
 _PROPERTY_TYPE = Literal[
     "text",
     "number",
@@ -66,7 +71,13 @@ class _Strict(BaseModel):
 
 class ObjectCreatePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
-    node_type: _NODE_TYPE | None = Field(default=None, alias="nodeType")
+    # Render bit (Revision 11): read only when the node has a parent — true =
+    # the parent's main-children zone + document chrome when zoomed; false =
+    # inline body + block chrome. Unread for parentless nodes (document chrome
+    # by the second cascade branch). Optional — the applier defaults it by
+    # context: true when parentless, false otherwise. The retired nodeType key
+    # is rejected outright by this strict schema.
+    present_as_main: bool | None = Field(default=None, alias="presentAsMain")
     class_ids: list[UUID] = Field(default_factory=list, alias="classIds")
     tag_ids: list[UUID] = Field(default_factory=list, alias="tagIds")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
@@ -81,7 +92,11 @@ class ObjectCreatePayload(_Strict):
 
 class ObjectUpdatePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
-    node_type: _NODE_TYPE | None = Field(default=None, alias="nodeType")
+    # Render-bit toggle (Revision 11): promotion/demotion flips presentAsMain
+    # true/false (identity preserved; a 0→1 promotion stringifies the content
+    # in the same op; demotion never un-flattens). The retired nodeType key is
+    # rejected outright by this strict schema.
+    present_as_main: bool | None = Field(default=None, alias="presentAsMain")
     icon: str | None = Field(default=None, max_length=64)
     color: str | None = Field(default=None, max_length=32)
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
@@ -295,7 +310,7 @@ def _validated(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
 def build_object_create(
     object_id: str,
     *,
-    node_type: str | None = None,
+    present_as_main: bool | None = None,
     class_ids: list[str] | None = None,
     tag_ids: list[str] | None = None,
     name: str | None = None,
@@ -309,11 +324,13 @@ def build_object_create(
     Title-is-content: the protocol has no object ``name``. The ``name``
     convenience becomes the node's initial text content (a single text
     token) when no explicit ``content_ast`` is given; when both are given,
-    ``content_ast`` wins and ``name`` is dropped.
+    ``content_ast`` wins and ``name`` is dropped. ``present_as_main`` is the
+    Revision-11 render bit; omit it and the applier defaults it by context
+    (true when parentless, false otherwise).
     """
     payload: dict[str, Any] = {"objectId": object_id}
-    if node_type is not None:
-        payload["nodeType"] = node_type
+    if present_as_main is not None:
+        payload["presentAsMain"] = present_as_main
     if class_ids is not None:
         payload["classIds"] = list(class_ids)
     if tag_ids is not None:
@@ -335,7 +352,7 @@ def build_object_create(
 def build_object_update(
     object_id: str,
     *,
-    node_type: str | None = None,
+    present_as_main: bool | None = None,
     content_ast: list[Any] | None = None,
     content_delta_b64: str | None = None,
     icon: str | None = None,
@@ -343,8 +360,8 @@ def build_object_update(
 ) -> dict[str, Any]:
     """Build an ``object.update`` payload (at least one field required)."""
     payload: dict[str, Any] = {"objectId": object_id}
-    if node_type is not None:
-        payload["nodeType"] = node_type
+    if present_as_main is not None:
+        payload["presentAsMain"] = present_as_main
     if content_ast is not None:
         payload["contentAst"] = content_ast
     if content_delta_b64 is not None:
