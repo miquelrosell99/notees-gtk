@@ -108,6 +108,26 @@ class TestObjectUpdateRefines:
         validate_payload("object.update", {"objectId": UUID_1, "contentDeltaB64": "AAAA"})
 
 
+class TestSiblingAnchorFields:
+    """object.create/object.move sibling placement anchors: ``afterId`` and
+    ``beforeId`` are accepted by the strict schemas (uuid-checked) on both
+    payloads — placement itself lives in the appliers' fractional allocator."""
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.move"])
+    def test_after_id_and_before_id_accepted(self, op_type: str) -> None:
+        validate_payload(
+            op_type,
+            {"objectId": UUID_1, "parentId": UUID_2, "afterId": UUID_3, "beforeId": UUID_2},
+        )
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.move"])
+    def test_anchor_fields_are_uuid_checked(self, op_type: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {"objectId": UUID_1, "parentId": UUID_2, "beforeId": "not-a-uuid"})
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {"objectId": UUID_1, "parentId": UUID_2, "afterId": "not-a-uuid"})
+
+
 class TestBuilders:
     """Builder parity with WorkspaceClient.createObject/createClass/
     reorderClasses: ``name`` is a convenience that becomes a single text
@@ -187,3 +207,26 @@ class TestBuilders:
         }
         assert build_object_move(UUID_1, None) == {"objectId": UUID_1, "parentId": None}
         assert build_object_create(UUID_1)  # minimal create: id only
+
+    def test_sibling_anchor_builders(self) -> None:
+        """beforeId rides both payloads; the anchor keys stay absent when unset."""
+        assert build_object_move(UUID_1, UUID_2, before_id=UUID_3) == {
+            "objectId": UUID_1,
+            "parentId": UUID_2,
+            "beforeId": UUID_3,
+        }
+        assert build_object_move(UUID_1, UUID_2, after_id=UUID_3, before_id=UUID_2) == {
+            "objectId": UUID_1,
+            "parentId": UUID_2,
+            "afterId": UUID_3,
+            "beforeId": UUID_2,
+        }
+        assert "beforeId" not in build_object_move(UUID_1, UUID_2)
+        assert build_object_create(UUID_1, parent_id=UUID_2, after_id=UUID_3, before_id=UUID_2) == {
+            "objectId": UUID_1,
+            "parentId": UUID_2,
+            "afterId": UUID_3,
+            "beforeId": UUID_2,
+        }
+        assert "afterId" not in build_object_create(UUID_1)
+        assert "beforeId" not in build_object_create(UUID_1)

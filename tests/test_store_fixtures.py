@@ -46,6 +46,13 @@ MOVE_A = "0192a000-0000-7000-8000-000000000021"
 MOVE_B = "0192a000-0000-7000-8000-000000000022"
 MOVE_C = "0192a000-0000-7000-8000-000000000023"
 
+#: object-move-before.json ids (mirrors the monorepo store test).
+MOVE_BEFORE_P = "0192a000-0000-7000-8000-000000000140"
+MOVE_BEFORE_A = "0192a000-0000-7000-8000-000000000141"
+MOVE_BEFORE_B = "0192a000-0000-7000-8000-000000000142"
+MOVE_BEFORE_C = "0192a000-0000-7000-8000-000000000143"
+MOVE_BEFORE_D = "0192a000-0000-7000-8000-000000000144"
+
 #: class-extends-cycle.json ids.
 CYCLE_ROOT = "0192a000-0000-7000-8000-0000000000d1"
 CYCLE_LEAF = "0192a000-0000-7000-8000-0000000000d2"
@@ -185,6 +192,21 @@ class TestObjectMoveFixture:
             (MOVE_P,),
         ) == [(MOVE_A, "a"), (MOVE_B, "aa")]
         assert raw(store, "SELECT COUNT(*) FROM node_child_order WHERE child_id = ?", (MOVE_C,)) == [(1,)]
+
+
+class TestObjectMoveBeforeFixture:
+    def test_replay_lands_b_c_d_a_with_one_child_order_row_each(self, store: LocalStore) -> None:
+        for envelope in load_fixture("object-move-before.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        assert [row.id for row in store.children(WS, MOVE_BEFORE_P)] == [
+            MOVE_BEFORE_B,
+            MOVE_BEFORE_C,
+            MOVE_BEFORE_D,
+            MOVE_BEFORE_A,
+        ]
+        # Exactly one child_order row per node — no dual-parent residue.
+        for child in (MOVE_BEFORE_A, MOVE_BEFORE_B, MOVE_BEFORE_C, MOVE_BEFORE_D):
+            assert raw(store, "SELECT COUNT(*) FROM node_child_order WHERE child_id = ?", (child,)) == [(1,)]
 
 
 class TestClassExtendsFixture:

@@ -71,6 +71,12 @@ class ObjectCreatePayload(_Strict):
     tag_ids: list[UUID] = Field(default_factory=list, alias="tagIds")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
     parent_id: UUID | None = Field(default=None, alias="parentId")
+    # Initial sibling placement (fractional child order — see object.move):
+    # `afterId`/`beforeId` anchor the node next to that current sibling;
+    # omit both to append at the end. At most one is meaningful; when both
+    # are present `afterId` wins (the TS reference never sends both).
+    after_id: UUID | None = Field(default=None, alias="afterId")
+    before_id: UUID | None = Field(default=None, alias="beforeId")
 
 
 class ObjectUpdatePayload(_Strict):
@@ -100,6 +106,11 @@ class ObjectMovePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
     parent_id: UUID | None = Field(alias="parentId")
     after_id: UUID | None = Field(default=None, alias="afterId")
+    # `beforeId` places the node immediately before that sibling — the
+    # first-child placement that afterId-only fractional ordering cannot
+    # express. At most one anchor is meaningful; when both are present
+    # `afterId` wins.
+    before_id: UUID | None = Field(default=None, alias="beforeId")
 
 
 class ClassCreatePayload(_Strict):
@@ -290,6 +301,8 @@ def build_object_create(
     name: str | None = None,
     content_ast: list[Any] | None = None,
     parent_id: str | None | object = _UNSET,
+    after_id: str | None = None,
+    before_id: str | None = None,
 ) -> dict[str, Any]:
     """Build an ``object.create`` payload (web ``WorkspaceClient.createObject``).
 
@@ -312,6 +325,10 @@ def build_object_create(
         payload["contentAst"] = content_ast
     if parent_id is not _UNSET:
         payload["parentId"] = parent_id
+    if after_id is not None:
+        payload["afterId"] = after_id
+    if before_id is not None:
+        payload["beforeId"] = before_id
     return _validated("object.create", payload)
 
 
@@ -344,11 +361,19 @@ def build_object_delete(object_id: str, *, permanent: bool = False) -> dict[str,
     return _validated("object.delete", {"objectId": object_id, "permanent": permanent})
 
 
-def build_object_move(object_id: str, parent_id: str | None, *, after_id: str | None = None) -> dict[str, Any]:
+def build_object_move(
+    object_id: str,
+    parent_id: str | None,
+    *,
+    after_id: str | None = None,
+    before_id: str | None = None,
+) -> dict[str, Any]:
     """Build an ``object.move`` payload (``parent_id`` None = workspace root)."""
     payload: dict[str, Any] = {"objectId": object_id, "parentId": parent_id}
     if after_id is not None:
         payload["afterId"] = after_id
+    if before_id is not None:
+        payload["beforeId"] = before_id
     return _validated("object.move", payload)
 
 

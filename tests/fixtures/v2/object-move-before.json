@@ -1,0 +1,126 @@
+{
+  "comment": "object.move beforeId (W1, additive payload field): page PB with blocks A, B, C (created in that order). Move 1 places C immediately BEFORE A (beforeId against the first child — the midpoint-below-first branch); move 2 places B before C (another below-first midpoint, exercising prefix descent); move 3 creates D under PB with beforeId=A (midpoint between the previous sibling C and A). Envelopes apply in sequence: after the replay PB = [B, C, D, A]. beforeId that is not a current sibling falls back to append (defensive, mirrors afterId); when both beforeId and afterId are present afterId wins (never sent together by the reference client).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000150",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000140"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000140",
+        "nodeType": "page",
+        "contentAst": [{ "type": "text", "text": "Move Before Fixture" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000151",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000141"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000141",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "contentAst": [{ "type": "text", "text": "A" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000152",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000142"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000142",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "contentAst": [{ "type": "text", "text": "B" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000153",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000143"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000143",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "contentAst": [{ "type": "text", "text": "C" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000154",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000143"],
+      "opType": "object.move",
+      "timestamp": "2026-09-24T12:00:08.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000143",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "beforeId": "0192a000-0000-7000-8000-000000000141"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000155",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000142"],
+      "opType": "object.move",
+      "timestamp": "2026-09-24T12:00:08.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000142",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "beforeId": "0192a000-0000-7000-8000-000000000143"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000156",
+      "protocolVersion": 2,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200008600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000144"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000144",
+        "parentId": "0192a000-0000-7000-8000-000000000140",
+        "beforeId": "0192a000-0000-7000-8000-000000000141",
+        "contentAst": [{ "type": "text", "text": "D" }]
+      }
+    }
+  ]
+}

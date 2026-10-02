@@ -151,12 +151,15 @@ def move_env(
     *,
     parent_id: str | None,
     after_id: str | None = None,
+    before_id: str | None = None,
     hlc: tuple[int, int],
     actor_id: str = ACTOR,
 ) -> RelayEnvelope:
     payload: dict[str, Any] = {"objectId": node_id, "parentId": parent_id}
     if after_id is not None:
         payload["afterId"] = after_id
+    if before_id is not None:
+        payload["beforeId"] = before_id
     return make_env("object.move", payload, hlc=hlc, actor_id=actor_id, affected=(node_id,))
 
 
@@ -514,6 +517,27 @@ class TestObjectCreate:
         assert store.node(WS_A, uid("child")).class_ids == (uid("c-1"),)
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('child')}'") == [(1,)]
 
+    def test_create_with_before_id_places_before_the_anchor(self, store: LocalStore) -> None:
+        """Create placement honors anchors: a child created with beforeId
+        lands immediately before that sibling (midpoint below the first
+        child when the anchor is first)."""
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(
+            make_env(
+                "object.create",
+                {"objectId": uid("z"), "nodeType": "block", "parentId": uid("p"), "beforeId": uid("x")},
+                hlc=(4, 0),
+                affected=(uid("z"),),
+            )
+        )
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("z"), uid("x"), uid("y")]
+        assert raw_rows(
+            store,
+            f"SELECT position FROM node_child_order WHERE parent_id = '{uid('p')}' AND child_id = '{uid('z')}'",
+        ) == [("`",)]  # _midpoint_between("", "a"): one slot below the first child
+
 
 class TestObjectUpdate:
     def test_fields_apply_and_stored_hlc_advances(self, store: LocalStore) -> None:
@@ -637,6 +661,57 @@ class TestObjectMove:
         store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(4, 0)))
         store.apply_remote(move_env(uid("y"), parent_id=uid("p"), after_id=uid("other"), hlc=(5, 0)))
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("y")]
+
+    def test_before_id_places_the_node_immediately_before_the_anchor(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
+            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+        # z jumps the queue to sit right before y.
+        assert store.apply_remote(move_env(uid("z"), parent_id=uid("p"), before_id=uid("y"), hlc=(9, 0))) is True
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("z"), uid("y")]
+        assert raw_rows(
+            store,
+            f"SELECT position FROM node_child_order WHERE parent_id = '{uid('p')}' AND child_id = '{uid('z')}'",
+        ) == [("a`",)]  # midpoint between "a" (x) and "aa" (y)
+
+    def test_before_id_against_the_first_child_yields_a_position_below_it(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
+            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+        assert store.apply_remote(move_env(uid("z"), parent_id=uid("p"), before_id=uid("x"), hlc=(9, 0))) is True
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("z"), uid("x"), uid("y")]
+        (position,) = raw_rows(
+            store,
+            f"SELECT position FROM node_child_order WHERE parent_id = '{uid('p')}' AND child_id = '{uid('z')}'",
+        )[0]
+        assert position == "`"  # _midpoint_between("", "a"): the only slot before the first child
+        assert position < "a"
+
+    def test_before_id_not_a_sibling_falls_back_to_append(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("other"), parent_id=None, hlc=(2, 0)))
+        store.apply_remote(create_env(uid("x"), parent_id=uid("p"), node_type="block", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("y"), parent_id=uid("p"), node_type="block", hlc=(4, 0)))
+        store.apply_remote(move_env(uid("y"), parent_id=uid("p"), before_id=uid("other"), hlc=(5, 0)))
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("x"), uid("y")]
+
+    def test_after_id_wins_when_both_anchors_are_present(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        for index, node in enumerate((uid("x"), uid("y"), uid("z"))):
+            store.apply_remote(create_env(node, parent_id=uid("p"), node_type="block", hlc=(2 + index, 0)))
+        # At most one anchor is meaningful: afterId is looked up first, so
+        # the append-after-z branch wins over the before-y branch.
+        assert (
+            store.apply_remote(
+                move_env(uid("x"), parent_id=uid("p"), after_id=uid("z"), before_id=uid("y"), hlc=(9, 0))
+            )
+            is True
+        )
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("y"), uid("z"), uid("x")]
+        assert raw_rows(
+            store,
+            f"SELECT position FROM node_child_order WHERE parent_id = '{uid('p')}' AND child_id = '{uid('x')}'",
+        ) == [("aaaa",)]  # append-at-end: z ("aaa") was the last sibling
 
     def test_reparent_carries_a_single_child_order_row(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("a"), parent_id=None, hlc=(1, 0)))

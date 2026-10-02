@@ -65,6 +65,7 @@ V2_ENVELOPE_LIST_FIXTURES = [
     "v2/class-extends-m2m.json",
     "v2/class-property-defaults.json",
     "v2/class-unassign.json",
+    "v2/object-move-before.json",
     "v2/object-move.json",
     "v2/property-set-lww.json",
     "v2/typed-link-mark.json",

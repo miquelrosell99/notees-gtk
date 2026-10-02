@@ -552,6 +552,10 @@ class LocalStore:
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
         tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
         node_type = str(payload.get("nodeType") or ("page" if parent_id is None else "block"))
+        after_id = payload.get("afterId")
+        after_id = str(after_id) if after_id is not None else None
+        before_id = payload.get("beforeId")
+        before_id = str(before_id) if before_id is not None else None
         ts = _envelope_ts(env)
 
         # Title-is-content constraint (SCHEMA.md): pages and classes carry
@@ -612,7 +616,7 @@ class LocalStore:
             if parent_id is not None:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
-                    (parent_id, object_id, self._next_child_position(parent_id)),
+                    (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id, before_id)),
                 )
         return True
 
@@ -735,6 +739,8 @@ class LocalStore:
         parent_id = str(parent_id) if parent_id is not None else None
         after_id = payload.get("afterId")
         after_id = str(after_id) if after_id is not None else None
+        before_id = payload.get("beforeId")
+        before_id = str(before_id) if before_id is not None else None
 
         if parent_id is not None:
             self._check_parent_allowed(env.workspace_id, parent_id, op_type)
@@ -773,7 +779,7 @@ class LocalStore:
             if parent_id is not None:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
-                    (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id)),
+                    (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id, before_id)),
                 )
         return True
 
@@ -786,10 +792,23 @@ class LocalStore:
         ).fetchone()
         return f"{row[0]}a" if row is not None else "a"
 
-    def _allocate_child_position(self, parent_id: str, child_id: str, after_id: str | None) -> str:
-        """Fractional position for ``child_id`` under ``parent_id``: sibling
-        midpoint after ``afterId``, append-at-end when afterId is last, and a
-        defensive plain append when afterId is not a current sibling."""
+    def _allocate_child_position(
+        self, parent_id: str, child_id: str, after_id: str | None, before_id: str | None = None
+    ) -> str:
+        """Fractional position for ``child_id`` under ``parent_id``, by anchor:
+
+        - ``afterId``: sibling midpoint between afterId's position and the
+          next sibling's, append-at-end when afterId is the last sibling;
+        - ``beforeId``: sibling midpoint between the previous sibling's
+          position and beforeId's — or, when beforeId is the first child,
+          one slot below it (midpoint against the empty string: the only
+          way to place BEFORE the current first sibling, which the
+          afterId-only algebra cannot express);
+        - no usable anchor (absent, or not a current sibling): defensive
+          plain append.
+
+        When both anchors are present ``afterId`` wins (the TS reference
+        never sends both)."""
         if after_id is not None:
             after = self._conn.execute(
                 "SELECT position FROM node_child_order WHERE parent_id = ? AND child_id = ?",
@@ -805,6 +824,21 @@ class LocalStore:
                 if next_row is not None:
                     return _midpoint_between(str(after[0]), str(next_row[0]))
                 return self._next_child_position(parent_id)
+        if before_id is not None:
+            before = self._conn.execute(
+                "SELECT position FROM node_child_order WHERE parent_id = ? AND child_id = ?",
+                (parent_id, before_id),
+            ).fetchone()
+            if before is not None:
+                prev_row = self._conn.execute(
+                    """SELECT position FROM node_child_order
+                       WHERE parent_id = ? AND child_id != ? AND position < ?
+                       ORDER BY position DESC LIMIT 1""",
+                    (parent_id, child_id, before[0]),
+                ).fetchone()
+                if prev_row is not None:
+                    return _midpoint_between(str(prev_row[0]), str(before[0]))
+                return _midpoint_between("", str(before[0]))
         return self._next_child_position(parent_id)
 
     # -------------------------------------------------------------------- class.*
