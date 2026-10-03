@@ -1,0 +1,144 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000500",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000510"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000510",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Color probe page"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000501",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000510"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:07.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000510",
+        "color": "sky"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000502",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000510"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:07.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000510",
+        "color": "#123abc"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000503",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000510"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:07.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000510",
+        "color": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000504",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000511"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000511",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Genre"
+          }
+        ],
+        "color": "pink"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000505",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000511"
+      ],
+      "opType": "class.update",
+      "timestamp": "2026-09-24T12:00:07.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000511",
+        "color": null
+      }
+    }
+  ]
+}

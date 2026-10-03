@@ -330,6 +330,40 @@ class TestClassUnassignFixture:
         ]
 
 
+class TestObjectColorFixture:
+    """Replay of object-color.json (§34.43: token | #hex | null-clear):
+    object.update applies the preset token, then the custom hex, then null
+    as a clear; class.create carries a token color onto BOTH the node row
+    and the registry row, and class.update null clears both."""
+
+    PAGE = "0192a000-0000-7000-8000-000000000510"
+    CLASS = "0192a000-0000-7000-8000-000000000511"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("object-color.json")]
+
+    def test_object_update_applies_token_hex_then_null_clear(self, store: LocalStore) -> None:
+        create, token_update, hex_update, clear_update, *_ = self._load()
+        assert store.apply_remote(create) is True
+        assert store.apply_remote(token_update) is True
+        assert store.node(WS, self.PAGE).color == "sky"
+        assert store.apply_remote(hex_update) is True
+        assert store.node(WS, self.PAGE).color == "#123abc"
+        assert store.apply_remote(clear_update) is True
+        assert store.node(WS, self.PAGE).color is None
+
+    def test_class_create_token_lands_on_both_rows_update_null_clears_both(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        create, class_create, class_update = envelopes[0], envelopes[4], envelopes[5]
+        assert store.apply_remote(create) is True
+        assert store.apply_remote(class_create) is True
+        assert store.node(WS, self.CLASS).color == "pink"
+        assert raw(store, "SELECT color FROM class WHERE id = ?", (self.CLASS,)) == [("pink",)]
+        assert store.apply_remote(class_update) is True
+        assert store.node(WS, self.CLASS).color is None
+        assert raw(store, "SELECT color FROM class WHERE id = ?", (self.CLASS,)) == [(None,)]
+
+
 class TestCycleFixture:
     def test_cycle_closing_envelopes_throw_and_roll_back(self, store: LocalStore) -> None:
         root, leaf, leaf_extends_root, root_extends_leaf, root_extends_root_self = (

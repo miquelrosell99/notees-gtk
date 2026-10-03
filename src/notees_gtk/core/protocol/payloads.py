@@ -16,6 +16,11 @@ bit — the retired ``nodeType`` key is rejected outright by these strict
 schemas (no wire compat of any kind; the stored log is rewritten in place by
 the one-time migration script).
 
+Color grammar (§34.43, owner 2026-10-03): node/class ``color`` is a preset
+token or a custom ``#RRGGBB`` hex (``colors.py``, the ``colors.ts`` parity
+module), never the retired ``var(--color-preset-*)`` encoding, and payloads
+accept an explicit ``null`` clear.
+
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
 (SCHEMA.md, 2026-10-01): no op payload carries a ``name`` — the builders
@@ -30,6 +35,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from notees_gtk.core.protocol.colors import ColorValue
 
 __all__ = [
     "PAYLOAD_SCHEMAS",
@@ -99,7 +106,9 @@ class ObjectUpdatePayload(_Strict):
     # rejected outright by this strict schema.
     present_as_main: bool | None = Field(default=None, alias="presentAsMain")
     icon: str | None = Field(default=None, max_length=64)
-    color: str | None = Field(default=None, max_length=32)
+    # Preset token (`sky`) or custom `#RRGGBB` hex (colors.py grammar);
+    # null CLEARS the node's color (§34.43).
+    color: ColorValue = Field(default=None)
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
 
@@ -137,7 +146,8 @@ class ClassCreatePayload(_Strict):
     class_id: UUID = Field(alias="classId")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
     icon: str | None = Field(default=None, max_length=64)
-    color: str | None = Field(default=None, max_length=32)
+    # Preset token or `#RRGGBB` hex (colors.py grammar); null = no color.
+    color: ColorValue = Field(default=None)
     description: str | None = Field(default=None, max_length=4096)
 
 
@@ -145,7 +155,9 @@ class ClassUpdatePayload(_Strict):
     class_id: UUID = Field(alias="classId")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
     icon: str | None = Field(default=None, max_length=64)
-    color: str | None = Field(default=None, max_length=32)
+    # Preset token or `#RRGGBB` hex (colors.py grammar); null clears —
+    # the schema now accepts what the catalog always documented.
+    color: ColorValue = Field(default=None)
     description: str | None = Field(default=None, max_length=4096)
 
 
@@ -362,9 +374,13 @@ def build_object_update(
     content_ast: list[Any] | None = None,
     content_delta_b64: str | None = None,
     icon: str | None = None,
-    color: str | None = None,
+    color: str | None | object = _UNSET,
 ) -> dict[str, Any]:
-    """Build an ``object.update`` payload (at least one field required)."""
+    """Build an ``object.update`` payload (at least one field required).
+
+    ``color=None`` sends an explicit null that CLEARS the node's color
+    (§34.43 — the UI's "No color"); omitting ``color`` leaves it untouched.
+    """
     payload: dict[str, Any] = {"objectId": object_id}
     if present_as_main is not None:
         payload["presentAsMain"] = present_as_main
@@ -374,7 +390,7 @@ def build_object_update(
         payload["contentDeltaB64"] = content_delta_b64
     if icon is not None:
         payload["icon"] = icon
-    if color is not None:
+    if color is not _UNSET:
         payload["color"] = color
     return _validated("object.update", payload)
 
@@ -439,10 +455,14 @@ def build_class_update(
     name: str | None = None,
     content_ast: list[Any] | None = None,
     icon: str | None = None,
-    color: str | None = None,
+    color: str | None | object = _UNSET,
     description: str | None = None,
 ) -> dict[str, Any]:
-    """Build a ``class.update`` payload (same name convenience as create)."""
+    """Build a ``class.update`` payload (same name convenience as create).
+
+    ``color=None`` sends an explicit null that CLEARS the class color;
+    omitting ``color`` leaves it untouched.
+    """
     payload: dict[str, Any] = {"classId": class_id}
     if name is not None and content_ast is None:
         payload["contentAst"] = [{"type": "text", "text": name}]
@@ -450,7 +470,7 @@ def build_class_update(
         payload["contentAst"] = content_ast
     if icon is not None:
         payload["icon"] = icon
-    if color is not None:
+    if color is not _UNSET:
         payload["color"] = color
     if description is not None:
         payload["description"] = description

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from notees_gtk.core.protocol.colors import COLOR_PRESET_TOKENS
 from notees_gtk.core.protocol.op_types import KNOWN_OP_TYPES
 from notees_gtk.core.protocol.payloads import (
     PAYLOAD_SCHEMAS,
@@ -106,6 +107,66 @@ class TestObjectUpdateRefines:
 
     def test_single_carrier_accepted(self) -> None:
         validate_payload("object.update", {"objectId": UUID_1, "contentDeltaB64": "AAAA"})
+
+
+class TestColorGrammar:
+    """§34.43 (owner 2026-10-03): node/class ``color`` is a preset token or a
+    custom ``#RRGGBB`` hex (colors.py grammar), or ``null`` to clear. The
+    retired ``var(--color-preset-*)`` encoding and freeform strings are
+    rejected outright by the strict schemas — no wire compat."""
+
+    @pytest.mark.parametrize("op_type", ["object.update", "class.create", "class.update"])
+    @pytest.mark.parametrize("token", COLOR_PRESET_TOKENS)
+    def test_every_preset_token_accepted(self, op_type: str, token: str) -> None:
+        key = "objectId" if op_type == "object.update" else "classId"
+        validate_payload(op_type, {key: UUID_1, "color": token})
+
+    @pytest.mark.parametrize("op_type", ["object.update", "class.create", "class.update"])
+    @pytest.mark.parametrize("hex_color", ["#abcdef", "#ABCDEF", "#123abc", "#0f9D8e"])
+    def test_six_digit_hex_accepted(self, op_type: str, hex_color: str) -> None:
+        key = "objectId" if op_type == "object.update" else "classId"
+        validate_payload(op_type, {key: UUID_1, "color": hex_color})
+
+    @pytest.mark.parametrize("op_type", ["object.update", "class.create", "class.update"])
+    def test_retired_css_variable_encoding_rejected(self, op_type: str) -> None:
+        key = "objectId" if op_type == "object.update" else "classId"
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {key: UUID_1, "color": "var(--color-preset-red)"})
+
+    @pytest.mark.parametrize("op_type", ["object.update", "class.create", "class.update"])
+    @pytest.mark.parametrize("bad", ["#12345", "#1234567", "red ", " not-a-color", "not-a-color", ""])
+    def test_garbage_rejected(self, op_type: str, bad: str) -> None:
+        key = "objectId" if op_type == "object.update" else "classId"
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {key: UUID_1, "color": bad})
+
+    def test_null_clear_accepted_on_object_update(self) -> None:
+        """NEW capability: an explicit null on the wire must parse, and it
+        still satisfies the at-least-one-writable-field refine."""
+        validate_payload("object.update", {"objectId": UUID_1, "color": None})
+
+    def test_null_clear_accepted_on_class_update(self) -> None:
+        validate_payload("class.update", {"classId": UUID_1, "color": None})
+
+    def test_absent_color_still_validates(self) -> None:
+        validate_payload("object.update", {"objectId": UUID_1, "icon": "📄"})
+        validate_payload("class.update", {"classId": UUID_1, "description": "d"})
+
+    def test_builder_sends_null_clear_only_when_asked(self) -> None:
+        """``color=None`` emits an explicit null (the UI's "No color");
+        omitting the parameter leaves the key off the wire entirely."""
+        assert build_object_update(UUID_1, color=None) == {"objectId": UUID_1, "color": None}
+        assert build_class_update(UUID_1, color=None) == {"classId": UUID_1, "color": None}
+        assert "color" not in build_object_update(UUID_1, icon="📄")
+        assert "color" not in build_class_update(UUID_1)
+        assert build_object_update(UUID_1, color="sky") == {"objectId": UUID_1, "color": "sky"}
+        assert build_class_update(UUID_1, color="#123abc") == {"classId": UUID_1, "color": "#123abc"}
+
+    def test_builder_rejects_out_of_grammar_colors(self) -> None:
+        with pytest.raises(ValidationError):
+            build_object_update(UUID_1, color="var(--color-preset-red)")
+        with pytest.raises(ValidationError):
+            build_class_update(UUID_1, color="not-a-color")
 
 
 class TestRenderStateModelStrictness:
