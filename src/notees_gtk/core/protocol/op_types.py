@@ -17,6 +17,7 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         "object.create",
         "object.update",
         "object.delete",
+        "object.restore",
         "object.move",
         # Classes
         "class.create",

@@ -40,6 +40,7 @@ __all__ = [
     "build_object_create",
     "build_object_delete",
     "build_object_move",
+    "build_object_restore",
     "build_object_update",
     "build_tag_unassign",
     "payload_schema_for",
@@ -115,6 +116,10 @@ class ObjectUpdatePayload(_Strict):
 class ObjectDeletePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
     permanent: bool = False
+
+
+class ObjectRestorePayload(_Strict):
+    object_id: UUID = Field(alias="objectId")
 
 
 class ObjectMovePayload(_Strict):
@@ -255,6 +260,7 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "object.create": ObjectCreatePayload,
     "object.update": ObjectUpdatePayload,
     "object.delete": ObjectDeletePayload,
+    "object.restore": ObjectRestorePayload,
     "object.move": ObjectMovePayload,
     "class.create": ClassCreatePayload,
     "class.update": ClassUpdatePayload,
@@ -376,6 +382,11 @@ def build_object_update(
 def build_object_delete(object_id: str, *, permanent: bool = False) -> dict[str, Any]:
     """Build an ``object.delete`` payload (soft delete unless ``permanent``)."""
     return _validated("object.delete", {"objectId": object_id, "permanent": permanent})
+
+
+def build_object_restore(object_id: str) -> dict[str, Any]:
+    """Build an ``object.restore`` payload (whole-tree trash restore)."""
+    return _validated("object.restore", {"objectId": object_id})
 
 
 def build_object_move(

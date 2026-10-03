@@ -264,6 +264,7 @@ class LocalStore:
             "object.create": self._apply_object_create,
             "object.update": self._apply_object_update,
             "object.delete": self._apply_object_delete,
+            "object.restore": self._apply_object_restore,
             "object.move": self._apply_object_move,
             "class.create": self._apply_class_create,
             "class.update": self._apply_class_update,
@@ -535,6 +536,13 @@ class LocalStore:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def _parent_id(self, workspace_id: str, node_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT parent_id FROM nodes WHERE workspace_id = ? AND id = ?",
+            (workspace_id, node_id),
+        ).fetchone()
+        return None if row is None else (None if row[0] is None else str(row[0]))
+
     def _check_parent_allowed(self, workspace_id: str, parent_id: str, op_type: str) -> tuple[Any, ...]:
         """Shared placement guard for object.create/object.move: the parent
         must exist. Class parents are legal targets (Revision 11, spec I4:
@@ -743,6 +751,59 @@ class LocalStore:
             self._conn.execute(
                 f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
             )
+        return True
+
+    def _apply_object_restore(self, env: RelayEnvelope) -> bool:
+        """Restore from the trash (lockstep with the TS reference's
+        ``applyObjectRestore``). Whole-tree: the subtree that rode THIS trash
+        event reactivates; a descendant with its OWN trash row was trashed
+        independently and stays trashed (its subtree rides with it). The
+        root's trash row is consumed. Corner: a missing parent row (parent
+        permanently deleted / legacy data) reparents to the workspace root;
+        a present-but-inactive parent is left alone — restoring the parent
+        later heals the tree. LWW against ``object.delete`` is log order."""
+        op_type = "object.restore"
+        object_id = str(env.payload["objectId"])
+        row = self._require_node(env.workspace_id, object_id, op_type)
+        workspace_id = env.workspace_id
+        with self._conn:
+            parent_id = row[2]
+            if parent_id is not None and self._node_row(workspace_id, str(parent_id)) is None:
+                self._conn.execute(
+                    "UPDATE nodes SET parent_id = NULL WHERE workspace_id = ? AND id = ?",
+                    (workspace_id, object_id),
+                )
+            ids = self._subtree_ids(workspace_id, object_id)
+            has_own_trash = {
+                str(r[0])
+                for r in self._conn.execute(
+                    f"SELECT node_id FROM trash WHERE node_id IN ({', '.join('?' for _ in ids)})",
+                    ids,
+                ).fetchall()
+            }
+            to_reactivate: list[str] = []
+            for node in ids:
+                if node != object_id and node in has_own_trash:
+                    continue  # trashed independently — stays trashed
+                # Walk up: an own-trash-row ancestor below the root means this
+                # id rode a DIFFERENT delete.
+                cursor = self._parent_id(workspace_id, node)
+                rides_this_delete = True
+                while cursor is not None:
+                    if cursor == object_id:
+                        break
+                    if cursor in has_own_trash:
+                        rides_this_delete = False
+                        break
+                    cursor = self._parent_id(workspace_id, cursor)
+                if rides_this_delete:
+                    to_reactivate.append(node)
+            placeholders = ", ".join("?" for _ in to_reactivate)
+            self._conn.execute(
+                f"UPDATE nodes SET is_active = 1 WHERE workspace_id = ? AND id IN ({placeholders})",
+                [workspace_id, *to_reactivate],
+            )
+            self._conn.execute("DELETE FROM trash WHERE node_id = ?", (object_id,))
         return True
 
     def _apply_object_move(self, env: RelayEnvelope) -> bool:

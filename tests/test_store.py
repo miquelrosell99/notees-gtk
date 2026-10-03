@@ -175,6 +175,10 @@ def delete_env(node_id: str, *, permanent: bool = False, hlc: tuple[int, int]) -
     return make_env("object.delete", payload, hlc=hlc, affected=(node_id,))
 
 
+def restore_env(node_id: str, *, hlc: tuple[int, int]) -> RelayEnvelope:
+    return make_env("object.restore", {"objectId": node_id}, hlc=hlc, affected=(node_id,))
+
+
 def class_env(op_type: str, class_id: str, *, hlc: tuple[int, int], name: Any = UNSET, **fields: Any) -> RelayEnvelope:
     """Build a class op envelope; the ``name`` convenience wraps into a text
     token (``contentAst``) exactly like the client builder."""
@@ -965,6 +969,75 @@ class TestObjectDelete:
             store,
             f"SELECT is_permanent FROM trash WHERE node_id = '{uid('p')}'",
         ) == [(1,)]
+
+
+class TestObjectRestore:
+    """Lockstep with the TS reference's applyObjectRestore (implementation-plan
+    §34.38): whole-tree restore, independent-trash exclusion, the
+    dangling-parent corner, fail-loud on permanently deleted ids."""
+
+    def test_restore_reactivates_subtree_and_consumes_trash_row(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("g"), parent_id=uid("c"), content="grandchild", hlc=(3, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(4, 0)))
+        assert store.node(WS_A, uid("g")).is_active is False
+
+        store.apply_remote(restore_env(uid("p"), hlc=(5, 0)))
+        assert store.node(WS_A, uid("p")).is_active is True
+        assert store.node(WS_A, uid("c")).is_active is True
+        assert store.node(WS_A, uid("g")).is_active is True
+        assert raw_rows(store, f"SELECT 1 FROM trash WHERE node_id = '{uid('p')}'") == []
+        # Tree placement survived the round-trip.
+        assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("c")]
+
+    def test_independently_trashed_descendant_stays_trashed(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("s"), parent_id=uid("p"), content="sibling", hlc=(3, 0)))
+        store.apply_remote(delete_env(uid("c"), hlc=(4, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(5, 0)))
+
+        store.apply_remote(restore_env(uid("p"), hlc=(6, 0)))
+        assert store.node(WS_A, uid("p")).is_active is True
+        assert store.node(WS_A, uid("s")).is_active is True
+        assert store.node(WS_A, uid("c")).is_active is False
+        # Its own trash row survives — a later child restore still works.
+        assert raw_rows(store, f"SELECT 1 FROM trash WHERE node_id = '{uid('c')}'") == [(1,)]
+        store.apply_remote(restore_env(uid("c"), hlc=(7, 0)))
+        assert store.node(WS_A, uid("c")).is_active is True
+
+    def test_dangling_parent_reparents_to_workspace_root(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("g"), parent_id=uid("p"), content="grandchild", hlc=(2, 0)))
+        store.apply_remote(delete_env(uid("g"), hlc=(3, 0)))
+        # Legacy corner: the parent's row disappears after the trash (imported
+        # data with a pruned subtree) while the trashed node survives.
+        store._conn.execute(  # noqa: SLF001
+            "DELETE FROM node_child_order WHERE parent_id = ? OR child_id = ?", (uid("p"), uid("p"))
+        )
+        store._conn.execute("DELETE FROM trash WHERE node_id = ?", (uid("p"),))  # noqa: SLF001
+        store._conn.execute("DELETE FROM nodes WHERE id = ?", (uid("p"),))  # noqa: SLF001
+
+        store.apply_remote(restore_env(uid("g"), hlc=(4, 0)))
+        row = store.node(WS_A, uid("g"))
+        assert row is not None
+        assert row.is_active is True
+        assert row.parent_id is None
+
+    def test_restore_of_permanently_deleted_node_fails_loud(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(delete_env(uid("p"), permanent=True, hlc=(2, 0)))
+        with pytest.raises(NotFoundError, match="does not exist"):
+            store.apply_remote(restore_env(uid("p"), hlc=(3, 0)))
 
 
 class TestClassOps:
