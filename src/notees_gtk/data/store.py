@@ -156,7 +156,8 @@ class NodeRow:
         tag_ids: OR-Set tag membership projected from ``tag_member_set``
             (sorted by id).
         icon: Emoji/icon string or ``None``.
-        color: Color string or ``None``.
+        color: Preset token or custom ``#RRGGBB`` hex (colors.py grammar), or
+            ``None`` (never written / cleared).
         is_active: False once the node (soft-)deleted; the trash table keeps
             the deletion record.
         content: Serialized flat token array (JSON); ``None`` when the node
@@ -222,6 +223,19 @@ class EffectiveProperty:
 def _envelope_ts(env: RelayEnvelope) -> str:
     """Return the envelope timestamp as ISO-8601, falling back to now."""
     return env.timestamp.isoformat() if env.timestamp is not None else _now_iso()
+
+
+def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Map a ``class.*`` payload onto the class-node upsert field names.
+
+    ``color`` keeps wire PRESENCE: the key lands in the result only when the
+    payload carried it, so an explicit ``null`` (clear) survives the mapping
+    instead of collapsing into "absent" (§34.43).
+    """
+    fields: dict[str, Any] = {"content_ast": payload.get("contentAst"), "icon": payload.get("icon")}
+    if "color" in payload:
+        fields["color"] = payload["color"]
+    return fields
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -681,7 +695,12 @@ class LocalStore:
         if payload.get("icon") is not None:
             sets.append("icon = ?")
             values.append(payload["icon"])
-        if payload.get("color") is not None:
+        # Color is nullable on the wire: a present null CLEARS the column, so
+        # the write keys off payload PRESENCE, not value (zod
+        # ``colorValueSchema.nullish()`` parity — the TS applier gates on
+        # ``p.color !== undefined``); a ``is not None`` test here would
+        # silently drop the clear (§34.43).
+        if "color" in payload:
             sets.append("color = ?")
             values.append(payload["color"])
         if payload.get("contentAst") is not None:
@@ -1062,14 +1081,17 @@ class LocalStore:
             self._conn.execute(
                 """INSERT OR IGNORE INTO nodes
                      (workspace_id, id, is_class, present_as_main, parent_id, class_ids, name, content, content_plain,
+                      icon, color,
                       is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, 1, 0, NULL, '[]', NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 1, 0, NULL, '[]', NULL, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     class_id,
                     content,
                     content_plain,
+                    fields.get("icon"),
+                    fields.get("color"),
                     ts,
                     ts,
                     env.actor_id,
@@ -1086,10 +1108,18 @@ class LocalStore:
                 values.append(content)
                 sets.append("content_plain = ?")
                 values.append(content_plain)
-            for column in ("icon", "color"):
-                if fields.get(column) is not None:
-                    sets.append(f"{column} = ?")
-                    values.append(fields[column])
+            if fields.get("icon") is not None:
+                sets.append("icon = ?")
+                values.append(fields["icon"])
+            # Color carries presence semantics: a present null CLEARS the
+            # column (§34.43), so callers put the key only when the payload
+            # had it and the write keys off membership, not value (the
+            # create-time value already rode the INSERT above — the LWW-gated
+            # UPDATE can never beat this envelope's own HLC, so routing
+            # create fields through it would silently drop them).
+            if "color" in fields:
+                sets.append("color = ?")
+                values.append(fields["color"])
             if not sets:
                 return
             sets.extend(("updated_at = ?", "updated_by = ?", "hlc_physical = ?", "hlc_logical = ?", "actor_id = ?"))
@@ -1136,7 +1166,7 @@ class LocalStore:
         self._upsert_class_node(
             env,
             class_id,
-            {"content_ast": payload.get("contentAst"), "icon": payload.get("icon"), "color": payload.get("color")},
+            _class_node_fields(payload),
         )
         return True
 
@@ -1149,10 +1179,17 @@ class LocalStore:
             if payload.get("contentAst") is not None:
                 sets.append("name = ?")
                 values.append(plaintext_excerpt(payload["contentAst"]))
-            for column in ("icon", "color", "description"):
+            for column in ("icon", "description"):
                 if payload.get(column) is not None:
                     sets.append(f"{column} = ?")
                     values.append(payload[column])
+            # Color is nullable on the wire: a present null CLEARS the column,
+            # so the write keys off payload PRESENCE, not value (TS parity:
+            # ``p.color !== undefined``); a ``is not None`` test would silently
+            # drop the clear (§34.43).
+            if "color" in payload:
+                sets.append("color = ?")
+                values.append(payload["color"])
             if not sets:
                 return False
             sets.append("updated_at = ?")
@@ -1161,7 +1198,7 @@ class LocalStore:
         self._upsert_class_node(
             env,
             class_id,
-            {"content_ast": payload.get("contentAst"), "icon": payload.get("icon"), "color": payload.get("color")},
+            _class_node_fields(payload),
         )
         return True
 

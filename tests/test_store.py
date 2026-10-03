@@ -670,13 +670,27 @@ class TestObjectUpdate:
         store.apply_remote(create_env(hlc=(10, 0)))
         assert (
             store.apply_remote(
-                update_env(NODE, hlc=(11, 0), contentAst=[{"type": "text", "text": "N"}], icon="i", color="c")
+                update_env(NODE, hlc=(11, 0), contentAst=[{"type": "text", "text": "N"}], icon="i", color="#123abc")
             )
             is True
         )
         row = store.node(WS_A, NODE)
-        assert row is not None and (row.content_plain, row.icon, row.color) == ("N", "i", "c")
+        assert row is not None and (row.content_plain, row.icon, row.color) == ("N", "i", "#123abc")
         assert raw_rows(store, "SELECT hlc_physical, hlc_logical FROM nodes WHERE id = ?", (NODE,)) == [(11, 0)]
+
+    def test_color_presence_vs_null_clear(self, store: LocalStore) -> None:
+        """§34.43: a color field ABSENT from the payload writes nothing; a
+        color field PRESENT with null writes NULL (the clear the UI's "No
+        color" sends). Presence, not value, gates the write."""
+        store.apply_remote(create_env(hlc=(10, 0)))
+        store.apply_remote(update_env(NODE, hlc=(11, 0), color="red"))
+        # An unrelated write without a color key leaves the color untouched.
+        store.apply_remote(update_env(NODE, hlc=(12, 0), icon="📄"))
+        assert store.node(WS_A, NODE).color == "red"
+        # The explicit null clears it.
+        store.apply_remote(update_env(NODE, hlc=(13, 0), color=None))
+        assert store.node(WS_A, NODE).color is None
+        assert raw_rows(store, "SELECT color FROM nodes WHERE id = ?", (NODE,)) == [(None,)]
 
     def test_strict_payload_rejects_retired_name_field(self, store: LocalStore) -> None:
         """Apply-time half of the 422 gate: object.create/update payloads
@@ -1053,10 +1067,12 @@ class TestClassOps:
         assert row.name is None
         assert row.content == json.dumps([{"type": "text", "text": "Book"}])
         assert row.content_plain == "Book"
-        # Reference semantics (appliers.ts upsertClassNode): the create's own
-        # (hlc, actor) never beats its INSERT, so icon/color land on the class
-        # node only via a later, higher-HLC class.update.
-        assert row.icon is None
+        # Reference semantics (appliers.ts upsertClassNode): create-time
+        # icon/color ride the INSERT — the LWW-gated UPDATE can never beat
+        # the create's own (hlc, actor) — so both land on the class node
+        # row immediately, same as the registry row (§34.43 color fixture
+        # asserts exactly this for color).
+        assert (row.icon, row.color) == ("📕", "blue")
         registry = raw_rows(
             store,
             f"SELECT name, icon, color, active FROM class WHERE id = '{uid('cls-1')}'",
@@ -1065,6 +1081,18 @@ class TestClassOps:
         store.apply_remote(class_env("class.update", uid("cls-1"), hlc=(2, 0), icon="📕", color="blue"))
         row = store.node(WS_A, uid("cls-1"))
         assert row is not None and (row.icon, row.color) == ("📕", "blue")
+
+    def test_class_update_null_color_clears_both_rows(self, store: LocalStore) -> None:
+        """§34.43: class.update with an explicit null clears the color on the
+        class node row AND the registry row; a color-absent update leaves the
+        cleared state untouched."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Book", color="blue"))
+        store.apply_remote(class_env("class.update", uid("cls-1"), hlc=(2, 0), color=None))
+        row = store.node(WS_A, uid("cls-1"))
+        assert row is not None and row.color is None
+        assert raw_rows(store, f"SELECT color FROM class WHERE id = '{uid('cls-1')}'") == [(None,)]
+        store.apply_remote(class_env("class.update", uid("cls-1"), hlc=(3, 0), description="long form"))
+        assert store.node(WS_A, uid("cls-1")).color is None
 
     def test_class_create_content_ast_derives_the_display_name(self, store: LocalStore) -> None:
         """A class created with a contentAst (text-only title) stores the
