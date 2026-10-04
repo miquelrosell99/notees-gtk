@@ -19,7 +19,12 @@ identity (the row id IS the element id; OR-Set add-wins removes with element
 tombstones; the visible-set derivation every read consults), PC4 binding
 ``active`` (soft-unbind), PC6 date-node-backed qualifiers (normalize-on-write,
 read-lenient), and the §34.45 unset-carrier semantics (unsetting a node-backed
-text value trashes the orphaned carrier block).
+text value trashes the orphaned carrier block), PG4 extends-aware binding
+resolution (the diamond rule: own binding → shortest extends-path → earliest
+class-assignment HLC, ties by class id; ``bound_by`` names the supplying
+ancestor), and PG6 apply-time value validation (one-shape-per-type + scalar
+typing + cardinality/precision/filter/existence fail-loud at the property.set
+write path, §34.51).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -43,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -60,7 +66,7 @@ from notees_gtk.core.protocol.content import (
     plaintext_excerpt,
     stringify_content_ast,
 )
-from notees_gtk.core.protocol.dates import day_node_id
+from notees_gtk.core.protocol.dates import day_node_id, parse_date_node_id
 from notees_gtk.core.protocol.features import (
     SYSTEM_CLASS_ICONS_TASK,
     TASK_FAMILY_SEED,
@@ -78,6 +84,7 @@ from notees_gtk.data.errors import (
     EnvelopeValidationError,
     MoveGuardError,
     NotFoundError,
+    PropertyValueShapeError,
     UnsupportedCarrierError,
 )
 
@@ -312,6 +319,147 @@ def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) 
         normalized[key] = {"nodeId": day}
         changed = True
     return normalized if changed else metadata
+
+
+# --- PG6 apply-time value validation (§34.51) --------------------------------
+#
+# Port of the main repo's packages/store/src/property-values.ts. Write shapes
+# by schema type: text = a scalar string OR a carrier reference {"nodeId": …}
+# (a legacy bare uuid normalizes to the reference shape); date/object = a node
+# reference; date_range = {"start": ref|null, "end": ref|null} — either side
+# open. Scalar typing: number = a finite number — a NUMERIC STRING is the
+# v1-migrated legacy encoding (live data carries epoch-millis strings) and
+# normalizes to a number; boolean/url/email/select = their scalar;
+# multi_select = an array of strings. image stays UNCHECKED by design (PG14
+# owns the shape — live data carries v1 asset payloads, so any check would
+# break replay). `null` means "no value" and bypasses shape validation.
+
+#: SCHEMA.md "Dates": finest granularity a date value may claim.
+_DATE_PRECISION_RANK = {"year": 1, "month": 2, "day": 3}
+
+
+def _jsonish(value: Any) -> str:
+    """The JSON rendering an error message quotes (the TS JSON.stringify)."""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _shape_error_detail(type_: str) -> str:
+    if type_ == "text":
+        return 'a string or a node reference { "nodeId": … }'
+    if type_ == "date_range":
+        return '{ "start": ref|null, "end": ref|null } of node references'
+    return 'a node reference { "nodeId": … }'
+
+
+def _assert_value_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
+    """The PB2 one-shape-per-type gate (SCHEMA.md "Node-backed text
+    properties" / "Dates"), invoked by the PG6 validator. Returns the
+    normalized value to store (a legacy bare-uuid reference becomes
+    ``{"nodeId": …}``); ``None`` bypasses. Raises
+    :class:`~notees_gtk.data.errors.PropertyValueShapeError` on mismatch."""
+    if value is None:
+        return value
+    if type_ == "text":
+        if isinstance(value, str):
+            return value
+        ref = _node_ref_of_value(value)
+        if ref is not None:
+            return {"nodeId": ref}
+    elif type_ in ("date", "object"):
+        ref = _node_ref_of_value(value)
+        if ref is not None:
+            return {"nodeId": ref}
+    elif type_ == "date_range":
+        if isinstance(value, Mapping):
+            sides: dict[str, Any] = {}
+            well_formed = True
+            for key in ("start", "end"):
+                if key not in value:
+                    well_formed = False
+                    break
+                side_value = value[key]
+                if side_value is None:
+                    sides[key] = None
+                    continue
+                ref = _node_ref_of_value(side_value)
+                if ref is None:
+                    well_formed = False
+                    break
+                sides[key] = {"nodeId": ref}
+            if well_formed:
+                return {"start": sides["start"], "end": sides["end"]}
+    else:
+        return value  # number/boolean/url/email/select/multi_select/image ride to scalar typing
+    raise PropertyValueShapeError(
+        f"{op_type}: value for {type_} schema must be {_shape_error_detail(type_)} — got {_jsonish(value)}",
+        op_type,
+    )
+
+
+def _scalar_error_detail(type_: str) -> str:
+    if type_ == "number":
+        return "a finite number"
+    if type_ == "boolean":
+        return "a boolean"
+    if type_ == "multi_select":
+        return "an array of strings (option ids)"
+    return "a string"
+
+
+def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
+    """The PG6 scalar-typing extension, keyed off the schema type. Returns the
+    normalized value to store (a numeric string becomes a number)."""
+    if value is None:
+        return value
+    if type_ == "number":
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value):
+            return value
+        # v1-migrated epoch-millis strings (live-data verified): normalize.
+        if isinstance(value, str) and value.strip() != "":
+            with contextlib.suppress(ValueError):
+                parsed = float(value)
+                if math.isfinite(parsed):
+                    return int(parsed) if parsed.is_integer() else parsed
+    elif type_ == "boolean":
+        if isinstance(value, bool):
+            return value
+    elif type_ in ("url", "email", "select"):
+        if isinstance(value, str):
+            return value
+    elif type_ == "multi_select":
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return value
+    else:
+        # image and any future type: unchecked (see the section header).
+        return value
+    raise PropertyValueShapeError(
+        f"{op_type}: value for {type_} schema must be {_scalar_error_detail(type_)} — got {_jsonish(value)}",
+        op_type,
+    )
+
+
+def _is_valid_default_for_type(type_: str, value: Any) -> bool:
+    """PC2: a class-binding defaultValue must be typed per the schema type.
+    Node-typed schemas (date/date_range/object) accept only JSON null — a
+    default that links a node is meaningless. Returns False instead of
+    throwing so the read model can drop silently; the write path
+    (class.property.set) fails loud. Mirrors isValidDefaultForType."""
+    if value is None:
+        return True
+    if type_ in ("text", "url", "email", "image", "select"):
+        return isinstance(value, str)
+    if type_ == "number":
+        return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if type_ == "boolean":
+        return isinstance(value, bool)
+    if type_ == "multi_select":
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    # date/date_range/object accept only JSON null (handled above); unknown
+    # future types ride unchecked.
+    return type_ not in ("date", "date_range", "object")
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -1465,6 +1613,7 @@ class LocalStore:
     # ------------------------------------------------------- class.property.*
 
     def _apply_class_property_set(self, env: RelayEnvelope) -> bool:
+        op_type = "class.property.set"
         payload = env.payload
         class_id = str(payload["classId"])
         schema_id = str(payload["propertySchemaId"])
@@ -1475,6 +1624,27 @@ class LocalStore:
         ).fetchone()
         if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
             return False
+
+        # PC2 (§34.45): defaultValue is typed per the schema type — a
+        # wrong-typed default fails loud here instead of deriving silently on
+        # every read. Omitted defaultValue (patch keeps the stored one) skips
+        # the check; a stored default that drifts out of match (schema
+        # delete+recreate with a different type) is dropped defensively at
+        # the effective read instead. Unknown schema ids skip validation (no
+        # schema FK). A stale write dropped by the row LWW above never
+        # reaches the check — the TS parity.
+        if "defaultValue" in payload:
+            schema_type = self._property_schema_type(schema_id)
+            default_value = payload["defaultValue"]
+            if schema_type is not None and not _is_valid_default_for_type(schema_type, default_value):
+                if schema_type in ("date", "date_range", "object"):
+                    detail = "must be null — node-typed defaults are not supported"
+                else:
+                    detail = f"must be typed {schema_type}"
+                raise PropertyValueShapeError(
+                    f"{op_type}: defaultValue for {schema_type} schema {detail} — got {_jsonish(default_value)}",
+                    op_type,
+                )
 
         # Omitted (absent) fields keep the stored value via COALESCE; explicit
         # false / JSON null are real writes (null default == JSON "null").
@@ -1648,26 +1818,138 @@ class LocalStore:
         return f"{node_id}:{schema_id}:{idx}"
 
     def _property_schema_row(self, schema_id: str) -> dict[str, Any] | None:
-        """The schema row the property write path consults (PC6), or None when
-        the schema id is unknown (property.set has no schema FK — arbitrary
-        ids store unchecked, the TS parity)."""
+        """The schema row the property write path consults (PC6/PG6), or None
+        when the schema id is unknown (property.set has no schema FK —
+        arbitrary ids store unchecked, the TS parity). Carries every column
+        the validators read: type, multi, the target filter, the date
+        precision ceiling, and the PC6 qualifier flag."""
         row = self._conn.execute(
-            "SELECT id, type, multi, date_qualified FROM property_schema WHERE id = ?", (schema_id,)
+            "SELECT id, type, multi, target_class_filter, date_precision, date_qualified"
+            " FROM property_schema WHERE id = ?",
+            (schema_id,),
         ).fetchone()
         if row is None:
             return None
-        return {"id": str(row[0]), "type": row[1], "multi": row[2], "date_qualified": row[3]}
+        return {
+            "id": str(row[0]),
+            "type": row[1],
+            "multi": row[2],
+            "target_class_filter": row[3],
+            "date_precision": row[4],
+            "date_qualified": row[5],
+        }
+
+    def _property_schema_type(self, schema_id: str) -> str | None:
+        """The schema type a class.property.set defaultValue validates
+        against (PC2), or None when the schema id is unknown."""
+        row = self._conn.execute("SELECT type FROM property_schema WHERE id = ?", (schema_id,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _assert_ref_target_for_schema(self, workspace_id: str, schema: dict[str, Any], ref: str, op_type: str) -> None:
+        """PG6 graph checks for a node-typed ref's target: row existence (any
+        liveness — trash is a state, not an absence), the targetClassFilter
+        (extends-aware: a carried class satisfies the filter when it equals an
+        entry or descends from one through class_hierarchy — the bibliography
+        model filters authors by ``agent`` while person/organization EXTEND
+        agent), and the datePrecision ceiling for date/date_range refs."""
+        target = self._conn.execute(
+            "SELECT class_ids FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, ref)
+        ).fetchone()
+        if target is None:
+            raise PropertyValueShapeError(f"{op_type}: value references node {ref}, which does not exist", op_type)
+        filter_raw = schema.get("target_class_filter")
+        if filter_raw is not None:
+            try:
+                filter_list = json.loads(filter_raw)
+            except (TypeError, ValueError):
+                filter_list = None
+            if isinstance(filter_list, list) and len(filter_list) > 0:
+                try:
+                    carried_raw = json.loads(target[0]) if target[0] else []
+                except (TypeError, ValueError):
+                    carried_raw = []
+                carried = [str(class_id) for class_id in carried_raw if isinstance(class_id, str)]
+                allowed = set(carried)
+                if carried:
+                    placeholders = ", ".join("?" for _ in carried)
+                    for (ancestor,) in self._conn.execute(
+                        f"SELECT ancestor_id FROM class_hierarchy WHERE class_id IN ({placeholders})", carried
+                    ):
+                        allowed.add(str(ancestor))
+                if not any(isinstance(class_id, str) and class_id in allowed for class_id in filter_list):
+                    raise PropertyValueShapeError(
+                        f"{op_type}: value target {ref} does not carry any of the schema's allowed classes",
+                        op_type,
+                    )
+        if schema["type"] in ("date", "date_range"):
+            parsed = parse_date_node_id(ref)
+            if parsed is not None:
+                ceiling = _DATE_PRECISION_RANK.get(
+                    schema["date_precision"] if schema["date_precision"] is not None else "day", 3
+                )
+                precision_rank = _DATE_PRECISION_RANK.get(str(parsed["precision"]), 3)
+                if precision_rank > ceiling:
+                    declared = schema["date_precision"] if schema["date_precision"] is not None else "day"
+                    raise PropertyValueShapeError(
+                        f"{op_type}: {parsed['precision']} date ref claims finer granularity"
+                        f' than the schema\'s "{declared}" precision',
+                        op_type,
+                    )
+
+    def _assert_value_for_schema(self, workspace_id: str, schema: dict[str, Any], value: Any, op_type: str) -> Any:
+        """PG6: the full apply-time validation for a property.set against a
+        KNOWN schema row — shape/scalar typing, then the graph checks
+        (existence / class filter / date precision) for the node-typed link
+        family. ``None`` means "no value" and bypasses everything. Returns
+        the normalized value to store."""
+        shaped = _assert_value_shape_for_type(schema["type"], value, op_type)
+        typed = _assert_scalar_shape_for_type(schema["type"], shaped, op_type)
+        if typed is None:
+            return typed
+        if schema["type"] in ("date", "object"):
+            ref = _node_ref_of_value(typed)
+            if ref is not None:
+                self._assert_ref_target_for_schema(workspace_id, schema, ref, op_type)
+        elif schema["type"] == "date_range":
+            for side in (typed.get("start"), typed.get("end")):
+                ref = _node_ref_of_value(side)
+                if ref is not None:
+                    self._assert_ref_target_for_schema(workspace_id, schema, ref, op_type)
+        return typed
 
     def _apply_property_set(self, env: RelayEnvelope) -> bool:
+        op_type = "property.set"
         payload = env.payload
         node_id, schema_id, idx, element_id = self._property_slot(env)
         schema = self._property_schema_row(schema_id)
+        # PB2/PG6 (§34.45/§34.51): one-shape-per-type + schema-linked
+        # integrity at the write path. The schema row (when known —
+        # property.set has no schema FK) types the slot: shape/scalar
+        # mismatch, a date ref finer than the schema's precision, a target
+        # outside the class filter, and a ref to a nonexistent node all fail
+        # loud; a legacy bare-uuid reference or numeric string normalizes to
+        # the canonical encoding. Validation runs BEFORE the LWW decision —
+        # a stale write that would be dropped still rejects an invalid value,
+        # deterministically on every replica. Unknown schema ids store
+        # unchecked.
+        value = (
+            self._assert_value_for_schema(env.workspace_id, schema, payload.get("value"), op_type)
+            if schema is not None
+            else payload.get("value")
+        )
         # PC6 normalize-on-write: a well-formed YYYY-MM-DD string in
         # metadata.startDate/endDate rewrites to the deterministic day-node
         # ref — ONLY on dateQualified schema rows, only those two keys, pure
         # value rewriting (no graph side effects, no existence assertion).
         metadata = _normalize_qualifier_metadata(schema, payload.get("metadata"))
-        value_json = json.dumps(payload.get("value"), ensure_ascii=False)
+        # PG6 cardinality: a single-value schema takes idx 0 only. Higher
+        # slots would write rows no reader derives, so the write is rejected,
+        # not parked.
+        if schema is not None and not schema["multi"] and idx > 0:
+            raise PropertyValueShapeError(
+                f"{op_type}: schema {schema_id} is single-value — idx must be 0, got {idx}", op_type
+            )
+        value_json = json.dumps(value, ensure_ascii=False)
         metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
         with self._conn:
             if element_id is not None:
@@ -2324,15 +2606,21 @@ class LocalStore:
         property_value rows for them). Authored rows come through the PG5
         visible-set derivation (:meth:`_visible_property_value_rows` — slot
         tombstones + element tombstones) and carry their stable element id.
-        Binding conflicts across the node's classes resolve
-        first-class-applied-wins: the class whose OR-Set membership add
-        carries the earliest HLC supplies the default AND the binding
-        metadata; exact HLC ties break by class id. Only ACTIVE binding rows
+        Binding conflicts across the node's classes resolve per the SCHEMA.md
+        diamond rule (PG4, §34.45): candidates are (class, ancestor) pairs
+        discovered by a shortest-path walk (BFS) over ``class_extends`` — own
+        binding (distance 0) first, then inherited bindings by shortest
+        extends-path, ties by the class's OR-Set membership add HLC (earliest
+        first), then class id. ``bound_by`` names the ANCESTOR whose binding
+        row supplies the default + metadata (the winning class itself for an
+        own binding); with no extends edges this reduces exactly to
+        first-class-applied-wins over own bindings. Only ACTIVE binding rows
         are candidates (PC4: an inactive binding stops contributing defaults
         AND metadata — required/readonly/hideWhenEmpty/sequence — while the
         ROW survives and authored values read as unbound, ``bound_by`` None).
-        A pure read over derived tables — deterministic on every replica, no
-        writes, no clocks.
+        A stored default that no longer matches the schema type yields no
+        default (PC2 read-side). A pure read over derived tables —
+        deterministic on every replica, no writes, no clocks.
         """
         authored_rows = self._visible_property_value_rows(node_id)
 
@@ -2346,19 +2634,58 @@ class LocalStore:
             key=lambda row: (int(row[1]), int(row[2]), str(row[0])),
         )
 
-        # Winning binding per schema: the first class (in assignment order)
-        # that binds the schema supplies default + metadata. PC4: inactive
-        # rows (active = 0) are not candidates — the soft-unbind.
-        winner_by_schema: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        # Winning binding per schema, extends-aware (SCHEMA.md diamond rule):
+        # the winner minimizes (extends-distance, class-assignment HLC,
+        # class id); bound_by names the ancestor whose row supplies the
+        # binding + default. The class_hierarchy closure carries no distance,
+        # so the shortest-path walk uses the edge table.
+        extends_adjacency: dict[str, list[str]] = {}
+        for edge_row in self._conn.execute("SELECT class_id, parent_class_id FROM class_extends"):
+            extends_adjacency.setdefault(str(edge_row[0]), []).append(str(edge_row[1]))
+        reach_cache: dict[str, list[tuple[str, int]]] = {}
+
+        def reach_of(class_id: str) -> list[tuple[str, int]]:
+            cached = reach_cache.get(class_id)
+            if cached is not None:
+                return cached
+            visited = {class_id}
+            queue: list[tuple[str, int]] = [(class_id, 0)]
+            reach: list[tuple[str, int]] = []
+            cursor = 0
+            while cursor < len(queue):
+                current, distance = queue[cursor]
+                cursor += 1
+                reach.append((current, distance))
+                for parent_id in extends_adjacency.get(current, ()):
+                    if parent_id in visited:
+                        continue
+                    visited.add(parent_id)
+                    queue.append((parent_id, distance + 1))
+            reach_cache[class_id] = reach
+            return reach
+
+        candidates: dict[str, list[tuple[int, int, int, str, str, tuple[Any, ...]]]] = {}
         for cls in classes:
-            bindings = self._conn.execute(
-                "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value"
-                " FROM class_property WHERE class_id = ? AND active = 1",
-                (str(cls[0]),),
-            ).fetchall()
-            for binding in bindings:
-                if str(binding[0]) not in winner_by_schema:
-                    winner_by_schema[str(binding[0])] = (str(cls[0]), binding)
+            class_id = str(cls[0])
+            physical, logical = int(cls[1]), int(cls[2])
+            for ancestor_id, distance in reach_of(class_id):
+                for binding in self._conn.execute(
+                    "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value"
+                    " FROM class_property WHERE class_id = ? AND active = 1",
+                    (ancestor_id,),
+                ).fetchall():
+                    candidates.setdefault(str(binding[0]), []).append(
+                        (distance, physical, logical, class_id, ancestor_id, binding)
+                    )
+        winner_by_schema: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        for schema_id, schema_candidates in candidates.items():
+            # The TS comparator orders (distance, assignment HLC, class id);
+            # the ancestor id is the final tiebreak so the order is total —
+            # a same-class/same-distance tie across two ancestors is
+            # pathological and the TS comparator is inconsistent there (see
+            # the port notes). Well-defined cases match exactly.
+            winning_candidate = min(schema_candidates, key=lambda c: (c[0], c[1], c[2], c[3], c[4]))
+            winner_by_schema[schema_id] = (winning_candidate[4], winning_candidate[5])
 
         # Schema rows for everything referenced (authored rows survive schema
         # deletion: the row renders with schema=None).
@@ -2413,6 +2740,13 @@ class LocalStore:
         for schema_id, (class_id, binding) in winner_by_schema.items():
             if binding[5] is None:
                 continue  # bound without a default
+            # PC2 read-side: a stored default that no longer matches the
+            # schema type (written before validation, or after a
+            # delete+recreate changed the type) yields no default rather
+            # than a wrong-typed value.
+            schema = schemas.get(schema_id)
+            if schema is not None and not _is_valid_default_for_type(schema.type, parse_json(binding[5])):
+                continue
             if schema_id in shadowed_default_schemas:
                 continue  # authored value at idx 0 shadows the default
             rows_out[f"{schema_id}:0:default"] = EffectiveProperty(
