@@ -34,7 +34,7 @@ from notees_gtk.data.errors import (
     NotFoundError,
     UnsupportedCarrierError,
 )
-from notees_gtk.data.store import LocalStore, NodeRow
+from notees_gtk.data.store import SCHEMA_VERSION, LocalStore, NodeRow
 
 WS_A = "ws-a"
 WS_B = "ws-b"
@@ -69,9 +69,11 @@ V2_TABLES = {
     "property_schema",
     "property_value",
     "property_value_tombstone",
+    "property_value_element_tombstone",
     "node_asset",
     "collection_member",
     "trash",
+    "workspace_feature",
 }
 
 
@@ -239,7 +241,7 @@ class TestMigrations:
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
         assert tables >= {"relay_outbox", "relay_operations", "sync_watermark", "nodes"}
         assert tables >= V2_TABLES
-        assert version == 7
+        assert version == SCHEMA_VERSION
         # v2 node column names: is_active replaces archived; row-LWW columns
         # replace the v1 node_content_hlc watermark.
         assert {"is_active", "class_ids", "content_plain", "hlc_physical", "hlc_logical", "actor_id"} <= columns
@@ -358,7 +360,7 @@ class TestMigrations:
         with sqlite3.connect(path) as raw:
             version = raw.execute("PRAGMA user_version").fetchone()[0]
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
-        assert version == 7
+        assert version == SCHEMA_VERSION
         assert "node_type" not in columns
         assert {"is_class", "present_as_main"} <= columns
         root_page = upgraded.node(WS_A, "v6-root-page")
@@ -722,7 +724,9 @@ class TestObjectUpdate:
         demotion never un-flattens."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, content=rich, hlc=(2, 0)))
+        store.apply_remote(
+            create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, content=rich, hlc=(2, 0))
+        )
         # Created straight as main: content flattened at create time.
         assert json.loads(store.node(WS_A, uid("child")).content or "") == [{"type": "text", "text": "Bob said hi"}]
         assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=False)) is True
@@ -990,9 +994,7 @@ class TestObjectRestore:
     §34.38): whole-tree restore, independent-trash exclusion, the
     dangling-parent corner, fail-loud on permanently deleted ids."""
 
-    def test_restore_reactivates_subtree_and_consumes_trash_row(
-        self, store: LocalStore, tmp_path: Path
-    ) -> None:
+    def test_restore_reactivates_subtree_and_consumes_trash_row(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
         store.apply_remote(create_env(uid("g"), parent_id=uid("c"), content="grandchild", hlc=(3, 0)))
@@ -1007,9 +1009,7 @@ class TestObjectRestore:
         # Tree placement survived the round-trip.
         assert [row.id for row in store.children(WS_A, uid("p"))] == [uid("c")]
 
-    def test_independently_trashed_descendant_stays_trashed(
-        self, store: LocalStore, tmp_path: Path
-    ) -> None:
+    def test_independently_trashed_descendant_stays_trashed(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
         store.apply_remote(create_env(uid("s"), parent_id=uid("p"), content="sibling", hlc=(3, 0)))
@@ -1025,9 +1025,7 @@ class TestObjectRestore:
         store.apply_remote(restore_env(uid("c"), hlc=(7, 0)))
         assert store.node(WS_A, uid("c")).is_active is True
 
-    def test_dangling_parent_reparents_to_workspace_root(
-        self, store: LocalStore, tmp_path: Path
-    ) -> None:
+    def test_dangling_parent_reparents_to_workspace_root(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(create_env(uid("g"), parent_id=uid("p"), content="grandchild", hlc=(2, 0)))
         store.apply_remote(delete_env(uid("g"), hlc=(3, 0)))
@@ -1045,9 +1043,7 @@ class TestObjectRestore:
         assert row.is_active is True
         assert row.parent_id is None
 
-    def test_restore_of_permanently_deleted_node_fails_loud(
-        self, store: LocalStore, tmp_path: Path
-    ) -> None:
+    def test_restore_of_permanently_deleted_node_fails_loud(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
         store.apply_remote(delete_env(uid("p"), permanent=True, hlc=(2, 0)))
         with pytest.raises(NotFoundError, match="does not exist"):
@@ -1281,9 +1277,7 @@ class TestClassUnassign:
             )
         )
         store.apply_remote(
-            make_env(
-                "object.create", {"objectId": node_id, "classIds": [uid("cls-x")]}, hlc=(4, 0)
-            ),
+            make_env("object.create", {"objectId": node_id, "classIds": [uid("cls-x")]}, hlc=(4, 0)),
         )
 
     def test_missing_node_fails_loud(self, store: LocalStore) -> None:
@@ -1410,9 +1404,7 @@ class TestTagOps:
         # Log order 2: the add lands first, then the equal-(hlc, actor)
         # remove (strictly-greater gate) is dropped.
         other = uid("n-y")
-        store.apply_remote(
-            make_env("object.create", {"objectId": other, "tagIds": [uid("t-a")]}, hlc=(8, 0))
-        )
+        store.apply_remote(make_env("object.create", {"objectId": other, "tagIds": [uid("t-a")]}, hlc=(8, 0)))
         store.apply_remote(make_env("tag.unassign", {"objectId": other, "tagId": uid("t-a")}, hlc=(8, 0)))
         assert store.node(WS_A, other).tag_ids == (uid("t-a"),)
 
@@ -1809,6 +1801,496 @@ class TestSnapshotRestore:
             store.apply_remote(update_env(NODE, hlc=(3, 0), contentAst=[{"type": "text", "text": "still works"}]))
             is True
         )
+
+
+class TestWorkspaceFeatureToggle:
+    """The workspace.feature.set applier (§34.54/§34.55): LWW rows, the
+    family archival re-derivation with the event→meeting/birthday cascade,
+    the tasks-enable family ensure, and F4 routing."""
+
+    TASK_CLASS = "00000000-0000-0000-0001-000000000012"
+    EVENT_CLASS = "00000000-0000-0000-0001-000000000040"
+    MEETING_CLASS = "00000000-0000-0000-0001-000000000039"
+    BIRTHDAY_CLASS = "00000000-0000-0000-0001-000000000041"
+    BOOK_CLASS = "00000000-0000-0000-0001-000000000024"
+
+    @staticmethod
+    def feature_env(feature: str, enabled: bool, *, hlc: tuple[int, int], actor_id: str = ACTOR) -> RelayEnvelope:
+        return make_env(
+            "workspace.feature.set",
+            {"feature": feature, "enabled": enabled},
+            hlc=hlc,
+            actor_id=actor_id,
+            affected=(),
+        )
+
+    def _seed_calendar_family(self, store: LocalStore) -> None:
+        for class_id, name, hlc in (
+            (self.EVENT_CLASS, "event", (1, 0)),
+            (self.MEETING_CLASS, "meeting", (2, 0)),
+            (self.BIRTHDAY_CLASS, "birthday", (3, 0)),
+        ):
+            store.apply_remote(class_env("class.create", class_id, hlc=hlc, name=name))
+
+    def test_lww_row_and_absent_reads_enabled(self, store: LocalStore) -> None:
+        assert store.is_feature_enabled(WS_A, "tasks") is True  # absent row (F2)
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        assert store.apply_remote(self.feature_env("tasks", False, hlc=(20, 0))) is True
+        assert store.is_feature_enabled(WS_A, "tasks") is False
+        # A stale toggle drops whole (ignored, no state change).
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(15, 0))) is False
+        assert store.is_feature_enabled(WS_A, "tasks") is False
+        assert store.feature_rows(WS_A) == [("tasks", False, 20, 0, ACTOR)]
+
+    def test_disable_cascades_through_the_extends_children(self, store: LocalStore) -> None:
+        self._seed_calendar_family(store)
+        store.apply_remote(self.feature_env("events", False, hlc=(30, 0)))
+        for class_id in (self.EVENT_CLASS, self.MEETING_CLASS, self.BIRTHDAY_CLASS):
+            assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (class_id,)) == [(0,)]
+            assert raw_rows(store, "SELECT is_active FROM nodes WHERE id = ? AND is_class = 1", (class_id,)) == [(0,)]
+        # Meetings off alone leaves the event base live.
+        store.apply_remote(self.feature_env("meetings", False, hlc=(40, 0)))
+        store.apply_remote(self.feature_env("events", True, hlc=(50, 0)))
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.EVENT_CLASS,)) == [(1,)]
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.BIRTHDAY_CLASS,)) == [(1,)]
+        # Per-class re-derivation: the meetings-off meeting stays archived…
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.MEETING_CLASS,)) == [(0,)]
+        # …until its own toggle comes back on.
+        store.apply_remote(self.feature_env("meetings", True, hlc=(60, 0)))
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.MEETING_CLASS,)) == [(1,)]
+
+    def test_disable_never_touches_memberships(self, store: LocalStore) -> None:
+        self._seed_calendar_family(store)
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(self.EVENT_CLASS,), hlc=(10, 0), name="Launch day"))
+        store.apply_remote(self.feature_env("events", False, hlc=(30, 0)))
+        assert store.node(WS_A, member).class_ids == (self.EVENT_CLASS,)
+        assert raw_rows(
+            store,
+            "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
+            (member, self.EVENT_CLASS),
+        ) == [(1,)]
+
+    def test_tasks_enable_authors_the_family_at_fixed_ids(self, store: LocalStore) -> None:
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        row = store.node(WS_A, self.TASK_CLASS)
+        assert row is not None and row.is_class is True and row.is_active is True
+        assert row.content == json.dumps([{"type": "text", "text": "Task"}])
+        assert raw_rows(store, "SELECT name, icon, active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [
+            ("Task", "mdiCheckboxMarkedCircleOutline", 1)
+        ]
+        # Six schemas + bindings at the fixed ids, seeded before any real
+        # binding write (hlc 0/0, NULL actor — any later class.property.set
+        # wins the row LWW).
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_schema WHERE id LIKE '00000000-0000-0000-0003-%'") == [
+            (6,)
+        ]
+        assert raw_rows(
+            store,
+            "SELECT COUNT(*) FROM class_property WHERE class_id = ?"
+            " AND hlc_physical = 0 AND hlc_logical = 0 AND actor_id IS NULL",
+            (self.TASK_CLASS,),
+        ) == [(6,)]
+        options = raw_rows(
+            store,
+            "SELECT options FROM property_schema WHERE id = '00000000-0000-0000-0003-000000000001'",
+        )
+        assert '"00000000-0000-0000-0004-000000000008"' in options[0][0]  # backlog option id
+
+    def test_ensure_is_insert_or_ignore_and_never_clobbers(self, store: LocalStore) -> None:
+        store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0)))
+        store._conn.execute("UPDATE class SET name = 'Custom' WHERE id = ?", (self.TASK_CLASS,))  # noqa: SLF001
+        # A later winning enable re-runs the ensure: the user's row survives.
+        store.apply_remote(self.feature_env("tasks", True, hlc=(20, 0)))
+        assert raw_rows(store, "SELECT name FROM class WHERE id = ?", (self.TASK_CLASS,)) == [("Custom",)]
+
+    def test_f4_routes_managed_base_delete_and_children_stay_plain(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", self.TASK_CLASS, hlc=(1, 0), name="Task"))
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(self.TASK_CLASS,), hlc=(2, 0), name="Buy milk"))
+        # The managed base delete routes to the toggle: memberships survive…
+        assert store.apply_remote(class_env("class.delete", self.TASK_CLASS, hlc=(30, 0))) is True
+        assert store.is_feature_enabled(WS_A, "tasks") is False
+        assert store.node(WS_A, member).class_ids == (self.TASK_CLASS,)
+        assert store.node(WS_A, self.TASK_CLASS).is_active is False
+        # …and NO feature row appears for a non-managed child delete, which
+        # keeps the lossy semantics (membership tombstoning).
+        store.apply_remote(class_env("class.create", self.BOOK_CLASS, hlc=(40, 0), name="Book"))
+        book_member = uid("book-member")
+        store.apply_remote(create_env(book_member, class_ids=(self.BOOK_CLASS,), hlc=(41, 0), name="Dune"))
+        assert store.apply_remote(class_env("class.delete", self.BOOK_CLASS, hlc=(50, 0))) is True
+        assert store.node(WS_A, book_member).class_ids == ()
+        assert raw_rows(
+            store,
+            "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
+            (book_member, self.BOOK_CLASS),
+        ) == [(0,)]
+        assert raw_rows(store, "SELECT COUNT(*) FROM workspace_feature WHERE feature = 'sources'") == [(0,)]
+
+
+class TestPropertyUnsetCarrierTrash:
+    """§34.45 (PB2): unsetting a node-backed text value trashes the carrier
+    block — trash + retention under the three guards (text schema, node-ref
+    value, active non-class child of the owner, exclusively referenced)."""
+
+    @staticmethod
+    def _text_schema(store: LocalStore, *, hlc: tuple[int, int] = (1, 0)) -> str:
+        schema_id = uid("schema-text")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "notes", "type": "text"},
+                hlc=hlc,
+            )
+        )
+        return schema_id
+
+    def test_unset_trashes_the_orphaned_carrier(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("carrier"), parent_id=NODE, content="rich notes", hlc=(3, 0)))
+        carrier = uid("carrier")
+        store.apply_remote(property_set_env(NODE, schema_id, value={"nodeId": carrier}, hlc=(4, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(5, 0)))
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_value WHERE node_id = ?", (NODE,)) == [(0,)]
+        assert store.node(WS_A, carrier).is_active is False
+        assert raw_rows(store, "SELECT is_permanent FROM trash WHERE node_id = ?", (carrier,)) == [(0,)]
+
+    def test_scalar_text_value_has_no_carrier(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        store.apply_remote(property_set_env(NODE, schema_id, value="kuhn-1962", hlc=(4, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(5, 0)))
+        assert raw_rows(store, "SELECT COUNT(*) FROM trash") == [(0,)]
+
+    def test_still_referenced_carrier_survives(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("other"), name="Other", hlc=(3, 0)))
+        store.apply_remote(create_env(uid("carrier"), parent_id=NODE, content="shared", hlc=(4, 0)))
+        carrier = uid("carrier")
+        store.apply_remote(property_set_env(NODE, schema_id, value={"nodeId": carrier}, hlc=(5, 0)))
+        store.apply_remote(property_set_env(uid("other"), schema_id, value={"nodeId": carrier}, hlc=(6, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(7, 0)))
+        assert store.node(WS_A, carrier).is_active is True
+        assert raw_rows(store, "SELECT COUNT(*) FROM trash") == [(0,)]
+
+    def test_guards_reject_class_non_child_and_inactive_carriers(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        # Not a child of the owner: an orphan root node referenced by the value.
+        store.apply_remote(create_env(uid("carrier"), name="elsewhere", hlc=(3, 0)))
+        store.apply_remote(property_set_env(NODE, schema_id, value={"nodeId": uid("carrier")}, hlc=(4, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(5, 0)))
+        assert store.node(WS_A, uid("carrier")).is_active is True
+        # A class node is never a carrier.
+        store.apply_remote(class_env("class.create", uid("cls"), hlc=(6, 0), name="Genre"))
+        store.apply_remote(property_set_env(NODE, schema_id, value={"nodeId": uid("cls")}, hlc=(7, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(8, 0)))
+        assert store.node(WS_A, uid("cls")).is_active is True
+        assert raw_rows(store, "SELECT COUNT(*) FROM trash") == [(0,)]
+
+    def test_legacy_bare_uuid_value_shape_trashes_the_carrier(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("carrier"), parent_id=NODE, content="legacy", hlc=(3, 0)))
+        carrier = uid("carrier")
+        store.apply_remote(property_set_env(NODE, schema_id, value=carrier, hlc=(4, 0)))
+        store.apply_remote(property_unset_env(NODE, schema_id, hlc=(5, 0)))
+        assert store.node(WS_A, carrier).is_active is False
+        assert raw_rows(store, "SELECT is_permanent FROM trash WHERE node_id = ?", (carrier,)) == [(0,)]
+
+    def test_element_remove_trashes_the_carrier_too(self, store: LocalStore) -> None:
+        schema_id = self._text_schema(store)
+        store.apply_remote(create_env(name="Page", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("carrier"), parent_id=NODE, content="element", hlc=(3, 0)))
+        carrier = uid("carrier")
+        element = new_uuid7()
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": NODE, "propertySchemaId": schema_id, "value": {"nodeId": carrier}, "elementId": element},
+                hlc=(4, 0),
+                affected=(NODE,),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "property.unset",
+                {"objectId": NODE, "propertySchemaId": schema_id, "elementId": element},
+                hlc=(5, 0),
+                affected=(NODE,),
+            )
+        )
+        assert store.node(WS_A, carrier).is_active is False
+        assert raw_rows(
+            store, "SELECT COUNT(*) FROM property_value_element_tombstone WHERE element_id = ?", (element,)
+        ) == [(1,)]
+
+
+class TestPropertyWireBatch:
+    """PG5/PC4/PC6 unit semantics on the appliers (§34.57) beyond the
+    vendored fixtures."""
+
+    def test_same_idx_element_adds_coexist_and_order_by_element_id(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        schema_id = uid("schema-multi")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "tag", "type": "text", "multi": True},
+                hlc=(2, 0),
+            )
+        )
+        first, second = new_uuid7(), new_uuid7()
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": NODE, "propertySchemaId": schema_id, "value": "one", "elementId": first, "idx": 0},
+                hlc=(3, 0),
+                affected=(NODE,),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": NODE, "propertySchemaId": schema_id, "value": "two", "elementId": second, "idx": 0},
+                hlc=(4, 0),
+                affected=(NODE,),
+            )
+        )
+        # Same idx, distinct rows — the retired UNIQUE would have rejected this.
+        assert raw_rows(
+            store, "SELECT id, value, idx FROM property_value WHERE node_id = ? ORDER BY id", (NODE,)
+        ) == sorted([(first, '"one"', 0), (second, '"two"', 0)])
+        effective = store.get_effective_properties(NODE)
+        assert [(row.value, row.idx) for row in effective] == [("one", 0), ("two", 0)]
+
+    def test_element_remove_tombstones_and_newer_add_revives(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        schema_id = uid("schema-multi")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "tag", "type": "text", "multi": True},
+                hlc=(2, 0),
+            )
+        )
+        element = new_uuid7()
+
+        def add(value: str, hlc: tuple[int, int]) -> None:
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {
+                        "objectId": NODE,
+                        "propertySchemaId": schema_id,
+                        "value": value,
+                        "elementId": element,
+                        "idx": 0,
+                    },
+                    hlc=hlc,
+                    affected=(NODE,),
+                )
+            )
+
+        add("live", (3, 0))
+        store.apply_remote(
+            make_env(
+                "property.unset",
+                {"objectId": NODE, "propertySchemaId": schema_id, "elementId": element},
+                hlc=(4, 0),
+                affected=(NODE,),
+            )
+        )
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_value WHERE id = ?", (element,)) == [(0,)]
+        assert store.get_effective_properties(NODE) == []
+        # A strictly-older re-add stays dropped (the tombstone wins)…
+        add("stale", (3, 5))
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_value WHERE id = ?", (element,)) == [(0,)]
+        # …a newer one revives the element (add-wins over older tombstones).
+        add("revived", (5, 0))
+        assert raw_rows(store, "SELECT value FROM property_value WHERE id = ?", (element,)) == [('"revived"',)]
+        assert [row.value for row in store.get_effective_properties(NODE)] == ["revived"]
+
+    def test_element_remove_malformed_addressing_is_a_no_op(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        store.apply_remote(create_env(uid("other"), name="Other", hlc=(2, 0)))
+        schema_id = uid("schema-multi")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "tag", "type": "text", "multi": True},
+                hlc=(3, 0),
+            )
+        )
+        element = new_uuid7()
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": uid("other"), "propertySchemaId": schema_id, "value": "x", "elementId": element},
+                hlc=(4, 0),
+                affected=(uid("other"),),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "property.unset",
+                {"objectId": NODE, "propertySchemaId": schema_id, "elementId": element},
+                hlc=(5, 0),
+                affected=(NODE,),
+            )
+        )
+        # The live row (owned by the OTHER node) survives; the tombstone was
+        # still recorded under the payload's addressing.
+        assert raw_rows(store, "SELECT value FROM property_value WHERE id = ?", (element,)) == [('"x"',)]
+        assert store.get_effective_properties(uid("other"))[0].value == "x"
+
+    def test_permanent_delete_purges_the_subtrees_element_tombstones(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        store.apply_remote(create_env(uid("carrier"), parent_id=NODE, content="block", hlc=(2, 0)))
+        schema_id = uid("schema-multi")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "tag", "type": "text", "multi": True},
+                hlc=(3, 0),
+            )
+        )
+        element = new_uuid7()
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": uid("carrier"), "propertySchemaId": schema_id, "value": "v", "elementId": element},
+                hlc=(4, 0),
+                affected=(uid("carrier"),),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "property.unset",
+                {"objectId": uid("carrier"), "propertySchemaId": schema_id, "elementId": element},
+                hlc=(5, 0),
+                affected=(uid("carrier"),),
+            )
+        )
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_value_element_tombstone") == [(1,)]
+        store.apply_remote(make_env("object.delete", {"objectId": uid("carrier"), "permanent": True}, hlc=(6, 0)))
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_value_element_tombstone") == [(0,)]
+
+    def test_pc4_inactive_binding_survives_unset_deletes(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        class_id = uid("cls")
+        schema_id = uid("schema-sel")
+        item = uid("item")
+        store.apply_remote(class_env("class.create", class_id, hlc=(2, 0), name="Pipeline"))
+        store.apply_remote(create_env(item, class_ids=(class_id,), hlc=(3, 0), name="Deal"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": schema_id,
+                    "name": "stage",
+                    "type": "select",
+                    "options": [{"id": "a", "label": "A"}],
+                },
+                hlc=(4, 0),
+            )
+        )
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                class_id,
+                hlc=(5, 0),
+                **{"propertySchemaId": schema_id, "defaultValue": "a", "active": True},
+            )
+        )
+        assert [row.value for row in store.get_effective_properties(item)] == ["a"]
+        store.apply_remote(
+            class_env("class.property.set", class_id, hlc=(6, 0), **{"propertySchemaId": schema_id, "active": False})
+        )
+        # The ROW survives (unlike class.property.unset)…
+        assert raw_rows(
+            store,
+            "SELECT active, default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (class_id, schema_id),
+        ) == [(0, '"a"')]
+        assert store.get_effective_properties(item) == []
+        # …and a plain unset deletes it outright.
+        store.apply_remote(class_env("class.property.unset", class_id, hlc=(7, 0), **{"propertySchemaId": schema_id}))
+        assert raw_rows(store, "SELECT COUNT(*) FROM class_property WHERE class_id = ?", (class_id,)) == [(0,)]
+
+    def test_pc6_normalize_only_on_qualified_schemas_and_well_formed_strings(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        store.apply_remote(create_env(uid("target"), name="Ada", hlc=(2, 0)))
+        qualified = uid("schema-q")
+        plain = uid("schema-p")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": qualified,
+                    "name": "membership",
+                    "type": "object",
+                    "multi": True,
+                    "dateQualified": True,
+                },
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create", {"propertySchemaId": plain, "name": "plain", "type": "object"}, hlc=(4, 0)
+            )
+        )
+        day = "00000000-0000-0000-00dd-202003040000"
+        store.apply_remote(
+            property_set_env(
+                NODE,
+                qualified,
+                value={"nodeId": uid("target")},
+                idx=0,
+                metadata={"startDate": "2020-03-04", "endDate": "not-a-date", "note": "2020-03-04"},
+                hlc=(5, 0),
+            )
+        )
+        store.apply_remote(
+            property_set_env(
+                NODE,
+                plain,
+                value={"nodeId": uid("target")},
+                idx=0,
+                metadata={"startDate": "2020-03-04"},
+                hlc=(6, 0),
+            )
+        )
+        assert raw_rows(
+            store, "SELECT metadata FROM property_value WHERE node_id = ? AND property_schema_id = ?", (NODE, qualified)
+        ) == [(json.dumps({"startDate": {"nodeId": day}, "endDate": "not-a-date", "note": "2020-03-04"}),)]
+        # The non-qualified schema rides through untouched.
+        assert raw_rows(
+            store, "SELECT metadata FROM property_value WHERE node_id = ? AND property_schema_id = ?", (NODE, plain)
+        ) == [(json.dumps({"startDate": "2020-03-04"}),)]
+
+    def test_pc6_read_leniency_for_legacy_string_rows(self, store: LocalStore) -> None:
+        """A pre-PC6 replica's stored string row (written by a foreign
+        client) reads verbatim — reads accept both shapes."""
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        qualified = uid("schema-q")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": qualified, "name": "m", "type": "object", "dateQualified": True},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(property_set_env(NODE, qualified, value={"nodeId": NODE}, hlc=(3, 0)))
+        store._conn.execute(  # noqa: SLF001 — rewrite the row the pre-PC6 way
+            "UPDATE property_value SET metadata = ? WHERE node_id = ? AND property_schema_id = ?",
+            (json.dumps({"startDate": "2018-06-01"}), NODE, qualified),
+        )
+        effective = store.get_effective_properties(NODE)
+        assert effective[0].metadata == {"startDate": "2018-06-01"}
 
 
 # --------------------------------------------------------------------- helpers

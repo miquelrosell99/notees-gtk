@@ -1,0 +1,99 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000601",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200010000,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:10.000Z",
+      "payload": {
+        "feature": "tasks",
+        "enabled": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000602",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200010100,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:10.100Z",
+      "payload": {
+        "feature": "tasks",
+        "enabled": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000603",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200010200,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:10.200Z",
+      "payload": {
+        "feature": "events",
+        "enabled": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000604",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200010300,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:10.300Z",
+      "payload": {
+        "feature": "sources",
+        "enabled": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000605",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200010400,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:10.400Z",
+      "payload": {
+        "feature": "sources",
+        "enabled": true
+      }
+    }
+  ]
+}

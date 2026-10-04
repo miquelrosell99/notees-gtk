@@ -9,6 +9,8 @@ YYYY/MM(/DD)).
 
 from __future__ import annotations
 
+import pytest
+
 from notees_gtk.core.protocol.content import (
     DISPLAY_NAME_MAX,
     derive_display_name,
@@ -16,6 +18,8 @@ from notees_gtk.core.protocol.content import (
     parse_content_ast,
     plaintext_excerpt,
     stringify_content_ast,
+    validate_content_ast,
+    validate_content_token,
 )
 
 
@@ -85,3 +89,94 @@ class TestPlaintextExcerptParity:
             '{"type":"hard_break"},{"type":"math","expression":"x^2"}]'
         )
         assert plaintext_excerpt(tokens) == "a b x^2"
+
+
+class TestCodeBlockAndHrGrammar:
+    """§34.54 B3/B5: ``code_block`` is a promotion survivor (with whiteboard/
+    query); ``hr`` is deliberately NOT — promotion stringifies it away."""
+
+    def test_code_block_survives_stringification_with_surrounding_text_first(self) -> None:
+        rich = [
+            {"type": "text", "text": "before"},
+            {"type": "code_block", "language": "python", "text": "print('hi')"},
+            {"type": "text", "text": "after"},
+        ]
+        assert stringify_content_ast(rich) == [
+            {"type": "text", "text": "before after"},
+            {"type": "code_block", "language": "python", "text": "print('hi')"},
+        ]
+
+    def test_code_block_alone_survives_without_text(self) -> None:
+        assert stringify_content_ast([{"type": "code_block", "text": "plain"}]) == [
+            {"type": "code_block", "text": "plain"}
+        ]
+
+    def test_hr_is_not_a_promotion_survivor(self) -> None:
+        rich = [{"type": "text", "text": "above"}, {"type": "hr"}, {"type": "text", "text": "below"}]
+        assert stringify_content_ast(rich) == [{"type": "text", "text": "above below"}]
+        assert stringify_content_ast([{"type": "hr"}]) == []
+
+    def test_code_block_and_hr_are_silent_in_the_excerpt(self) -> None:
+        tokens = [
+            {"type": "text", "text": "notes"},
+            {"type": "code_block", "text": "print('hi')"},
+            {"type": "hr"},
+        ]
+        assert plaintext_excerpt(tokens) == "notes"
+
+
+class TestStrictTokenValidation:
+    """The §34.54 strict grammar entries (contentTokenSchema parity): the
+    code_block language tag, the hr shape, and the embed_ref.view enum."""
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            {"type": "code_block", "text": "x = 1"},
+            {"type": "code_block", "language": "python", "text": "x = 1"},
+            {"type": "code_block", "language": "c++", "text": "int main() {}"},
+            {"type": "hr"},
+            {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111"},
+            {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "embed"},
+            {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "small_card"},
+            {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "wide_card"},
+        ],
+    )
+    def test_new_tokens_validate(self, token: dict) -> None:
+        validate_content_token(token)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            {"type": "code_block", "language": "Python", "text": "x"},  # uppercase hint
+            {"type": "code_block", "language": "py thon", "text": "x"},
+            {"type": "code_block", "text": "x", "extra": 1},  # strict keys
+            {"type": "code_block"},  # text required
+            {"type": "hr", "extra": True},
+            {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "banner"},
+            {"type": "embed_ref", "nodeId": "not-a-uuid"},
+            {"type": "unknown_kind"},
+        ],
+    )
+    def test_bad_shapes_fail_loud(self, token: dict) -> None:
+        with pytest.raises(ValueError):
+            validate_content_token(token)
+
+    def test_quote_children_stay_inline_only(self) -> None:
+        with pytest.raises(ValueError):
+            validate_content_token({"type": "quote", "children": [{"type": "hr"}]})
+        with pytest.raises(ValueError):
+            validate_content_token({"type": "quote", "children": [{"type": "code_block", "text": "x"}]})
+        validate_content_token({"type": "quote", "children": [{"type": "text", "text": "quoted"}]})
+
+    def test_validate_content_ast_walks_the_stream(self) -> None:
+        validate_content_ast(
+            [
+                {"type": "text", "text": "See "},
+                {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "small_card"},
+                {"type": "code_block", "language": "mermaid", "text": "graph TD; A-->B;"},
+                {"type": "hr"},
+            ]
+        )
+        with pytest.raises(ValueError):
+            validate_content_ast([{"type": "code_block", "language": "MERMAID", "text": "x"}])

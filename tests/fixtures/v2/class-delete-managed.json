@@ -1,0 +1,101 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000610",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000012"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:11.000Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000012",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Task"
+          }
+        ],
+        "icon": "mdiCheckboxMarkedCircleOutline"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000611",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000615"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:11.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000615",
+        "presentAsMain": true,
+        "classIds": [
+          "00000000-0000-0000-0001-000000000012"
+        ],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Buy milk"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000612",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000012"
+      ],
+      "opType": "class.delete",
+      "timestamp": "2026-09-24T12:00:11.200Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000012"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000613",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200011300,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "workspace.feature.set",
+      "timestamp": "2026-09-24T12:00:11.300Z",
+      "payload": {
+        "feature": "tasks",
+        "enabled": true
+      }
+    }
+  ]
+}

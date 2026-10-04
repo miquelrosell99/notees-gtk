@@ -28,6 +28,7 @@ from notees_gtk.core.protocol.payloads import (
     build_object_move,
     build_object_update,
     build_tag_unassign,
+    build_workspace_feature_set,
     payload_schema_for,
     validate_payload,
 )
@@ -314,3 +315,107 @@ class TestBuilders:
         }
         assert "afterId" not in build_object_create(UUID_1)
         assert "beforeId" not in build_object_create(UUID_1)
+
+
+class TestWorkspaceFeatureSet:
+    """§34.54/§34.55: the workspace.feature.set payload — the strict five-
+    family enum (tasks|events|meetings|sources|persons); the retired pre-
+    reshape ids are rejected outright, no wire compat."""
+
+    def test_builder_emits_the_toggle(self) -> None:
+        assert build_workspace_feature_set("tasks", True) == {"feature": "tasks", "enabled": True}
+        assert build_workspace_feature_set("events", False) == {"feature": "events", "enabled": False}
+
+    @pytest.mark.parametrize("feature", ["tasks", "events", "meetings", "sources", "persons"])
+    def test_every_family_id_accepted(self, feature: str) -> None:
+        validate_payload("workspace.feature.set", {"feature": feature, "enabled": True})
+
+    @pytest.mark.parametrize(
+        "feature",
+        [
+            "journals",
+            "readItLater",
+            "read_it_later",
+            "library",
+            "people",
+            "collections",
+            "tasks ",
+            "TASKS",
+            "whiteboard",
+        ],
+    )
+    def test_retired_and_unknown_feature_ids_rejected(self, feature: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": feature, "enabled": True})
+
+    def test_extra_keys_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": "tasks", "enabled": True, "workspaceId": UUID_1})
+
+    def test_enabled_is_required_and_typed(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": "tasks"})
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": "tasks", "enabled": []})
+
+
+class TestPropertyWirePayloads:
+    """§34.57 property-wire batch: the optional PG5 elementId (UUID, explicit
+    null rejected — zod ``optional()`` parity) and the PC4 binding active
+    flag (omitted = keep; explicit null rejected)."""
+
+    def test_property_set_element_id_accepted(self) -> None:
+        validate_payload(
+            "property.set",
+            {"objectId": UUID_1, "propertySchemaId": UUID_2, "value": "x", "elementId": UUID_3, "idx": 1},
+        )
+
+    def test_property_set_element_id_must_be_uuid(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(
+                "property.set",
+                {"objectId": UUID_1, "propertySchemaId": UUID_2, "value": "x", "elementId": "not-a-uuid"},
+            )
+
+    def test_property_set_explicit_null_element_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="elementId"):
+            validate_payload(
+                "property.set",
+                {"objectId": UUID_1, "propertySchemaId": UUID_2, "value": "x", "elementId": None},
+            )
+
+    def test_property_unset_element_id_accepted_absent_default(self) -> None:
+        validate_payload("property.unset", {"objectId": UUID_1, "propertySchemaId": UUID_2})
+        validate_payload("property.unset", {"objectId": UUID_1, "propertySchemaId": UUID_2, "elementId": UUID_3})
+
+    def test_property_unset_explicit_null_element_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="elementId"):
+            validate_payload(
+                "property.unset",
+                {"objectId": UUID_1, "propertySchemaId": UUID_2, "elementId": None},
+            )
+
+    def test_class_property_set_active_accepted(self) -> None:
+        validate_payload(
+            "class.property.set",
+            {"classId": UUID_1, "propertySchemaId": UUID_2, "active": False},
+        )
+
+    def test_class_property_set_explicit_null_active_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="active"):
+            validate_payload(
+                "class.property.set",
+                {"classId": UUID_1, "propertySchemaId": UUID_2, "active": None},
+            )
+
+    def test_class_property_set_active_false_is_a_real_write_shape(self) -> None:
+        """Omitted keeps the stored flag; the payload layer must not collapse
+        an explicit False into 'absent' (model_fields_set is the guard)."""
+        payload = PAYLOAD_SCHEMAS["class.property.set"].model_validate(
+            {"classId": UUID_1, "propertySchemaId": UUID_2, "active": False}
+        )
+        assert payload.active is False
+        assert "active" in payload.model_fields_set
+        kept = PAYLOAD_SCHEMAS["class.property.set"].model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
+        assert kept.active is None
+        assert "active" not in kept.model_fields_set
