@@ -302,7 +302,7 @@ def _seed_device_a(device: Device) -> None:
         {
             "objectId": PAGE_MAIN,
             "propertySchemaId": PROPERTY_SCHEMA,
-            "value": {"label": "Open"},
+            "value": "open",
             "idx": 0,
             "metadata": {"since": "2026"},
         },
@@ -449,7 +449,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
         f"/api/objects/{PAGE_PROPS}/properties",
         {
             "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
-            "value": {"label": "high"},
+            "value": "high",
             "metadata": {"via": "rest"},
         },
     )["object"]
@@ -461,8 +461,11 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
             "schemaId": PROPERTY_SCHEMA_PRIORITY,
             "schemaName": "Priority",
             "schemaType": "select",
+            # PG5 (§34.57): each property entry carries its element id — the
+            # deterministic positional id for a legacy positional write.
+            "elementId": f"{PAGE_PROPS}:{PROPERTY_SCHEMA_PRIORITY}:0",
             "idx": 0,
-            "value": {"label": "high"},
+            "value": "high",
             "metadata": {"via": "rest"},
         }
     ]
@@ -475,7 +478,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     authored_b = device_b.store.get_effective_properties(PAGE_PROPS)
     # No class_property binding exists yet: authored row, bound_by None.
     assert [(row.source, row.value, row.metadata, row.bound_by) for row in authored_b] == [
-        ("authored", {"label": "high"}, {"via": "rest"}, None)
+        ("authored", "high", {"via": "rest"}, None)
     ]
 
     # --- 2: class binding through the engine's write path + effective default. ---
@@ -513,6 +516,6 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     # yet. So Defaults Page shows no properties server-side while every
     # client's effective read returns "medium".
     props_server = device_a.client._get_json(f"/api/objects/{PAGE_PROPS}")["object"]["properties"]
-    assert [entry["value"] for entry in props_server] == [{"label": "high"}]
+    assert [entry["value"] for entry in props_server] == ["high"]
     defaults_server = device_a.client._get_json(f"/api/objects/{PAGE_DEFAULTS}")["object"]["properties"]
     assert defaults_server == []

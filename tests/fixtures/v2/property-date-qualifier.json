@@ -1,0 +1,274 @@
+{
+  "comment": "PC6 (§34.56): date-node-backed link qualifiers. A dateQualified object schema ('membership', person-typed, multi) on the Club page links Ada (idx 0) with qualifiers as canonical date-node refs through the year/month/day chain (ensureDateChain pattern — the chain nodes are created first, deterministic ids), and links Ada again (idx 1) with a LEGACY ISO-string startDate that the applier normalizes on write to the deterministic day-node ref. Reads stay lenient for pre-PC6 string rows stored by other clients. LOCKSTEP-PENDING: the ref shape rides metadata (opaque to old clients — nothing fails loud), but the three-client batch gates together; the panel's ref-writing picker activates with the lockstep wave.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000751",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000762"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:22.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000762",
+        "contentAst": [{ "type": "text", "text": "Person" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000752",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022100, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:22.100Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000761",
+        "name": "membership",
+        "type": "object",
+        "multi": true,
+        "targetClassFilter": ["0192a000-0000-7000-8000-000000000762"],
+        "dateQualified": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000753",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000763"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000763",
+        "contentAst": [{ "type": "text", "text": "Club" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000754",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000764"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000764",
+        "classIds": ["0192a000-0000-7000-8000-000000000762"],
+        "contentAst": [{ "type": "text", "text": "Ada" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000755",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022400, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00bb-202000000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.400Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00bb-202000000000",
+        "classIds": ["00000000-0000-0000-0001-000000000003"],
+        "contentAst": [{ "type": "text", "text": "20200000" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000756",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022500, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00aa-202003000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.500Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00aa-202003000000",
+        "parentId": "00000000-0000-0000-00bb-202000000000",
+        "classIds": ["00000000-0000-0000-0001-000000000004"],
+        "contentAst": [{ "type": "text", "text": "20200300" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000757",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022600, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00dd-202003040000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.600Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00dd-202003040000",
+        "parentId": "00000000-0000-0000-00aa-202003000000",
+        "classIds": ["00000000-0000-0000-0001-000000000005"],
+        "contentAst": [{ "type": "text", "text": "20200304" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000758",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022700, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00bb-202200000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.700Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00bb-202200000000",
+        "classIds": ["00000000-0000-0000-0001-000000000003"],
+        "contentAst": [{ "type": "text", "text": "20220000" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000759",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022800, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00aa-202205000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.800Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00aa-202205000000",
+        "parentId": "00000000-0000-0000-00bb-202200000000",
+        "classIds": ["00000000-0000-0000-0001-000000000004"],
+        "contentAst": [{ "type": "text", "text": "20220500" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075a",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200022900, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00dd-202205060000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:22.900Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00dd-202205060000",
+        "parentId": "00000000-0000-0000-00aa-202205000000",
+        "classIds": ["00000000-0000-0000-0001-000000000005"],
+        "contentAst": [{ "type": "text", "text": "20220506" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075b",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200023000, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00bb-201900000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:23.000Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00bb-201900000000",
+        "classIds": ["00000000-0000-0000-0001-000000000003"],
+        "contentAst": [{ "type": "text", "text": "20190000" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075c",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200023100, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00aa-201901000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:23.100Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00aa-201901000000",
+        "parentId": "00000000-0000-0000-00bb-201900000000",
+        "classIds": ["00000000-0000-0000-0001-000000000004"],
+        "contentAst": [{ "type": "text", "text": "20190100" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075d",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200023200, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00dd-201901150000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:23.200Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00dd-201901150000",
+        "parentId": "00000000-0000-0000-00aa-201901000000",
+        "classIds": ["00000000-0000-0000-0001-000000000005"],
+        "contentAst": [{ "type": "text", "text": "20190115" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075e",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": { "physical": 1727200023300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000763"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:23.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000763",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000761",
+        "value": { "nodeId": "0192a000-0000-7000-8000-000000000764" },
+        "idx": 0,
+        "metadata": {
+          "startDate": { "nodeId": "00000000-0000-0000-00dd-202003040000" },
+          "endDate": { "nodeId": "00000000-0000-0000-00dd-202205060000" }
+        }
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000075f",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200023400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000763"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:23.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000763",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000761",
+        "value": { "nodeId": "0192a000-0000-7000-8000-000000000764" },
+        "idx": 1,
+        "metadata": { "startDate": "2019-01-15" }
+      }
+    }
+  ]
+}

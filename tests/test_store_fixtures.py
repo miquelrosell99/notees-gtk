@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.errors import CycleError
 from notees_gtk.data.store import (
@@ -79,6 +80,34 @@ def store(tmp_path: Path) -> LocalStore:
 def raw(store: LocalStore, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     with sqlite3.connect(store._conn.execute("PRAGMA database_list").fetchone()[2]) as conn:  # noqa: SLF001
         return conn.execute(sql, params).fetchall()
+
+
+#: Derived tables racing-toggle convergence compares (the GTK dumpDb
+#: analogue): everything the feature/property appliers write.
+_CONVERGENCE_TABLES = (
+    "nodes",
+    "class",
+    "class_member_set",
+    "class_property",
+    "class_hierarchy",
+    "property_schema",
+    "property_value",
+    "property_value_tombstone",
+    "property_value_element_tombstone",
+    "workspace_feature",
+)
+
+
+def _dump_convergence_tables(store: LocalStore) -> list[tuple[str, list[tuple[Any, ...]]]]:
+    """The derived-state dump the both-orders convergence tests compare —
+    every table the feature/property appliers write, each SELECT ordered by
+    all its columns so the comparison is byte-deterministic."""
+    dumps: list[tuple[str, list[tuple[Any, ...]]]] = []
+    for table in _CONVERGENCE_TABLES:
+        columns = [row[1] for row in raw(store, f"PRAGMA table_info({table})")]
+        order = ", ".join(str(index + 1) for index in range(len(columns)))
+        dumps.append((table, raw(store, f"SELECT * FROM {table} ORDER BY {order}")))
+    return dumps
 
 
 def base_store(tmp_path: Path) -> LocalStore:
@@ -251,6 +280,7 @@ class TestClassPropertyDefaultsFixture:
             EffectiveProperty(
                 property_schema_id=self.PRIORITY,
                 idx=0,
+                element_id=f"default:{self.PRIORITY}:0",
                 schema=EffectivePropertySchema(id=self.PRIORITY, name="priority", type="select", multi=False),
                 value="medium",
                 metadata=None,
@@ -362,6 +392,335 @@ class TestObjectColorFixture:
         assert store.apply_remote(class_update) is True
         assert store.node(WS, self.CLASS).color is None
         assert raw(store, "SELECT color FROM class WHERE id = ?", (self.CLASS,)) == [(None,)]
+
+
+class TestWorkspaceFeatureSetFixture:
+    """Replay of workspace-feature-set.json (§34.54/§34.55): the racing
+    tasks toggles resolve LWW to the higher-HLC phone disable, events
+    disables, sources re-enables — and the LOSING laptop enable still ran the
+    task-family ensure on every enable payload, so both delivery orders
+    converge byte-identical (the archival bits normalize to the current row
+    state on every path)."""
+
+    TASKS_DISABLE = "0192a000-0000-7000-8000-000000000602"
+    TASK_CLASS = "00000000-0000-0000-0001-000000000012"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("workspace-feature-set.json")]
+
+    def test_racing_toggles_resolve_lww_and_the_family_ensure_rides_every_enable(self, tmp_path: Path) -> None:
+        forward = LocalStore(tmp_path / "forward.db")
+        backward = LocalStore(tmp_path / "backward.db")
+        envelopes = self._load()
+        for env in envelopes:
+            assert forward.apply_remote(env) is True
+        for env in reversed(envelopes):
+            # Reversed delivery drops the lower-HLC racing toggles by LWW —
+            # convergence, not a bug.
+            backward.apply_remote(env)
+
+        for instance in (forward, backward):
+            assert instance.is_feature_enabled(WS, "tasks") is False
+            assert instance.is_feature_enabled(WS, "events") is False
+            assert instance.is_feature_enabled(WS, "sources") is True
+            # Absent rows read enabled (F2).
+            assert instance.is_feature_enabled(WS, "meetings") is True
+            assert instance.is_feature_enabled(WS, "persons") is True
+            # The winning rows carry the higher-HLC causality.
+            assert raw(
+                instance,
+                "SELECT feature, enabled FROM workspace_feature ORDER BY feature",
+            ) == [("events", 0), ("sources", 1), ("tasks", 0)]
+            # The losing enable still authored the family: the task class and
+            # its six schemas exist, archived per the winning disable.
+            assert raw(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(0,)]
+            assert raw(
+                instance,
+                "SELECT is_active FROM nodes WHERE id = ? AND is_class = 1",
+                (self.TASK_CLASS,),
+            ) == [(0,)]
+            assert raw(instance, "SELECT COUNT(*) FROM property_schema WHERE type IN ('select', 'date')") == [(6,)]
+            assert raw(instance, "SELECT COUNT(*) FROM class_property WHERE class_id = ?", (self.TASK_CLASS,)) == [(6,)]
+
+        # The flips are pure active-bit projections: both orders converge
+        # byte-identical on every derived table the toggles touch.
+        assert _dump_convergence_tables(forward) == _dump_convergence_tables(backward)
+        forward.close()
+        backward.close()
+
+
+class TestClassDeleteManagedFixture:
+    """Replay of class-delete-managed.json (F4, §34.54/§34.55): the
+    class.delete on the managed task BASE class routes to the toggle as a
+    feature-disable — membership pairs survive untouched — and the racing
+    re-enable wins the (workspace, tasks) slot under either delivery
+    order."""
+
+    TASK_CLASS = "00000000-0000-0000-0001-000000000012"
+    MEMBER = "0192a000-0000-7000-8000-000000000615"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-delete-managed.json")]
+
+    def test_routed_delete_keeps_memberships_and_the_reenable_wins(self, store: LocalStore) -> None:
+        for env in self._load():
+            assert store.apply_remote(env) is True
+        assert store.is_feature_enabled(WS, "tasks") is True
+        assert store.node(WS, self.TASK_CLASS).is_active is True
+        assert raw(store, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(1,)]
+        # The membership pair survived the routed delete untouched (F3).
+        assert store.node(WS, self.MEMBER).class_ids == (self.TASK_CLASS,)
+        assert raw(
+            store,
+            "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
+            (self.MEMBER, self.TASK_CLASS),
+        ) == [(1,)]
+
+    def test_routed_delete_and_racing_reenable_converge_under_either_order(self, tmp_path: Path) -> None:
+        envelopes = self._load()
+        base, routed_delete, reenable = envelopes[:2], envelopes[2], envelopes[3]
+        forward = LocalStore(tmp_path / "f.db")
+        backward = LocalStore(tmp_path / "b.db")
+        for env in [*base, routed_delete, reenable]:
+            assert forward.apply_remote(env) is True
+        for env in [*base, reenable, routed_delete]:
+            # Reversed: the delete (@11200) loses the (ws, tasks) slot to the
+            # already-standing re-enable (@11300) and drops by LWW.
+            backward.apply_remote(env)
+        # The enable (@11300) wins the (ws, tasks) slot over the delete (@11200).
+        for instance in (forward, backward):
+            assert instance.is_feature_enabled(WS, "tasks") is True
+            assert instance.node(WS, self.TASK_CLASS).is_active is True
+        assert _dump_convergence_tables(forward) == _dump_convergence_tables(backward)
+        forward.close()
+        backward.close()
+
+
+class TestCodeBlockFixture:
+    """Replay of code-block.json (§34.54 B3): the code_block token is a
+    PROMOTION SURVIVOR — the promote op flattens the surrounding rich tokens
+    to one text run but keeps the block (a code page is a real surface); the
+    language-less inline block keeps its token verbatim."""
+
+    BLOCK = "0192a000-0000-7000-8000-000000000621"
+    PLAIN = "0192a000-0000-7000-8000-000000000623"
+
+    def test_code_block_survives_promotion(self, store: LocalStore) -> None:
+        for envelope in load_fixture("code-block.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        promoted = json.loads(store.node(WS, self.BLOCK).content or "[]")
+        assert promoted == [
+            {"type": "text", "text": "before after"},
+            {"type": "code_block", "language": "python", "text": "print('hi')\nprint('bye')"},
+        ]
+        assert json.loads(store.node(WS, self.PLAIN).content or "[]") == [
+            {"type": "code_block", "text": "plain snippet"},
+        ]
+
+
+class TestHrFixture:
+    """Replay of hr.json (§34.54 B5): hr is deliberately NOT a promotion
+    survivor — the promote op stringifies it away; an inline block keeps the
+    token verbatim."""
+
+    BLOCK = "0192a000-0000-7000-8000-000000000631"
+    RULE_ONLY = "0192a000-0000-7000-8000-000000000633"
+
+    def test_hr_flattens_on_promotion_and_survives_inline(self, store: LocalStore) -> None:
+        for envelope in load_fixture("hr.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        assert json.loads(store.node(WS, self.BLOCK).content or "[]") == [{"type": "text", "text": "above below"}]
+        assert json.loads(store.node(WS, self.RULE_ONLY).content or "[]") == [{"type": "hr"}]
+
+
+class TestEmbedRefViewFixture:
+    """Replay of embed-ref-view.json (§34.54 B8): the view field applies
+    verbatim — absent = the full transclusion default, wide_card rides the
+    token; the small_card authored at create time was overwritten by the
+    later content update (row LWW)."""
+
+    BLOCK = "0192a000-0000-7000-8000-000000000642"
+    TARGET = "0192a000-0000-7000-8000-000000000640"
+
+    def test_view_field_applies_verbatim_default_absent(self, store: LocalStore) -> None:
+        for envelope in load_fixture("embed-ref-view.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        assert json.loads(store.node(WS, self.BLOCK).content or "[]") == [
+            {"type": "embed_ref", "nodeId": self.TARGET},
+            {"type": "embed_ref", "nodeId": self.TARGET, "view": "wide_card"},
+        ]
+
+
+class TestPropertyValueElementsFixture:
+    """Replay of property-value-elements.json (PG5, §34.57): same-idx
+    concurrent element adds coexist (ordered by element id), the element
+    remove tombstones phone's element, the newer re-add revives it
+    (add-wins), and the legacy positional add lands at its deterministic
+    positional element."""
+
+    NODE = "0192a000-0000-7000-8000-000000000712"
+    SCHEMA = "0192a000-0000-7000-8000-000000000711"
+    ALPHA = "0192a000-0000-7000-8000-000000000721"
+    BETA = "0192a000-0000-7000-8000-000000000722"
+    GAMMA = "0192a000-0000-7000-8000-000000000723"
+    POSITIONAL_ROW = f"{NODE}:{SCHEMA}:4"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("property-value-elements.json")]
+
+    def test_or_set_semantics_end_to_end(self, store: LocalStore) -> None:
+        for env in self._load():
+            assert store.apply_remote(env) is True
+        # Same-idx concurrent adds coexist; the remove + newer re-add revived
+        # beta; the legacy positional add landed at its deterministic id.
+        assert raw(
+            store,
+            "SELECT id, value, idx, metadata FROM property_value WHERE node_id = ? ORDER BY idx, id",
+            (self.NODE,),
+        ) == [
+            (self.ALPHA, '"alpha"', 0, '{"since": "2020"}'),
+            (self.BETA, '"beta"', 1, None),
+            (self.GAMMA, '"gamma"', 1, None),
+            (self.POSITIONAL_ROW, '"positional"', 4, None),
+        ]
+        # The remove's causality is recorded on the element tombstone.
+        assert raw(
+            store,
+            "SELECT hlc_physical, hlc_logical FROM property_value_element_tombstone WHERE element_id = ?",
+            (self.BETA,),
+        ) == [(1727200020500, 0)]
+
+    def test_effective_read_surfaces_every_element_ordered_by_idx_then_id(self, store: LocalStore) -> None:
+        for env in self._load():
+            store.apply_remote(env)
+        effective = store.get_effective_properties(self.NODE)
+        assert [(row.idx, row.element_id, row.value, row.source, row.bound_by) for row in effective] == [
+            (0, self.ALPHA, "alpha", "authored", None),
+            (1, self.BETA, "beta", "authored", None),
+            (1, self.GAMMA, "gamma", "authored", None),
+            (4, self.POSITIONAL_ROW, "positional", "authored", None),
+        ]
+
+    def test_same_hlc_remove_and_add_resolve_add_wins_under_both_orders(self, tmp_path: Path) -> None:
+        """The membership comparator is HLC-only: an element remove at the
+        SAME HLC as the add loses (add-wins) regardless of actor — under
+        either delivery order."""
+        base = [RelayEnvelope.model_validate(item) for item in load_fixture("property-value-elements.json")[:4]]
+        remove = self._load()[5].model_copy(update={"hlc": Hlc(physical=1727200020300, logical=0)})
+        re_add = self._load()[6]
+        forward = LocalStore(tmp_path / "f.db")
+        backward = LocalStore(tmp_path / "b.db")
+        for instance, tail in ((forward, (remove, re_add)), (backward, (re_add, remove))):
+            for env in base:
+                assert instance.apply_remote(env) is True
+            for env in tail:
+                instance.apply_remote(env)
+            # The equal-HLC remove lost to the add; the newer re-add keeps beta.
+            assert raw(instance, "SELECT id FROM property_value WHERE node_id = ? ORDER BY id", (self.NODE,)) == [
+                (self.ALPHA,),
+                (self.BETA,),
+            ]
+            instance.close()
+
+
+class TestClassPropertyActiveFixture:
+    """Replay of class-property-active.json (PC4, §34.57): the disable wins
+    the row LWW race over the interleaved lower-HLC enable, so the derived
+    default vanishes while the ROW survives; an authored value written while
+    inactive reads unbound; the re-enable restores the flag (the authored
+    value at idx 0 keeps shadowing the default)."""
+
+    SCHEMA = "0192a000-0000-7000-8000-000000000741"
+    CLASS = "0192a000-0000-7000-8000-000000000742"
+    ITEM = "0192a000-0000-7000-8000-000000000743"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-property-active.json")]
+
+    def test_prefix_6_disable_wins_the_row_race_default_vanishes_row_survives(self, store: LocalStore) -> None:
+        for env in self._load()[:6]:
+            assert store.apply_remote(env) is True
+        # The ROW survives with its default intact, flagged inactive…
+        assert raw(
+            store,
+            "SELECT active, default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [(0, '"opt-a"')]
+        # …so the effective read shows neither the default nor metadata.
+        assert store.get_effective_properties(self.ITEM) == []
+
+    def test_authored_value_while_inactive_reads_unbound(self, store: LocalStore) -> None:
+        for env in self._load()[:7]:
+            assert store.apply_remote(env) is True
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.value, row.source, row.bound_by, row.sequence) for row in effective] == [
+            ("opt-b", "authored", None, None)
+        ]
+
+    def test_full_reenable_restores_flag_authored_shadows_default(self, store: LocalStore) -> None:
+        for env in self._load():
+            assert store.apply_remote(env) is True
+        assert raw(
+            store,
+            "SELECT active FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [(1,)]
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.value, row.source, row.bound_by, row.sequence, row.element_id) for row in effective] == [
+            ("opt-b", "authored", self.CLASS, 1, f"{self.ITEM}:{self.SCHEMA}:0")
+        ]
+
+
+class TestPropertyDateQualifierFixture:
+    """Replay of property-date-qualifier.json (PC6, §34.57): chain-created
+    refs apply verbatim at idx 0; the legacy ISO-string startDate at idx 1
+    normalizes ON WRITE to the deterministic day-node ref."""
+
+    CLUB = "0192a000-0000-7000-8000-000000000763"
+    SCHEMA = "0192a000-0000-7000-8000-000000000761"
+    ADA = "0192a000-0000-7000-8000-000000000764"
+    DAY_2020 = "00000000-0000-0000-00dd-202003040000"
+    DAY_2022 = "00000000-0000-0000-00dd-202205060000"
+    DAY_2019 = "00000000-0000-0000-00dd-201901150000"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("property-date-qualifier.json")]
+
+    def test_refs_apply_verbatim_and_the_iso_string_normalizes_on_write(self, store: LocalStore) -> None:
+        for env in self._load():
+            assert store.apply_remote(env) is True
+        assert raw(
+            store,
+            "SELECT idx, value, metadata FROM property_value WHERE node_id = ? ORDER BY idx",
+            (self.CLUB,),
+        ) == [
+            (
+                0,
+                json.dumps({"nodeId": self.ADA}),
+                json.dumps({"startDate": {"nodeId": self.DAY_2020}, "endDate": {"nodeId": self.DAY_2022}}),
+            ),
+            (1, json.dumps({"nodeId": self.ADA}), json.dumps({"startDate": {"nodeId": self.DAY_2019}})),
+        ]
+        # Every reader stays lenient: the effective read surfaces both
+        # shapes as authored.
+        effective = store.get_effective_properties(self.CLUB)
+        assert [(row.idx, row.value, row.metadata, row.element_id) for row in effective] == [
+            (
+                0,
+                {"nodeId": self.ADA},
+                {"startDate": {"nodeId": self.DAY_2020}, "endDate": {"nodeId": self.DAY_2022}},
+                f"{self.CLUB}:{self.SCHEMA}:0",
+            ),
+            (1, {"nodeId": self.ADA}, {"startDate": {"nodeId": self.DAY_2019}}, f"{self.CLUB}:{self.SCHEMA}:1"),
+        ]
+
+    def test_the_date_chain_landed(self, store: LocalStore) -> None:
+        for env in self._load():
+            store.apply_remote(env)
+        assert store.node(WS, self.DAY_2019) is not None
+        assert store.node(WS, self.DAY_2019).parent_id == "00000000-0000-0000-00aa-201901000000"
+        assert store.node(WS, self.DAY_2020) is not None
+        assert store.node(WS, self.DAY_2022) is not None
 
 
 class TestCycleFixture:

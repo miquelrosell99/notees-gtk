@@ -345,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "notees-gtk"
-version = "0.1.0"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

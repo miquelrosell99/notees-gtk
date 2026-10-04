@@ -1,0 +1,146 @@
+{
+  "comment": "PC4 (§34.56): class_property.active — the binding row's soft-unbind flag (row LWW). A select schema binds to the Pipeline class with a default; a newer class.property.set flips active=false (an interleaved enable at a LOWER HLC loses the row LWW race), so the derived default vanishes from the effective read while the binding ROW survives. An authored value written while the binding is inactive still reads (boundBy null — unbound). A final re-enable restores the active flag (the authored value at idx 0 keeps shadowing the default). LOCKSTEP-PENDING: the active payload key ships inert until the GTK m6+/Flutter m16+ releases parse it.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000731",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:21.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "name": "stage",
+        "type": "select",
+        "options": [
+          { "id": "opt-a", "label": "A" },
+          { "id": "opt-b", "label": "B" }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000732",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:21.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "contentAst": [{ "type": "text", "text": "Pipeline" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000733",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000743"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:21.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000743",
+        "classIds": ["0192a000-0000-7000-8000-000000000742"],
+        "contentAst": [{ "type": "text", "text": "Deal" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000734",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:21.300Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "sequence": 1,
+        "defaultValue": "opt-a"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000735",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": { "physical": 1727200021350, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:21.350Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "active": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000736",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:21.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "active": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000737",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000743"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:21.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000743",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "value": "opt-b",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000738",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:21.600Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "active": true
+      }
+    }
+  ]
+}

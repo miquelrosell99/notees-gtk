@@ -1,0 +1,151 @@
+{
+  "comment": "PG5 (§34.56): multi-value slots are an OR-Set of elements. Three devices add nickname elements to one node: laptop's 'alpha' (idx 0), then phone and tablet concurrently at idx 1 with DISTINCT element ids — BOTH coexist (adds never conflict; ordered by element id). Web removes phone's element (an OR-Set tombstone); phone re-adds it with a newer HLC and the element revives (add-wins over older tombstones). A legacy positional add (no elementId — the pre-PG5 carrier) still applies at its deterministic positional element. LOCKSTEP-PENDING: no client may write elementId payloads until the GTK m6+/Flutter m16+ releases parse them.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000701",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200020000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:20.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "name": "nickname",
+        "type": "text",
+        "multi": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000702",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200020100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:20.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "contentAst": [{ "type": "text", "text": "Carol" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000703",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200020200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:20.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "value": "alpha",
+        "elementId": "0192a000-0000-7000-8000-000000000721",
+        "idx": 0,
+        "metadata": { "since": "2020" }
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000704",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": { "physical": 1727200020300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:20.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "value": "beta",
+        "elementId": "0192a000-0000-7000-8000-000000000722",
+        "idx": 1
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000705",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000004",
+      "deviceId": "test-device-tablet",
+      "client": "gtk",
+      "hlc": { "physical": 1727200020400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:20.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "value": "gamma",
+        "elementId": "0192a000-0000-7000-8000-000000000723",
+        "idx": 1
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000706",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200020500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.unset",
+      "timestamp": "2026-09-24T12:00:20.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "elementId": "0192a000-0000-7000-8000-000000000722"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000707",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": { "physical": 1727200020600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:20.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "value": "beta",
+        "elementId": "0192a000-0000-7000-8000-000000000722",
+        "idx": 1
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000708",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200020700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000712"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:20.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000712",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000711",
+        "value": "positional",
+        "idx": 4
+      }
+    }
+  ]
+}

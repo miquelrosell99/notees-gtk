@@ -75,6 +75,7 @@ class TestOpTypeRegistry:
                     "asset.detach",
                     "collection.member.add",
                     "collection.member.remove",
+                    "workspace.feature.set",
                 }
             )
             == KNOWN_OP_TYPES

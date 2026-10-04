@@ -61,16 +61,24 @@ V2_SINGLE_ENVELOPE_FIXTURES = [
 
 # v2/ parity port: fixtures holding {"comment": ..., "envelopes": [...]}.
 V2_ENVELOPE_LIST_FIXTURES = [
+    "v2/class-delete-managed.json",
     "v2/class-extends-cycle.json",
     "v2/class-extends-m2m.json",
+    "v2/class-property-active.json",
     "v2/class-property-defaults.json",
     "v2/class-unassign.json",
+    "v2/code-block.json",
+    "v2/embed-ref-view.json",
+    "v2/hr.json",
     "v2/object-color.json",
     "v2/object-move-before.json",
     "v2/object-move.json",
+    "v2/property-date-qualifier.json",
     "v2/property-set-lww.json",
+    "v2/property-value-elements.json",
     "v2/typed-link-mark.json",
     "v2/typed-link-mark-deleted.json",
+    "v2/workspace-feature-set.json",
 ]
 
 

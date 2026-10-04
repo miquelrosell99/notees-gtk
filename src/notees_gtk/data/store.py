@@ -11,8 +11,15 @@ with document chrome carry text-only content), the Revision-11 render-state
 model (``is_class`` identity + ``present_as_main`` render bit; classes are
 containers and always roots), m2m class extends with an
 applier-maintained transitive closure (cycles fail loud), fractional
-child-order positions, property values with tombstones, and soft/permanent
-deletes with trash retention.
+child-order positions, property values with tombstones, soft/permanent
+deletes with trash retention, per-workspace feature toggles
+(``workspace.feature.set`` — LWW rows, F4 ``class.delete`` routing, the
+``tasks`` enable family seed-ensure, §34.54/§34.55), PG5 per-element value
+identity (the row id IS the element id; OR-Set add-wins removes with element
+tombstones; the visible-set derivation every read consults), PC4 binding
+``active`` (soft-unbind), PC6 date-node-backed qualifiers (normalize-on-write,
+read-lenient), and the §34.45 unset-carrier semantics (unsetting a node-backed
+text value trashes the orphaned carrier block).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -41,17 +48,28 @@ import re
 import sqlite3
 import tempfile
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Concatenate
+from typing import Any, Concatenate, cast
 
 from notees_gtk.core.protocol.content import (
     parse_content_ast,
     plaintext_excerpt,
     stringify_content_ast,
+)
+from notees_gtk.core.protocol.dates import day_node_id
+from notees_gtk.core.protocol.features import (
+    SYSTEM_CLASS_ICONS_TASK,
+    TASK_FAMILY_SEED,
+    WorkspaceFeature,
+    family_class_names,
+    feature_for_managed_class,
+    gating_features_for_class,
+    system_class_uuid,
+    task_property_uuid,
 )
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.protocol.payloads import validate_payload
@@ -71,8 +89,13 @@ _log = logging.getLogger(__name__)
 #: v5 adds the tag OR-Set (web schema v5→v6 parity); v6 adds the per-node
 #: class order list (web schema v6→v7 parity); v7 is the Revision-11
 #: render-state model (web schema v7→v8 parity): the node_type enumeration is
-#: replaced by ``is_class`` + ``present_as_main``.
-SCHEMA_VERSION = 7
+#: replaced by ``is_class`` + ``present_as_main``; v8 adds the per-workspace
+#: feature toggle table (web schema v9→v10 parity, §34.54); v9 is the
+#: §34.57 property-wire batch (web schema v10→v11 parity): PG5 element
+#: tombstones + the property_value rebuild (the UNIQUE(node, schema, idx)
+#: retires — the row id IS the element id), PC4 ``class_property.active``,
+#: and the property_schema date columns PC6 normalizes through.
+SCHEMA_VERSION = 9
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -198,17 +221,20 @@ class EffectivePropertySchema:
 @dataclass(frozen=True)
 class EffectiveProperty:
     """One effective ``(schema, idx)`` row for a node — the property panel's
-    read surface (SCHEMA.md "Class properties", 2026-09-27).
+    read surface (SCHEMA.md "Class properties", 2026-09-27; PG5/PC4 §34.57).
 
     ``source`` tags authored vs derived; ``bound_by`` is the class supplying
     the binding metadata — the winning class for a default, the
     currently-binding class for an authored row, or ``None`` when no current
     class binds the schema (an authored value whose binding went away stays
-    visible, marked unbound).
+    visible, marked unbound). ``element_id`` is the PG5 element identity —
+    the property_value row id for an authored row (the address multi-value
+    removes target), ``default:{schema}:0`` for a derived default.
     """
 
     property_schema_id: str
     idx: int
+    element_id: str
     schema: EffectivePropertySchema | None
     value: Any
     metadata: dict[str, Any] | None
@@ -236,6 +262,56 @@ def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
     if "color" in payload:
         fields["color"] = payload["color"]
     return fields
+
+
+_UUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+#: PC6 (§34.57): the reserved qualifier keys that canonicalize as date-node
+#: refs on dateQualified schemas (SCHEMA.md "Dates").
+_QUALIFIER_KEYS = ("startDate", "endDate")
+
+
+def _node_ref_of_value(value: Any) -> str | None:
+    """The node id a value references, when it is reference-shaped: either the
+    canonical ``{"nodeId": …}`` or a legacy bare uuid. Scalar strings that are
+    not uuid-shaped return None (they are text, not references)."""
+    if isinstance(value, Mapping) and "nodeId" in value:
+        node_id = value["nodeId"]
+        return node_id if isinstance(node_id, str) and len(node_id) > 0 else None
+    if isinstance(value, str) and _UUID_LIKE_RE.match(value):
+        return value
+    return None
+
+
+def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) -> Any:
+    """PC6 normalize-on-write (§34.57, SCHEMA.md "Dates"): for a dateQualified
+    schema, the reserved qualifier keys canonicalize to date-node refs
+    ``{"nodeId": <day chain node>}``. A well-formed ``YYYY-MM-DD`` string is
+    the legacy encoding (the pre-PC6 panel wrote input[type=date] values) and
+    rewrites to the deterministic day-node id — pure value rewriting, no graph
+    side effects; the ref joins the year/month/day chain whenever the chain
+    exists and stays existence-lenient until then (the text-carrier precedent).
+    Non-date strings, refs, other metadata keys, non-qualified schemas, and
+    unknown schemas all ride through untouched."""
+    if metadata is None:
+        return None
+    if not isinstance(metadata, Mapping):
+        return metadata
+    if schema is None or schema.get("date_qualified") != 1:
+        return metadata
+    normalized = dict(metadata)
+    changed = False
+    for key in _QUALIFIER_KEYS:
+        value = normalized.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            day = day_node_id(value)
+        except ValueError:
+            continue  # not a well-formed ISO date — ride through as authored.
+        normalized[key] = {"nodeId": day}
+        changed = True
+    return normalized if changed else metadata
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -298,14 +374,27 @@ class LocalStore:
             "asset.detach": self._apply_asset_detach,
             "collection.member.add": lambda env: self._apply_collection_member(env, present=1, add_wins=True),
             "collection.member.remove": lambda env: self._apply_collection_member(env, present=0, add_wins=False),
+            "workspace.feature.set": self._apply_workspace_feature_set,
         }
         self._migrate()
 
     # ------------------------------------------------------------------ schema
 
     def _migrate(self) -> None:
-        """Apply every migration step newer than the stored ``user_version``."""
+        """Apply every migration step newer than the stored ``user_version``.
+
+        The canonical aux DDL is applied first on every upgrade (the web
+        schema.ts ``migrate`` parity: ``db.exec(schemaSql())`` runs before
+        the version-specific steps), so a database missing a table — an
+        interrupted upgrade, a handcrafted pre-release DB — converges to the
+        full table set before the guarded ALTERs run. Every statement is
+        CREATE IF NOT EXISTS / guarded, so the step is a no-op for a
+        complete database.
+        """
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < SCHEMA_VERSION:
+            with self._conn:
+                self._conn.executescript(_CANONICAL_AUX_DDL)
         for target, step in _MIGRATIONS:
             if version < target:
                 with self._conn:
@@ -453,6 +542,7 @@ class LocalStore:
                     "tag_member_set",
                     "property_value",
                     "property_value_tombstone",
+                    "property_value_element_tombstone",
                     "node_asset",
                 ):
                     self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", node_ids)
@@ -467,6 +557,7 @@ class LocalStore:
             self._conn.execute("DELETE FROM relay_outbox WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_operations WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM sync_watermark WHERE workspace_id = ?", (workspace_id,))
+            self._conn.execute("DELETE FROM workspace_feature WHERE workspace_id = ?", (workspace_id,))
 
     # ------------------------------------------------------------ remote apply
 
@@ -707,9 +798,7 @@ class LocalStore:
             # Document-chrome content (class nodes and main-presenting nodes)
             # is text-only; inline blocks keep the rich tokens they were sent.
             flatten = bool(row[3]) or resulting_present_as_main
-            tokens: Any = (
-                payload["contentAst"] if not flatten else stringify_content_ast(payload["contentAst"])
-            )
+            tokens: Any = payload["contentAst"] if not flatten else stringify_content_ast(payload["contentAst"])
             sets.append("content = ?")
             values.append(json.dumps(tokens, ensure_ascii=False))
             sets.append("content_plain = ?")
@@ -758,6 +847,7 @@ class LocalStore:
                 "tag_member_set",
                 "property_value",
                 "property_value_tombstone",
+                "property_value_element_tombstone",
                 "node_asset",
             ):
                 self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", ids)
@@ -1203,14 +1293,46 @@ class LocalStore:
         return True
 
     def _apply_class_delete(self, env: RelayEnvelope) -> bool:
+        """Class removal (§34.35/§34.54/§34.55).
+
+        F4 routing: a delete addressed at a family BASE class is applied as a
+        FEATURE-DISABLE (LWW row + the per-class archival re-derivation), so
+        the Features setting is the single archive path for managed classes
+        and the lossy plain delete (membership tombstoning below) never runs
+        on them. Only the five bases route (the owner's exact mapping);
+        family children (book, meeting, birthday, …) keep plain delete
+        semantics. The route decision is a pure function of the class id
+        (fixed vocabulary), so every replica takes the same branch; the LWW
+        row gate keeps the derived state convergent under either delivery
+        order.
+        """
         class_id = str(env.payload["classId"])
         ts = _envelope_ts(env)
+        managed_feature = feature_for_managed_class(class_id)
+        if managed_feature is not None:
+            wrote = self._lww_write_feature_row(env, managed_feature, False)
+            if wrote:
+                self._derive_family_class_bits(env.workspace_id, managed_feature)
+            return wrote
         with self._conn:
             self._conn.execute("UPDATE class SET active = 0, updated_at = ? WHERE id = ?", (ts, class_id))
             self._conn.execute(
                 "UPDATE nodes SET is_active = 0, updated_at = ? WHERE workspace_id = ? AND id = ?",
                 (ts, env.workspace_id, class_id),
             )
+            # The lossy plain path (non-managed classes): the class leaves
+            # every node's class_ids — tombstone the membership pairs and
+            # recompute the affected nodes (otherwise pills render dangling
+            # ids). The toggle path above NEVER touches membership (F3).
+            affected = [
+                str(row[0])
+                for row in self._conn.execute(
+                    "SELECT node_id FROM class_member_set WHERE class_id = ? AND present = 1", (class_id,)
+                )
+            ]
+            self._conn.execute("UPDATE class_member_set SET present = 0 WHERE class_id = ?", (class_id,))
+            for node_id in affected:
+                self._recompute_class_ids(node_id)
         return True
 
     def _apply_class_unassign(self, env: RelayEnvelope) -> bool:
@@ -1361,6 +1483,11 @@ class LocalStore:
                 return None  # absent → COALESCE keeps the stored value
             return 1 if payload[name] else 0  # explicit null (falsy) writes 0, as the TS port
 
+        # PC4 (§34.57): the soft-unbind flag rides the row LWW — an inactive
+        # binding stops contributing to the effective read (no default, no
+        # metadata) while the ROW survives (unlike class.property.unset).
+        # Absent payload = keep the stored flag (patch convention).
+        active = flag("active")
         sequence = int(payload["sequence"]) if payload.get("sequence") is not None else None
         default_value = json.dumps(payload["defaultValue"]) if "defaultValue" in payload else None
         with self._conn:
@@ -1368,8 +1495,8 @@ class LocalStore:
                 self._conn.execute(
                     """INSERT INTO class_property
                          (class_id, property_schema_id, sequence, required, readonly, hide_when_empty,
-                          default_value, hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          default_value, active, hlc_physical, hlc_logical, actor_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         class_id,
                         schema_id,
@@ -1378,6 +1505,7 @@ class LocalStore:
                         flag("readonly"),
                         flag("hideWhenEmpty"),
                         default_value,
+                        active if active is not None else 1,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -1391,6 +1519,7 @@ class LocalStore:
                          readonly = COALESCE(?, readonly),
                          hide_when_empty = COALESCE(?, hide_when_empty),
                          default_value = COALESCE(?, default_value),
+                         active = COALESCE(?, active),
                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
                        WHERE class_id = ? AND property_schema_id = ?""",
                     (
@@ -1399,6 +1528,7 @@ class LocalStore:
                         flag("readonly"),
                         flag("hideWhenEmpty"),
                         default_value,
+                        active,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -1428,12 +1558,13 @@ class LocalStore:
             self._conn.execute(
                 """INSERT INTO property_schema
                      (id, workspace_id, name, type, multi, scope, options, target_class_filter,
-                      active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                      date_precision, date_qualified, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, type = excluded.type, multi = excluded.multi,
                      scope = excluded.scope, options = excluded.options,
                      target_class_filter = excluded.target_class_filter,
+                     date_precision = excluded.date_precision, date_qualified = excluded.date_qualified,
                      active = 1, updated_at = excluded.updated_at""",
                 (
                     str(payload["propertySchemaId"]),
@@ -1444,6 +1575,8 @@ class LocalStore:
                     payload.get("scope") or "global",
                     json.dumps(payload.get("options") or []),
                     json.dumps(payload["targetClassFilter"]) if payload.get("targetClassFilter") is not None else None,
+                    payload.get("datePrecision"),
+                    (None if payload.get("dateQualified") is None else (1 if payload.get("dateQualified") else 0)),
                     ts,
                     ts,
                 ),
@@ -1461,6 +1594,12 @@ class LocalStore:
             if payload.get("options") is not None:
                 sets.append("options = ?")
                 values.append(json.dumps(payload["options"]))
+            if payload.get("datePrecision") is not None:
+                sets.append("date_precision = ?")
+                values.append(payload["datePrecision"])
+            if payload.get("dateQualified") is not None:
+                sets.append("date_qualified = ?")
+                values.append(1 if payload["dateQualified"] else 0)
             if not sets:
                 return False
             sets.append("updated_at = ?")
@@ -1477,15 +1616,151 @@ class LocalStore:
         return True
 
     # ---------------------------------------------------------------- property.*
+    #
+    # PG5 (§34.57): the property_value row id IS the element id — writer-minted
+    # UUIDv7 for element adds, the deterministic composite node:schema:idx for
+    # single-value slots and legacy positional writes (the pre-PG5 id
+    # generation — replayed stored logs apply byte-identical). Multi-value
+    # slots are an OR-Set of elements: adds never conflict, removes tombstone
+    # the element (add-wins: the membership comparator is HLC-only, so on
+    # equal HLC the add wins regardless of actor), and the visible-set
+    # derivation (:meth:`_visible_property_value_rows`) is consulted by every
+    # read. PC6 (§34.57): dateQualified schemas normalize the reserved
+    # qualifier keys to date-node refs on write (read-lenient — every reader
+    # accepts both shapes). §34.45 (PB2): unsetting a node-backed text value
+    # trashes the now-orphaned carrier block under the three guards.
 
     @staticmethod
-    def _property_slot(env: RelayEnvelope) -> tuple[str, str, int]:
+    def _property_slot(env: RelayEnvelope) -> tuple[str, str, int, str | None]:
         payload = env.payload
-        return (str(payload["objectId"]), str(payload["propertySchemaId"]), int(payload.get("idx") or 0))
+        element_id = payload.get("elementId")
+        return (
+            str(payload["objectId"]),
+            str(payload["propertySchemaId"]),
+            int(payload.get("idx") or 0),
+            str(element_id) if element_id is not None else None,
+        )
+
+    @staticmethod
+    def _positional_property_value_id(node_id: str, schema_id: str, idx: int) -> str:
+        """The deterministic positional-element id (PG5), the row id for
+        single-value slots and legacy positional writes."""
+        return f"{node_id}:{schema_id}:{idx}"
+
+    def _property_schema_row(self, schema_id: str) -> dict[str, Any] | None:
+        """The schema row the property write path consults (PC6), or None when
+        the schema id is unknown (property.set has no schema FK — arbitrary
+        ids store unchecked, the TS parity)."""
+        row = self._conn.execute(
+            "SELECT id, type, multi, date_qualified FROM property_schema WHERE id = ?", (schema_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "type": row[1], "multi": row[2], "date_qualified": row[3]}
 
     def _apply_property_set(self, env: RelayEnvelope) -> bool:
         payload = env.payload
-        node_id, schema_id, idx = self._property_slot(env)
+        node_id, schema_id, idx, element_id = self._property_slot(env)
+        schema = self._property_schema_row(schema_id)
+        # PC6 normalize-on-write: a well-formed YYYY-MM-DD string in
+        # metadata.startDate/endDate rewrites to the deterministic day-node
+        # ref — ONLY on dateQualified schema rows, only those two keys, pure
+        # value rewriting (no graph side effects, no existence assertion).
+        metadata = _normalize_qualifier_metadata(schema, payload.get("metadata"))
+        value_json = json.dumps(payload.get("value"), ensure_ascii=False)
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
+        with self._conn:
+            if element_id is not None:
+                dropped = self._property_element_add(
+                    env, node_id, schema_id, element_id, idx, value_json, metadata_json
+                )
+            else:
+                dropped = self._property_positional_set(env, node_id, schema_id, idx, value_json, metadata_json)
+        return not dropped
+
+    def _property_element_add(
+        self,
+        env: RelayEnvelope,
+        node_id: str,
+        schema_id: str,
+        element_id: str,
+        idx: int,
+        value_json: str,
+        metadata_json: str | None,
+    ) -> bool:
+        """PG5 OR-Set element ADD: the row id IS the element id, so adds of
+        distinct elements never conflict and a re-issued add revives the
+        element unless a strictly-newer (HLC) tombstone stands — add-wins:
+        on equal HLC the add proceeds regardless of actor (the classIds >=
+        convention generalized to the two-table projection; the stored
+        tombstone's full (hlc, actor) tuple is otherwise only used for its
+        own LWW upsert). The value/metadata/idx overwrite per element uses
+        the full (hlc, actor) tuple, exactly like the pre-PG5 slot LWW."""
+        tombstone = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical FROM property_value_element_tombstone WHERE element_id = ?",
+            (element_id,),
+        ).fetchone()
+        if tombstone is not None and (
+            int(tombstone[0]) > env.hlc.physical
+            or (int(tombstone[0]) == env.hlc.physical and int(tombstone[1]) > env.hlc.logical)
+        ):
+            return True  # a strictly-newer remove wins — the add is dropped.
+        existing = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM property_value WHERE id = ?", (element_id,)
+        ).fetchone()
+        if existing is None:
+            self._conn.execute(
+                """INSERT INTO property_value
+                     (id, node_id, property_schema_id, value, idx, metadata,
+                      hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    element_id,
+                    node_id,
+                    schema_id,
+                    value_json,
+                    idx,
+                    metadata_json,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+            return False
+        if self._incoming_wins(env, existing[0], existing[1], existing[2]):
+            self._conn.execute(
+                """UPDATE property_value SET value = ?, metadata = ?, idx = ?,
+                      hlc_physical = ?, hlc_logical = ?, actor_id = ?
+                   WHERE id = ?""",
+                (
+                    value_json,
+                    metadata_json,
+                    idx,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                    element_id,
+                ),
+            )
+            return False
+        # A stale re-add (full tuple <= the live row) leaves the row untouched.
+        return True
+
+    def _property_positional_set(
+        self,
+        env: RelayEnvelope,
+        node_id: str,
+        schema_id: str,
+        idx: int,
+        value_json: str,
+        metadata_json: str | None,
+    ) -> bool:
+        """The pre-PG5 positional path (payload WITHOUT elementId): unchanged
+        slot LWW, keyed by the deterministic positional row id — concurrent
+        element adds may share the idx, but a positional write addresses ONLY
+        its own deterministic element, so the address is unambiguous without
+        the retired UNIQUE(node, schema, idx)."""
+        row_id = self._positional_property_value_id(node_id, schema_id, idx)
 
         # A tombstone with a winning (>=) (hlc, actor) blocks the write.
         tombstone = self._conn.execute(
@@ -1494,84 +1769,172 @@ class LocalStore:
             (node_id, schema_id, idx),
         ).fetchone()
         if tombstone is not None and not self._incoming_wins(env, tombstone[0], tombstone[1], tombstone[2]):
-            return False
+            return True
 
         existing = self._conn.execute(
-            "SELECT hlc_physical, hlc_logical, actor_id FROM property_value"
-            " WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
-            (node_id, schema_id, idx),
+            "SELECT hlc_physical, hlc_logical, actor_id FROM property_value WHERE id = ?", (row_id,)
         ).fetchone()
-        value_json = json.dumps(payload.get("value"), ensure_ascii=False)
-        metadata_json = (
-            json.dumps(payload["metadata"], ensure_ascii=False) if payload.get("metadata") is not None else None
-        )
-        with self._conn:
-            if existing is None:
-                self._conn.execute(
-                    """INSERT INTO property_value
-                         (id, node_id, property_schema_id, value, idx, metadata,
-                          hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        f"{node_id}:{schema_id}:{idx}",
-                        node_id,
-                        schema_id,
-                        value_json,
-                        idx,
-                        metadata_json,
-                        env.hlc.physical,
-                        env.hlc.logical,
-                        env.actor_id,
-                    ),
-                )
-            elif self._incoming_wins(env, existing[0], existing[1], existing[2]):
-                self._conn.execute(
-                    """UPDATE property_value SET value = ?, metadata = ?,
-                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
-                       WHERE node_id = ? AND property_schema_id = ? AND idx = ?""",
-                    (
-                        value_json,
-                        metadata_json,
-                        env.hlc.physical,
-                        env.hlc.logical,
-                        env.actor_id,
-                        node_id,
-                        schema_id,
-                        idx,
-                    ),
-                )
-            else:
-                return False
+        if existing is None:
+            self._conn.execute(
+                """INSERT INTO property_value
+                     (id, node_id, property_schema_id, value, idx, metadata,
+                      hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row_id,
+                    node_id,
+                    schema_id,
+                    value_json,
+                    idx,
+                    metadata_json,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+            return False
+        if self._incoming_wins(env, existing[0], existing[1], existing[2]):
+            self._conn.execute(
+                """UPDATE property_value SET value = ?, metadata = ?,
+                      hlc_physical = ?, hlc_logical = ?, actor_id = ?
+                   WHERE id = ?""",
+                (
+                    value_json,
+                    metadata_json,
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                    row_id,
+                ),
+            )
+            return False
+        # A stale write (full tuple <= the live row) leaves the row untouched.
         return True
 
     def _apply_property_unset(self, env: RelayEnvelope) -> bool:
-        node_id, schema_id, idx = self._property_slot(env)
+        node_id, schema_id, idx, element_id = self._property_slot(env)
         with self._conn:
-            # Upsert the tombstone only when the incoming write wins the slot.
-            self._conn.execute(
-                """INSERT INTO property_value_tombstone
-                     (node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(node_id, property_schema_id, idx) DO UPDATE SET
-                     hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
-                     actor_id = excluded.actor_id
-                   WHERE excluded.hlc_physical > hlc_physical
-                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
-                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
-                          AND excluded.actor_id > COALESCE(actor_id, ''))""",
-                (node_id, schema_id, idx, env.hlc.physical, env.hlc.logical, env.actor_id),
-            )
-            existing = self._conn.execute(
-                "SELECT hlc_physical, hlc_logical, actor_id FROM property_value"
-                " WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
-                (node_id, schema_id, idx),
-            ).fetchone()
-            if existing is not None and self._incoming_wins(env, existing[0], existing[1], existing[2]):
-                self._conn.execute(
-                    "DELETE FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
-                    (node_id, schema_id, idx),
-                )
+            if element_id is not None:
+                self._property_element_remove(env, node_id, schema_id, element_id)
+            else:
+                self._property_positional_unset(env, node_id, schema_id, idx)
         return True
+
+    def _property_element_remove(self, env: RelayEnvelope, node_id: str, schema_id: str, element_id: str) -> None:
+        """PG5 OR-Set element REMOVE: records the remove's causality on the
+        element tombstone (strictly-greater full (hlc, actor) upsert — on an
+        exact tie the earlier add sticks, add-wins) and deletes the live row
+        when the remove's HLC is strictly newer than the row's (equal HLC
+        keeps the row — the add wins ties). An unset addressed at an element
+        that exists under a DIFFERENT (node, schema) is malformed: ignored,
+        like a stale write (deterministic on every replica)."""
+        existing = self._conn.execute(
+            "SELECT node_id, property_schema_id, value, hlc_physical, hlc_logical, actor_id"
+            " FROM property_value WHERE id = ?",
+            (element_id,),
+        ).fetchone()
+        if existing is not None and (str(existing[0]) != node_id or str(existing[1]) != schema_id):
+            return  # malformed addressing — deterministic no-op.
+        self._conn.execute(
+            """INSERT INTO property_value_element_tombstone
+                 (element_id, node_id, property_schema_id, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(element_id) DO UPDATE SET
+                 node_id = excluded.node_id, property_schema_id = excluded.property_schema_id,
+                 hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id > COALESCE(actor_id, ''))""",
+            (element_id, node_id, schema_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+        if existing is None:
+            return
+        remove_wins_by_hlc = env.hlc.physical > int(existing[3]) or (
+            env.hlc.physical == int(existing[3]) and env.hlc.logical > int(existing[4])
+        )
+        if not remove_wins_by_hlc:
+            return  # add-wins ties: the live row stays.
+        self._conn.execute("DELETE FROM property_value WHERE id = ?", (element_id,))
+        # §34.45 (PB2): unsetting a node-backed text value deletes the
+        # carrier block under the same guards as the positional path.
+        self._trash_text_carrier_if_orphaned(env.workspace_id, node_id, schema_id, str(existing[2]), _envelope_ts(env))
+
+    def _property_positional_unset(self, env: RelayEnvelope, node_id: str, schema_id: str, idx: int) -> None:
+        """The pre-PG5 positional remove (payload WITHOUT elementId) —
+        unchanged slot tombstones, now keyed by the deterministic positional
+        row id."""
+        # Upsert the tombstone only when the incoming write wins the slot.
+        self._conn.execute(
+            """INSERT INTO property_value_tombstone
+                 (node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(node_id, property_schema_id, idx) DO UPDATE SET
+                 hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                 actor_id = excluded.actor_id
+               WHERE excluded.hlc_physical > hlc_physical
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                  OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                      AND excluded.actor_id > COALESCE(actor_id, ''))""",
+            (node_id, schema_id, idx, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+        row_id = self._positional_property_value_id(node_id, schema_id, idx)
+        existing = self._conn.execute(
+            "SELECT value, hlc_physical, hlc_logical, actor_id FROM property_value WHERE id = ?", (row_id,)
+        ).fetchone()
+        if existing is not None and self._incoming_wins(env, existing[1], existing[2], existing[3]):
+            self._conn.execute("DELETE FROM property_value WHERE id = ?", (row_id,))
+            # §34.45 (PB2, SCHEMA.md "Node-backed text properties"): unsetting
+            # a node-backed text value deletes the carrier block — trash +
+            # retention, consistent with node deletion. Guards: the removed
+            # value references a node, the target is an active non-class
+            # CHILD of the owner, and no other property_value row (any
+            # owner/slot, both stored shapes) still references it. Scalar
+            # text values (citekey-style) carry no carrier.
+            self._trash_text_carrier_if_orphaned(
+                env.workspace_id, node_id, schema_id, str(existing[0]), _envelope_ts(env)
+            )
+
+    def _trash_text_carrier_if_orphaned(
+        self, workspace_id: str, object_id: str, property_schema_id: str, removed_value_raw: str, timestamp: str
+    ) -> None:
+        """The carrier-deletion half of property.unset (§34.45). The value row
+        is already deleted; ``removed_value_raw`` is its stored JSON. Trashes
+        the now-unreferenced carrier inside the same transaction."""
+        schema_row = self._conn.execute(
+            "SELECT type FROM property_schema WHERE id = ?", (property_schema_id,)
+        ).fetchone()
+        if schema_row is None or schema_row[0] != "text":
+            return
+        try:
+            parsed: Any = json.loads(removed_value_raw)
+        except (TypeError, ValueError):
+            return
+        target = _node_ref_of_value(parsed)
+        if target is None:
+            return
+        # Exclusive reference: no other live property_value row (any owner or
+        # slot) points at the carrier — both the {nodeId} and the legacy
+        # bare-uuid stored shapes.
+        still_referenced = self._conn.execute(
+            "SELECT 1 FROM property_value WHERE value = ? OR value = ? LIMIT 1",
+            (json.dumps({"nodeId": target}, ensure_ascii=False), json.dumps(target, ensure_ascii=False)),
+        ).fetchone()
+        if still_referenced is not None:
+            return
+        carrier = self._conn.execute(
+            "SELECT parent_id, is_class, is_active FROM nodes WHERE workspace_id = ? AND id = ?",
+            (workspace_id, target),
+        ).fetchone()
+        if carrier is None or carrier[0] != object_id or int(carrier[1]) != 0 or int(carrier[2]) != 1:
+            return
+        ids = self._subtree_ids(workspace_id, target)
+        placeholders = ", ".join("?" for _ in ids)
+        self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, 0)", (target, timestamp)
+        )
 
     # --------------------------------------------------------------------- asset.*
 
@@ -1634,6 +1997,171 @@ class LocalStore:
                 ),
             )
         return True
+
+    # --------------------------------------------------------- workspace.feature.*
+    #
+    # Per-workspace feature toggles (§34.35/§34.54, RESHAPED §34.55): LWW by
+    # (workspace, feature) on the envelope (hlc, actor) — the winning row
+    # lands in ``workspace_feature`` and the applier derives the
+    # membership-preserving archival of the family's classes from it.
+    # Toggle-off is hide-surfaces-keep-data (F3): the class registry ``active``
+    # bit + the class node's ``is_active`` flip; ``class_member_set`` rows are
+    # NEVER touched (plain class.delete tombstones every membership pair and
+    # is lossy; the toggle must not). An absent row means ENABLED (F2). A
+    # class.delete addressed at a family BASE class is ROUTED here (F4,
+    # ``_apply_class_delete``). The family sets and gating walk resolve
+    # through the STATIC seed map in ``features.py`` — never the store's
+    # class_extends table — so replicas converge before the seed envelopes
+    # arrive.
+
+    def _lww_write_feature_row(self, env: RelayEnvelope, feature: WorkspaceFeature, enabled: bool) -> bool:
+        """LWW-write one feature row. Returns True when the incoming envelope
+        won (the row was written); False when a newer (hlc, actor) row already
+        stood (the toggle is dropped, exactly like a stale property.set)."""
+        existing = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM workspace_feature WHERE workspace_id = ? AND feature = ?",
+            (env.workspace_id, feature),
+        ).fetchone()
+        if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
+            return False
+        self._conn.execute(
+            """INSERT INTO workspace_feature
+                 (workspace_id, feature, enabled, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(workspace_id, feature) DO UPDATE SET
+                 enabled = excluded.enabled, hlc_physical = excluded.hlc_physical,
+                 hlc_logical = excluded.hlc_logical, actor_id = excluded.actor_id""",
+            (env.workspace_id, feature, 1 if enabled else 0, env.hlc.physical, env.hlc.logical, env.actor_id),
+        )
+        return True
+
+    def _feature_enabled_now(self, workspace_id: str, feature: WorkspaceFeature) -> bool:
+        """The current (winning) feature row's enabled bit — absent = enabled (F2)."""
+        row = self._conn.execute(
+            "SELECT enabled FROM workspace_feature WHERE workspace_id = ? AND feature = ?", (workspace_id, feature)
+        ).fetchone()
+        return row is None or int(row[0]) == 1
+
+    def _derive_family_class_bits(self, workspace_id: str, feature: WorkspaceFeature) -> None:
+        """Re-derive the archival bits for one family's full class set (base +
+        extends-children) from the CURRENT feature rows. Each class's bit is
+        the AND of its gating features' current rows (own feature when it is
+        a family base, plus every managed ancestor's): re-enabling EVENTS
+        does not un-archive a MEETINGS-off meeting, so a blind family-wide
+        flip is wrong under the cascade; per-class re-derivation is
+        idempotent, membership-preserving, and convergent (pure active-bit
+        projection — no causality/timestamp writes: the toggles' HLCs live on
+        the workspace_feature rows, and a wall-of-envelope timestamp here
+        would diverge under reversed delivery of racing toggles)."""
+        for name in family_class_names(feature):
+            enabled = all(self._feature_enabled_now(workspace_id, f) for f in gating_features_for_class(name))
+            class_id = system_class_uuid(name)
+            self._conn.execute("UPDATE class SET active = ? WHERE id = ?", (1 if enabled else 0, class_id))
+            # The class NODE flip is what pickers/search/class hubs filter on
+            # (node.is_active = 1). Node-row HLC columns stay untouched — the
+            # flip is a derived projection of the toggles, not a content write.
+            self._conn.execute(
+                "UPDATE nodes SET is_active = ? WHERE workspace_id = ? AND id = ? AND is_class = 1",
+                (1 if enabled else 0, workspace_id, class_id),
+            )
+
+    def _ensure_task_family_rows(self, env: RelayEnvelope) -> None:
+        """The ``tasks`` enable path (§34.35 constraint 5): author the task
+        class + the six property schemas + their bindings at the fixed seed
+        ids. Purely additive (INSERT OR IGNORE everywhere) so a server-seeded
+        family is never clobbered — first writer wins, convergent on the
+        single global log. The rows are a deterministic function of the enable
+        op, so wipe -> replay stays byte-identical. The rows are inserted
+        ACTIVE; the caller normalizes the archival bit afterwards (the family
+        re-derivation reads the CURRENT toggle rows on every path)."""
+        class_id = system_class_uuid("task")
+        title = json.dumps([{"type": "text", "text": "Task"}], ensure_ascii=False)
+        ts = _envelope_ts(env)
+        self._conn.execute(
+            """INSERT OR IGNORE INTO nodes
+                 (workspace_id, id, is_class, present_as_main, parent_id, name, class_ids, content, content_plain,
+                  icon, color, is_active, created_at, updated_at, created_by, updated_by,
+                  hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, 1, 0, NULL, NULL, '[]', ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                env.workspace_id,
+                class_id,
+                title,
+                "Task",
+                SYSTEM_CLASS_ICONS_TASK,
+                ts,
+                ts,
+                env.actor_id,
+                env.actor_id,
+                env.hlc.physical,
+                env.hlc.logical,
+                env.actor_id,
+            ),
+        )
+        self._conn.execute(
+            """INSERT OR IGNORE INTO class
+                 (id, workspace_id, name, icon, color, description, active, created_at, updated_at)
+               VALUES (?, ?, 'Task', ?, NULL, NULL, 1, ?, ?)""",
+            (class_id, env.workspace_id, SYSTEM_CLASS_ICONS_TASK, ts, ts),
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO class_hierarchy (class_id, ancestor_id) VALUES (?, ?)", (class_id, class_id)
+        )
+        for entry in TASK_FAMILY_SEED:
+            schema_id = task_property_uuid(entry.property)
+            self._conn.execute(
+                """INSERT OR IGNORE INTO property_schema
+                     (id, workspace_id, name, type, multi, scope, options, target_class_filter,
+                      date_precision, date_qualified, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 0, 'class', ?, NULL, NULL, NULL, 1, ?, ?)""",
+                (
+                    schema_id,
+                    env.workspace_id,
+                    entry.name,
+                    entry.type,
+                    json.dumps([{"id": option_id, "label": label} for option_id, label in entry.options]),
+                    ts,
+                    ts,
+                ),
+            )
+            self._conn.execute(
+                """INSERT OR IGNORE INTO class_property
+                     (class_id, property_schema_id, sequence, required, readonly, hide_when_empty,
+                      default_value, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, NULL)""",
+                (class_id, schema_id, entry.sequence),
+            )
+
+    def _apply_workspace_feature_set(self, env: RelayEnvelope) -> bool:
+        payload = env.payload
+        feature = payload["feature"]
+        enabled = bool(payload["enabled"])
+        wrote = self._lww_write_feature_row(env, feature, enabled)
+        if wrote:
+            self._derive_family_class_bits(env.workspace_id, feature)
+        # The ensure rides every enable PAYLOAD (not only the LWW winner):
+        # both delivery orders of a racing toggle pair must author the
+        # identical row set — the family re-derivation below normalizes the
+        # archival bits to the CURRENT row state on every path.
+        if enabled and feature == "tasks":
+            self._ensure_task_family_rows(env)
+            self._derive_family_class_bits(env.workspace_id, feature)
+        return wrote
+
+    @_synchronized
+    def is_feature_enabled(self, workspace_id: str, feature: str) -> bool:
+        """One feature's current bit — absent row = enabled (F2)."""
+        return self._feature_enabled_now(workspace_id, cast(WorkspaceFeature, feature))
+
+    @_synchronized
+    def feature_rows(self, workspace_id: str) -> list[tuple[str, bool, int, int, str | None]]:
+        """The winning feature rows: (feature, enabled, hlc_physical, hlc_logical, actor)."""
+        rows = self._conn.execute(
+            "SELECT feature, enabled, hlc_physical, hlc_logical, actor_id FROM workspace_feature"
+            " WHERE workspace_id = ? ORDER BY feature",
+            (workspace_id,),
+        ).fetchall()
+        return [(str(r[0]), bool(r[1]), int(r[2]), int(r[3]), r[4]) for r in rows]
 
     # -------------------------------------------------------------- node cache
 
@@ -1713,6 +2241,76 @@ class LocalStore:
 
     # ------------------------------------------------- effective properties
 
+    def _visible_property_value_rows(self, node_id: str) -> list[dict[str, Any]]:
+        """The PG5 visible set for a node (SCHEMA.md "Multi-value element
+        identity"): live property_value rows minus
+
+        - SLOT-tombstoned rows — the legacy positional path: a
+          property_value_tombstone (node, schema, idx) with a winning (>=)
+          full (hlc, actor) tuple suppresses the row at that idx (the
+          pre-PG5 rule, unchanged); and
+        - ELEMENT-tombstoned rows — a property_value_element_tombstone whose
+          HLC is strictly newer than the row's (add-wins: equal HLC keeps
+          the row).
+
+        Every read consults this derivation so a removed element is invisible
+        everywhere at once (the effective read is the GTK client's only
+        property read surface)."""
+        rows = self._conn.execute(
+            "SELECT id, node_id, property_schema_id, value, idx, metadata,"
+            " hlc_physical, hlc_logical, actor_id FROM property_value WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+        slot_tombstones = self._conn.execute(
+            "SELECT node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id"
+            " FROM property_value_tombstone WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+        element_tombstones = {
+            str(row[0]): (int(row[1]), int(row[2]))
+            for row in self._conn.execute(
+                "SELECT element_id, hlc_physical, hlc_logical FROM property_value_element_tombstone WHERE node_id = ?",
+                (node_id,),
+            )
+        }
+        visible: list[dict[str, Any]] = []
+        for row in rows:
+            row_map = {
+                "id": str(row[0]),
+                "node_id": str(row[1]),
+                "property_schema_id": str(row[2]),
+                "value": row[3],
+                "idx": int(row[4]),
+                "metadata": row[5],
+                "hlc_physical": int(row[6]),
+                "hlc_logical": int(row[7]),
+                "actor_id": row[8],
+            }
+            element_tombstone = element_tombstones.get(row_map["id"])
+            if element_tombstone is not None and (
+                element_tombstone[0] > row_map["hlc_physical"]
+                or (element_tombstone[0] == row_map["hlc_physical"] and element_tombstone[1] > row_map["hlc_logical"])
+            ):
+                continue
+            suppressed = False
+            for tomb in slot_tombstones:
+                if str(tomb[0]) != row_map["node_id"] or str(tomb[1]) != row_map["property_schema_id"]:
+                    continue
+                if int(tomb[2]) != row_map["idx"]:
+                    continue
+                # Full-tuple comparison, the legacy slot rule: the tombstone
+                # wins on an equal (hlc, actor) tuple.
+                if (row_map["hlc_physical"], row_map["hlc_logical"], row_map["actor_id"] or "") <= (
+                    int(tomb[3]),
+                    int(tomb[4]),
+                    tomb[5] or "",
+                ):
+                    suppressed = True
+                    break
+            if not suppressed:
+                visible.append(row_map)
+        return visible
+
     @_synchronized
     def get_effective_properties(self, node_id: str) -> list[EffectiveProperty]:
         """The effective-values read model (SCHEMA.md "Class properties")::
@@ -1720,35 +2318,23 @@ class LocalStore:
             effective(node, schema, idx) = authored property_value
                                            ?? winning binding's defaultValue
 
-        Port of v2 ``packages/store/src/effective.ts``. Authored rows always
-        win and survive class removal; derived defaults are computed HERE and
-        never materialized (the applier writes no property_value rows for
-        them). Binding conflicts across the node's classes resolve
+        Port of v2 ``packages/store/src/effective.ts`` (PG5/PC4, §34.57).
+        Authored rows always win and survive class removal; derived defaults
+        are computed HERE and never materialized (the applier writes no
+        property_value rows for them). Authored rows come through the PG5
+        visible-set derivation (:meth:`_visible_property_value_rows` — slot
+        tombstones + element tombstones) and carry their stable element id.
+        Binding conflicts across the node's classes resolve
         first-class-applied-wins: the class whose OR-Set membership add
         carries the earliest HLC supplies the default AND the binding
-        metadata; exact HLC ties break by class id. A pure read over derived
-        tables — deterministic on every replica, no writes, no clocks.
+        metadata; exact HLC ties break by class id. Only ACTIVE binding rows
+        are candidates (PC4: an inactive binding stops contributing defaults
+        AND metadata — required/readonly/hideWhenEmpty/sequence — while the
+        ROW survives and authored values read as unbound, ``bound_by`` None).
+        A pure read over derived tables — deterministic on every replica, no
+        writes, no clocks.
         """
-        authored_rows = self._conn.execute(
-            "SELECT property_schema_id, value, idx, metadata, hlc_physical, hlc_logical, actor_id"
-            " FROM property_value WHERE node_id = ?",
-            (node_id,),
-        ).fetchall()
-        tombstones = self._conn.execute(
-            "SELECT property_schema_id, idx, hlc_physical, hlc_logical, actor_id"
-            " FROM property_value_tombstone WHERE node_id = ?",
-            (node_id,),
-        ).fetchall()
-
-        def suppressed(row: tuple[Any, ...]) -> bool:
-            for tomb in tombstones:
-                if tomb[0] != row[0] or tomb[1] != row[2]:
-                    continue
-                authored_winner = (int(row[4]), int(row[5]), row[6] or "")
-                tomb_winner = (int(tomb[2]), int(tomb[3]), tomb[4] or "")
-                if authored_winner <= tomb_winner:
-                    return True
-            return False
+        authored_rows = self._visible_property_value_rows(node_id)
 
         # The node's classes in assignment order: OR-Set add HLC ascending
         # (earliest first), ties by class id.
@@ -1761,12 +2347,13 @@ class LocalStore:
         )
 
         # Winning binding per schema: the first class (in assignment order)
-        # that binds the schema supplies default + metadata.
+        # that binds the schema supplies default + metadata. PC4: inactive
+        # rows (active = 0) are not candidates — the soft-unbind.
         winner_by_schema: dict[str, tuple[str, tuple[Any, ...]]] = {}
         for cls in classes:
             bindings = self._conn.execute(
                 "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value"
-                " FROM class_property WHERE class_id = ?",
+                " FROM class_property WHERE class_id = ? AND active = 1",
                 (str(cls[0]),),
             ).fetchall()
             for binding in bindings:
@@ -1775,7 +2362,7 @@ class LocalStore:
 
         # Schema rows for everything referenced (authored rows survive schema
         # deletion: the row renders with schema=None).
-        schema_ids = {str(row[0]) for row in authored_rows} | set(winner_by_schema)
+        schema_ids = {str(row["property_schema_id"]) for row in authored_rows} | set(winner_by_schema)
         schemas: dict[str, EffectivePropertySchema] = {}
         if schema_ids:
             placeholders = ", ".join("?" for _ in schema_ids)
@@ -1800,17 +2387,21 @@ class LocalStore:
                 return raw
 
         rows_out: dict[str, EffectiveProperty] = {}
+        shadowed_default_schemas: set[str] = set()
         for authored in authored_rows:
-            if suppressed(authored):
-                continue
-            schema_id, idx = str(authored[0]), int(authored[2])
+            schema_id, idx = authored["property_schema_id"], authored["idx"]
             winner = winner_by_schema.get(schema_id)
-            rows_out[f"{schema_id}:{idx}"] = EffectiveProperty(
+            if idx == 0:
+                shadowed_default_schemas.add(schema_id)
+            # PG5 merge key: rows at the same idx are distinct elements and
+            # all surface.
+            rows_out[f"{schema_id}:{idx}:{authored['id']}"] = EffectiveProperty(
                 property_schema_id=schema_id,
                 idx=idx,
+                element_id=authored["id"],
                 schema=schemas.get(schema_id),
-                value=parse_json(authored[1]),
-                metadata=parse_json(authored[3]) if authored[3] is not None else None,
+                value=parse_json(authored["value"]),
+                metadata=parse_json(authored["metadata"]) if authored["metadata"] is not None else None,
                 source="authored",
                 bound_by=winner[0] if winner else None,
                 required=flag(winner[1][2]) if winner else None,
@@ -1822,12 +2413,12 @@ class LocalStore:
         for schema_id, (class_id, binding) in winner_by_schema.items():
             if binding[5] is None:
                 continue  # bound without a default
-            key = f"{schema_id}:0"
-            if key in rows_out:
+            if schema_id in shadowed_default_schemas:
                 continue  # authored value at idx 0 shadows the default
-            rows_out[key] = EffectiveProperty(
+            rows_out[f"{schema_id}:0:default"] = EffectiveProperty(
                 property_schema_id=schema_id,
                 idx=0,
+                element_id=f"default:{schema_id}:0",
                 schema=schemas.get(schema_id),
                 value=parse_json(binding[5]),
                 metadata=None,
@@ -1840,7 +2431,9 @@ class LocalStore:
             )
 
         # Deterministic presentation order: bound rows by binding sequence,
-        # unbound authored rows last; schema name then idx as the tiebreak.
+        # unbound authored rows last; schema name then (idx, element id) as
+        # the tiebreak (PG5: concurrent adds may share an idx — the element
+        # id orders them identically on every replica).
         def name_of(row: EffectiveProperty) -> str:
             return row.schema.name if row.schema is not None else row.property_schema_id
 
@@ -1851,6 +2444,7 @@ class LocalStore:
                 row.sequence if row.sequence is not None else 2**53 - 1,
                 name_of(row),
                 row.idx,
+                row.element_id,
             ),
         )
 
@@ -2134,12 +2728,25 @@ CREATE TABLE IF NOT EXISTS property_schema (
     scope TEXT NOT NULL DEFAULT 'global',
     options TEXT NOT NULL DEFAULT '[]',
     target_class_filter TEXT,
+    -- SCHEMA.md "Dates": finest granularity a date value may claim
+    -- (year|month|day; NULL = day default) and, for node-typed schemas,
+    -- whether values may carry date qualifiers (metadata startDate/endDate,
+    -- PC6 §34.57 — the applier normalizes qualifier strings to date-node
+    -- refs through these).
+    date_precision TEXT,
+    date_qualified INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT
 );
 
--- Property values: LWW per (node, schema, idx); tombstone wins over live.
+-- Property values — the LIVE visible rows only (the applier deletes a row
+-- when its element's OR-Set remove wins). The row id IS the element id
+-- (PG5 §34.57): writer-minted UUIDv7 for element adds, the deterministic
+-- composite 'node:schema:idx' for single-value slots and legacy positional
+-- writes. The pre-PG5 UNIQUE(node_id, property_schema_id, idx) is GONE:
+-- per-element identity means concurrent adds at the same idx are DISTINCT
+-- elements and both stay visible — 'idx' is only a per-element order hint.
 CREATE TABLE IF NOT EXISTS property_value (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL,
@@ -2149,10 +2756,25 @@ CREATE TABLE IF NOT EXISTS property_value (
     metadata TEXT,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
-    actor_id TEXT,
-    UNIQUE (node_id, property_schema_id, idx)
+    actor_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_property_value_node ON property_value (node_id);
+
+-- PG5 OR-Set element tombstones: one row per removed element, carrying the
+-- winning remove's causality. An element is VISIBLE iff its live row exists
+-- and no tombstone carries a strictly-newer (hlc) remove (add-wins: on
+-- equal HLC the add wins regardless of actor). Removes upsert with the
+-- strictly-greater full (hlc, actor) tuple, mirroring class.unassign.
+CREATE TABLE IF NOT EXISTS property_value_element_tombstone (
+    element_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    property_schema_id TEXT NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_property_value_element_tomb_node
+    ON property_value_element_tombstone (node_id);
 
 CREATE TABLE IF NOT EXISTS property_value_tombstone (
     node_id TEXT NOT NULL,
@@ -2246,7 +2868,10 @@ _CLASS_PROPERTY_DDL = """
 -- "Class properties — bindings, defaults, aggregation" (2026-09-27).
 -- Registry rows authored by class.property.set/unset; LWW on the row by
 -- (hlc, actor). Defaults are a DERIVED read model (get_effective_properties),
--- never materialized property_value rows.
+-- never materialized property_value rows. 'active' (PC4, §34.57): the
+-- soft-unbind flag — an inactive row stops contributing to the effective
+-- read (no default, no metadata) while the ROW survives; absent column
+-- means active, so existing rows converge with zero migration.
 CREATE TABLE IF NOT EXISTS class_property (
     class_id TEXT NOT NULL,
     property_schema_id TEXT NOT NULL,
@@ -2255,6 +2880,7 @@ CREATE TABLE IF NOT EXISTS class_property (
     readonly INTEGER,
     hide_when_empty INTEGER,
     default_value TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
@@ -2360,6 +2986,109 @@ CREATE TABLE IF NOT EXISTS tag_member_set (
 CREATE INDEX IF NOT EXISTS idx_tag_member_set_tag ON tag_member_set (tag_id);
 """
 
+_WORKSPACE_FEATURE_DDL = """
+-- Per-workspace feature toggles (§34.35/§34.54): the winning LWW row per
+-- (workspace_id, feature); an ABSENT row means enabled (all features
+-- default ON — the empty table is the pre-toggle state, so existing
+-- workspaces need no migration). The applier derives the membership-
+-- preserving archival of the feature's managed system classes from this row
+-- (class registry active bit + the class node's is_active; class_member_set
+-- rows are never touched).
+CREATE TABLE IF NOT EXISTS workspace_feature (
+    workspace_id TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (workspace_id, feature)
+);
+"""
+
+
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """Per-workspace feature toggles (web schema v9→v10 parity, §34.54).
+    Purely additive — CREATE IF NOT EXISTS is a no-op for fresh databases
+    that already ran the DDL; existing databases gain the empty table
+    (empty = all features enabled)."""
+    conn.executescript(_WORKSPACE_FEATURE_DDL)
+
+
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """The §34.57 property-wire batch (web schema v10→v11 parity): PG5
+    element identity + PC4 binding active + the property_schema date
+    columns PC6 reads. Every step is guarded so a database whose DDL
+    already carries the new shape (fresh chain) is untouched, and a v7
+    database upgrades in place."""
+    # (1) PC4: class_property gains the soft-unbind flag — absent column
+    #     means the pre-PC4 state, which IS active, so the backfill default
+    #     is 1.
+    LocalStore._add_column_if_missing(conn, "class_property", "active", "INTEGER NOT NULL DEFAULT 1")
+    # (2) PC6: property_schema gains the SCHEMA.md "Dates" columns (the
+    #     first GTK consumer — web has carried them since schema v4; the
+    #     payload keys are stored verbatim from here on).
+    LocalStore._add_column_if_missing(conn, "property_schema", "date_precision", "TEXT")
+    LocalStore._add_column_if_missing(conn, "property_schema", "date_qualified", "INTEGER")
+    # (3) PG5 element tombstone table (CREATE IF NOT EXISTS is the guard).
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS property_value_element_tombstone (
+            element_id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            property_schema_id TEXT NOT NULL,
+            hlc_physical INTEGER NOT NULL DEFAULT 0,
+            hlc_logical INTEGER NOT NULL DEFAULT 0,
+            actor_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_property_value_element_tomb_node
+            ON property_value_element_tombstone (node_id);
+        """
+    )
+    # (4) property_value: the UNIQUE(node_id, property_schema_id, idx)
+    #     constraint is retired (PG5 — per-element identity allows
+    #     concurrent adds at the same idx; idx is an order hint only).
+    #     SQLite cannot drop a table constraint, so the table is rebuilt
+    #     (the v7 node-rebuild precedent): same columns, no UNIQUE, indexes
+    #     recreated. Rows copy verbatim — the row id remains the (now
+    #     element) id.
+    pv_indexes = conn.execute("PRAGMA index_list(property_value)").fetchall()
+    if any(str(index[3]) == "u" for index in pv_indexes):
+        conn.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE property_value_v9 (
+                id TEXT PRIMARY KEY,
+                node_id TEXT NOT NULL,
+                property_schema_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                idx INTEGER NOT NULL DEFAULT 0,
+                metadata TEXT,
+                hlc_physical INTEGER NOT NULL DEFAULT 0,
+                hlc_logical INTEGER NOT NULL DEFAULT 0,
+                actor_id TEXT
+            );
+            INSERT INTO property_value_v9 (
+                id, node_id, property_schema_id, value, idx, metadata,
+                hlc_physical, hlc_logical, actor_id
+            )
+            SELECT id, node_id, property_schema_id, value, idx, metadata,
+                   hlc_physical, hlc_logical, actor_id
+            FROM property_value;
+            DROP TABLE property_value;
+            ALTER TABLE property_value_v9 RENAME TO property_value;
+            CREATE INDEX IF NOT EXISTS idx_property_value_node ON property_value (node_id);
+            PRAGMA foreign_keys = ON;
+            """
+        )
+
+
+#: Canonical auxiliary DDL applied on every upgrade before the versioned
+#: steps (the web schema.ts ``migrate`` parity): all CREATE IF NOT EXISTS, so
+#: a complete database is untouched and a partial one converges to the full
+#: table set. ``_NODES_V2_DDL`` is deliberately excluded — the node table's
+#: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
+_CANONICAL_AUX_DDL = _AUX_V2_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL
+
 
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
@@ -2370,4 +3099,6 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (5, _migrate_v5),
     (6, _migrate_v6),
     (7, _migrate_v7),
+    (8, _migrate_v8),
+    (9, _migrate_v9),
 )

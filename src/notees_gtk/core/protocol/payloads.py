@@ -21,6 +21,17 @@ token or a custom ``#RRGGBB`` hex (``colors.py``, the ``colors.ts`` parity
 module), never the retired ``var(--color-preset-*)`` encoding, and payloads
 accept an explicit ``null`` clear.
 
+Protocol batch (§34.54/§34.57, LOCKSTEP-PENDING wave 2026-10-04): the
+workspace-feature op, the ``code_block``/``hr`` grammar (validated by
+``content.py``'s strict token validators — the payload layer carries
+contentAst as ``list[Any]`` exactly like the zod ``z.array(z.unknown())``),
+the ``embed_ref.view`` field, and the property-wire batch — PG5 per-element
+value ids (optional ``elementId`` on ``property.set``/``property.unset``;
+the row id IS the element id in the store), PC4 ``class.property.set``
+``active`` (omitted = keep), PC6 date-node-backed qualifiers (normalize-on-
+write in the store applier). Retired feature ids and retired encodings are
+rejected outright — no wire compat (owner directive).
+
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
 (SCHEMA.md, 2026-10-01): no op payload carries a ``name`` — the builders
@@ -50,6 +61,7 @@ __all__ = [
     "build_object_restore",
     "build_object_update",
     "build_tag_unassign",
+    "build_workspace_feature_set",
     "payload_schema_for",
     "validate_payload",
 ]
@@ -193,6 +205,17 @@ class ClassPropertySetPayload(_Strict):
     readonly: bool | None = None
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
     default_value: Any = Field(default=None, alias="defaultValue")
+    # PC4 (§34.57): the soft-unbind flag — an inactive binding stops
+    # contributing to the effective read while the ROW survives. Omitted =
+    # keep the stored flag (the patch convention). zod parity: an explicit
+    # JSON null is NOT ``undefined`` — the strict schema rejects it.
+    active: bool | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _check_active_not_null(self) -> ClassPropertySetPayload:
+        if "active" in self.model_fields_set and self.active is None:
+            raise ValueError("class.property.set 'active' must be a boolean when present")
+        return self
 
 
 class ClassPropertyUnsetPayload(_Strict):
@@ -233,14 +256,35 @@ class PropertySetPayload(_Strict):
     object_id: UUID = Field(alias="objectId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
     value: Any
+    # PG5 element id (§34.57): the OR-Set add carrier for multi-value slots —
+    # the property_value row id IS the element id. Absent = the legacy
+    # positional carrier (addresses the deterministic positional element at
+    # ``idx``). zod parity: an explicit null is rejected, not "absent".
+    element_id: UUID | None = Field(default=None, alias="elementId")
     idx: int = Field(default=0, ge=0)
     metadata: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check_element_id_not_null(self) -> PropertySetPayload:
+        if "element_id" in self.model_fields_set and self.element_id is None:
+            raise ValueError("property.set 'elementId' must be a uuid when present")
+        return self
 
 
 class PropertyUnsetPayload(_Strict):
     object_id: UUID = Field(alias="objectId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
+    # PG5 element id — OR-Set remove of that element (add-wins tombstone).
+    # Absent = legacy positional remove of the slot's deterministic
+    # positional element at ``idx``.
+    element_id: UUID | None = Field(default=None, alias="elementId")
     idx: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _check_element_id_not_null(self) -> PropertyUnsetPayload:
+        if "element_id" in self.model_fields_set and self.element_id is None:
+            raise ValueError("property.unset 'elementId' must be a uuid when present")
+        return self
 
 
 class AssetAttachPayload(_Strict):
@@ -265,6 +309,23 @@ class CollectionMemberAddPayload(_Strict):
 class CollectionMemberRemovePayload(_Strict):
     collection_id: UUID = Field(alias="collectionId")
     object_id: UUID = Field(alias="objectId")
+
+
+class WorkspaceFeatureSetPayload(_Strict):
+    """Per-workspace feature toggle (§34.35/§34.54, RESHAPED §34.55).
+
+    ``feature`` is fixed protocol vocabulary — the five core class families
+    (tasks=task, events=event, meetings=meeting, sources=source,
+    persons=person; the ``WORKSPACE_FEATURES`` enum in ``features.py``, the
+    op-types.ts ``WORKSPACE_FEATURES`` parity). The retired pre-reshape ids
+    (journals/readItLater/library/people/collections) are rejected outright
+    by this strict schema — no wire compat (owner directive). LWW by
+    envelope HLC on (workspace, feature); the derived ``workspace_feature``
+    table stores the winning row and an ABSENT row means enabled (F2).
+    """
+
+    feature: Literal["tasks", "events", "meetings", "sources", "persons"]
+    enabled: bool
 
 
 #: Registry mirroring ``OP_PAYLOAD_SCHEMAS`` (op-types.ts) one-for-one.
@@ -292,6 +353,7 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "asset.detach": AssetDetachPayload,
     "collection.member.add": CollectionMemberAddPayload,
     "collection.member.remove": CollectionMemberRemovePayload,
+    "workspace.feature.set": WorkspaceFeatureSetPayload,
 }
 
 
@@ -495,3 +557,15 @@ def build_class_reorder(object_id: str, class_ids: list[str]) -> dict[str, Any]:
 def build_tag_unassign(object_id: str, tag_id: str) -> dict[str, Any]:
     """Build a ``tag.unassign`` payload (OR-Set remove, own table)."""
     return _validated("tag.unassign", {"objectId": object_id, "tagId": tag_id})
+
+
+def build_workspace_feature_set(feature: str, enabled: bool) -> dict[str, Any]:
+    """Build a ``workspace.feature.set`` payload (§34.35, the Features tab).
+
+    ``feature`` is one of the five core class families (the
+    ``WORKSPACE_FEATURES`` enum in ``features.py``); the strict schema
+    rejects the retired pre-reshape ids (journals/readItLater/library/
+    people/collections) outright. LWW by HLC on (workspace, feature); an
+    absent derived row reads enabled (F2).
+    """
+    return _validated("workspace.feature.set", {"feature": feature, "enabled": enabled})
