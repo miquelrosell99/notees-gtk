@@ -13,6 +13,7 @@ __all__ = [
     "EnvelopeValidationError",
     "MoveGuardError",
     "NotFoundError",
+    "PropertyValueShapeError",
     "StoreError",
     "UnsupportedCarrierError",
 ]
@@ -47,6 +48,15 @@ class MoveGuardError(StoreError):
 
 class NotFoundError(StoreError):
     """The op targets a node (or parent) that does not exist in the cache."""
+
+
+class PropertyValueShapeError(StoreError):
+    """PG6 apply-time value validation (§34.51): a property.set value (or a
+    class.property.set defaultValue) violates the schema's contract — shape,
+    scalar typing, cardinality, datePrecision ceiling, targetClassFilter
+    membership, or node-target existence. Deterministic on every replica:
+    the same envelope is rejected everywhere, so the sync engine treats it
+    like any other guard violation — log, skip, keep pulling."""
 
 
 class UnsupportedCarrierError(StoreError):

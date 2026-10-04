@@ -8,7 +8,10 @@ carry text-only content), the Revision-11 render-state model (``is_class``
 identity + ``present_as_main`` render bit; classes are containers and always
 roots), m2m class extends with a maintained closure (cycles fail loud),
 fractional child-order positions, property tombstones, and soft/permanent
-deletes with trash retention.
+deletes with trash retention — plus the property-correctness waves: PG4
+extends-aware binding resolution (the diamond rule), PG6 apply-time value
+validation (shape/scalar/cardinality/precision/filter/existence), and PC2
+typed binding defaults (write-side fail-loud + read-side drop).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from notees_gtk.data.errors import (
     EnvelopeValidationError,
     MoveGuardError,
     NotFoundError,
+    PropertyValueShapeError,
     UnsupportedCarrierError,
 )
 from notees_gtk.data.store import SCHEMA_VERSION, LocalStore, NodeRow
@@ -2291,6 +2295,538 @@ class TestPropertyWireBatch:
         )
         effective = store.get_effective_properties(NODE)
         assert effective[0].metadata == {"startDate": "2018-06-01"}
+
+
+class TestPg4ExtendsAwareBindings:
+    """PG4 (§34.45): the diamond rule — own binding (distance 0) → shortest
+    extends-path → earliest class-assignment HLC, ties by class id. A subclass
+    node inherits its ancestors' bindings; ``bound_by`` names the ANCESTOR
+    whose row supplies the default + metadata. Mirrors the monorepo store's
+    property-values.test.ts PG4 suite."""
+
+    BASE = uid("pg4-base")
+    MID = uid("pg4-mid")
+    LEAF = uid("pg4-leaf")
+    MID_B = uid("pg4-mid-b")
+    LEAF_B = uid("pg4-leaf-b")
+    SCHEMA = uid("pg4-schema")
+
+    def _chain_store(self, store: LocalStore, bind_on: list[str]) -> None:
+        """BASE <- MID <- LEAF chain, one text schema bound on each named class."""
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        for class_id, name, hlc in [
+            (self.BASE, "Base", (2, 0)),
+            (self.MID, "Mid", (3, 0)),
+            (self.LEAF, "Leaf", (4, 0)),
+        ]:
+            store.apply_remote(class_env("class.create", class_id, hlc=hlc, name=name))
+        store.apply_remote(extends_env(self.MID, [self.BASE], hlc=(5, 0)))
+        store.apply_remote(extends_env(self.LEAF, [self.MID], hlc=(6, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": self.SCHEMA, "name": "genre", "type": "text"},
+                hlc=(7, 0),
+            )
+        )
+        for i, class_id in enumerate(bind_on):
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    class_id,
+                    hlc=(8 + i, 0),
+                    **{"propertySchemaId": self.SCHEMA, "sequence": i, "defaultValue": f"dft-{i}"},
+                )
+            )
+
+    @staticmethod
+    def _assign(store: LocalStore, node_id: str, class_id: str, hlc: tuple[int, int]) -> None:
+        # Class assignment rides the re-issued object.create OR-Set add; one
+        # envelope per class so the assignment HLCs order the winners.
+        store.apply_remote(create_env(node_id, class_ids=(class_id,), hlc=hlc, name="Owner"))
+
+    def test_inherited_binding_derives_with_the_ancestor_as_bound_by(self, store: LocalStore) -> None:
+        self._chain_store(store, [self.BASE])
+        self._assign(store, NODE, self.LEAF, (20, 0))
+        effective = store.get_effective_properties(NODE)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [("dft-0", "default", self.BASE)]
+
+    def test_own_binding_beats_inherited_and_shortest_path_wins(self, store: LocalStore) -> None:
+        self._chain_store(store, [self.BASE, self.MID])
+        # A node carrying MID itself: the own binding (distance 0) supplies
+        # the default over BASE's inherited row (distance 1).
+        self._assign(store, NODE, self.MID, (20, 0))
+        winner = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
+        assert (winner.value, winner.source, winner.bound_by) == ("dft-1", "default", self.MID)
+        # A LEAF-only node sees MID at distance 1 and BASE at distance 2 —
+        # the shorter path supplies the default.
+        other = uid("pg4-leaf-node")
+        store.apply_remote(create_env(other, name="Owner", hlc=(19, 0)))
+        self._assign(store, other, self.LEAF, (21, 0))
+        winner_b = next(row for row in store.get_effective_properties(other) if row.property_schema_id == self.SCHEMA)
+        assert (winner_b.value, winner_b.bound_by) == ("dft-1", self.MID)
+
+    def test_diamond_tie_at_equal_distance_resolves_by_assignment_hlc(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        for class_id, name, hlc in [
+            (self.BASE, "Base", (2, 0)),
+            (self.MID, "MidA", (3, 0)),
+            (self.MID_B, "MidB", (4, 0)),
+            (self.LEAF, "LeafA", (5, 0)),
+            (self.LEAF_B, "LeafB", (6, 0)),
+        ]:
+            store.apply_remote(class_env("class.create", class_id, hlc=hlc, name=name))
+        store.apply_remote(extends_env(self.LEAF, [self.MID], hlc=(7, 0)))
+        store.apply_remote(extends_env(self.LEAF_B, [self.MID_B], hlc=(7, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": self.SCHEMA, "name": "genre", "type": "text"},
+                hlc=(8, 0),
+            )
+        )
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.MID,
+                hlc=(9, 0),
+                **{"propertySchemaId": self.SCHEMA, "sequence": 0, "defaultValue": "from-A"},
+            )
+        )
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.MID_B,
+                hlc=(9, 0),
+                **{"propertySchemaId": self.SCHEMA, "sequence": 0, "defaultValue": "from-B"},
+            )
+        )
+        # LEAF assigned first (earliest add HLC) — its path to MID wins the tie.
+        self._assign(store, NODE, self.LEAF, (20, 0))
+        self._assign(store, NODE, self.LEAF_B, (21, 0))
+        winner = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
+        assert (winner.value, winner.bound_by) == ("from-A", self.MID)
+        # Reversed assignment order on another node flips the winner.
+        other = uid("pg4-other")
+        store.apply_remote(create_env(other, name="Other", hlc=(19, 0)))
+        self._assign(store, other, self.LEAF_B, (20, 0))
+        self._assign(store, other, self.LEAF, (21, 0))
+        winner_b = next(row for row in store.get_effective_properties(other) if row.property_schema_id == self.SCHEMA)
+        assert (winner_b.value, winner_b.bound_by) == ("from-B", self.MID_B)
+
+    def test_inherited_binding_metadata_surfaces_on_authored_rows(self, store: LocalStore) -> None:
+        self._chain_store(store, [self.BASE])
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.BASE,
+                hlc=(9, 0),
+                **{"propertySchemaId": self.SCHEMA, "required": True, "readonly": True},
+            )
+        )
+        self._assign(store, NODE, self.LEAF, (20, 0))
+        store.apply_remote(property_set_env(NODE, self.SCHEMA, value="mine", hlc=(21, 0)))
+        row = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
+        assert row.value == "mine"
+        assert row.source == "authored"
+        assert row.bound_by == self.BASE
+        assert row.required is True
+        assert row.readonly is True
+
+
+class TestPg6ApplyTimeValidation:
+    """PG6 (§34.51): apply-time fail-loud validation at the property.set write
+    path — scalar typing (number normalizes the v1-migrated numeric-string
+    encoding), the multi cardinality ceiling, the datePrecision ceiling,
+    targetClassFilter membership (extends-aware), and node-typed target
+    existence (trash counts as existence). Evidence-scoped deviations: image
+    stays unchecked (PG14), text carrier refs stay existence-lenient (PB2),
+    unknown schema ids store unchecked. Mirrors the monorepo store's
+    property-validation.test.ts PG6 suite."""
+
+    OWNER2 = uid("pg6-owner2")
+    TARGET = uid("pg6-target")
+    TARGET2 = uid("pg6-target2")
+    GHOST = uid("pg6-ghost")
+    CLASS_A = uid("pg6-class-a")
+    CLASS_B = uid("pg6-class-b")
+    SUB_A = uid("pg6-sub-a")  # extends CLASS_A — exercises the filter's class walk
+
+    TEXT = uid("pg6-text")
+    TEXT_MULTI = uid("pg6-text-multi")
+    NUMBER = uid("pg6-number")
+    BOOLEAN = uid("pg6-boolean")
+    URL = uid("pg6-url")
+    SELECT = uid("pg6-select")
+    MULTI_SELECT = uid("pg6-multi-select")
+    IMAGE = uid("pg6-image")
+    DATE = uid("pg6-date")
+    DATE_YEAR = uid("pg6-date-year")
+    OBJECT_FILTERED = uid("pg6-object-filtered")
+    RANGE = uid("pg6-range")
+    UNKNOWN = uid("pg6-unknown")  # never created — the unknown-schema path
+
+    YEAR_NODE = "00000000-0000-0000-00bb-202600000000"
+    MONTH_NODE = "00000000-0000-0000-00aa-202609000000"
+    DAY_NODE = "00000000-0000-0000-00dd-202609270000"
+
+    def _seeded(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(create_env(self.OWNER2, name="Owner 2", hlc=(2, 0)))
+        store.apply_remote(create_env(self.TARGET, name="Target A", hlc=(3, 0)))
+        store.apply_remote(create_env(self.TARGET2, name="Target B", hlc=(4, 0)))
+        store.apply_remote(class_env("class.create", self.CLASS_A, hlc=(5, 0), name="ClassA"))
+        store.apply_remote(class_env("class.create", self.CLASS_B, hlc=(6, 0), name="ClassB"))
+        store.apply_remote(create_env(self.TARGET, class_ids=(self.CLASS_A,), hlc=(7, 0), name="Target A"))
+        store.apply_remote(create_env(self.TARGET2, class_ids=(self.CLASS_B,), hlc=(8, 0), name="Target B"))
+        schemas = [
+            (self.TEXT, {"name": "notes", "type": "text"}),
+            (self.TEXT_MULTI, {"name": "aliases", "type": "text", "multi": True}),
+            (self.NUMBER, {"name": "count", "type": "number"}),
+            (self.BOOLEAN, {"name": "done", "type": "boolean"}),
+            (self.URL, {"name": "link", "type": "url"}),
+            (self.SELECT, {"name": "state", "type": "select", "options": [{"id": "opt-1", "label": "One"}]}),
+            (self.MULTI_SELECT, {"name": "tags", "type": "multi_select"}),
+            (self.IMAGE, {"name": "cover", "type": "image"}),
+            (self.DATE, {"name": "when", "type": "date"}),
+            (self.DATE_YEAR, {"name": "yearOf", "type": "date", "datePrecision": "year"}),
+            (self.OBJECT_FILTERED, {"name": "ref", "type": "object", "targetClassFilter": [self.CLASS_A]}),
+            (self.RANGE, {"name": "span", "type": "date_range"}),
+        ]
+        for i, (schema_id, body) in enumerate(schemas):
+            store.apply_remote(
+                make_env("propertySchema.create", {"propertySchemaId": schema_id, **body}, hlc=(10 + i, 0))
+            )
+        # The date chain the date tests link to (year root → month → day).
+        store.apply_remote(create_env(self.YEAR_NODE, hlc=(30, 0)))
+        store.apply_remote(create_env(self.MONTH_NODE, parent_id=self.YEAR_NODE, hlc=(31, 0)))
+        store.apply_remote(create_env(self.DAY_NODE, parent_id=self.MONTH_NODE, hlc=(32, 0)))
+
+    def _value(self, store: LocalStore, schema_id: str, node_id: str = NODE, idx: int = 0) -> str | None:
+        rows = raw_rows(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = ?",
+            (node_id, schema_id, idx),
+        )
+        return rows[0][0] if rows else None
+
+    def test_number_accepts_finite_and_normalizes_numeric_strings(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.NUMBER, value=42, hlc=(40, 0)))
+        assert self._value(store, self.NUMBER) == "42"
+        # v1-migrated epoch-millis encoding (live-data evidence): normalizes.
+        store.apply_remote(property_set_env(NODE, self.NUMBER, value="1757427533728", hlc=(41, 0)))
+        assert self._value(store, self.NUMBER) == "1757427533728"
+        for bad in ["abc", "", [1], {}, True, float("nan")]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, self.NUMBER, value=bad, hlc=(42, 0)))
+
+    def test_boolean_url_select_accept_their_scalar_and_reject_other_shapes(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.BOOLEAN, value=True, hlc=(40, 0)))
+        store.apply_remote(property_set_env(NODE, self.URL, value="https://x.test", hlc=(41, 0)))
+        store.apply_remote(property_set_env(NODE, self.SELECT, value="opt-1", hlc=(42, 0)))
+        for schema_id, bad in [(self.BOOLEAN, "true"), (self.URL, 42), (self.SELECT, ["opt-1"])]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, schema_id, value=bad, hlc=(43, 0)))
+
+    def test_multi_select_takes_an_array_of_strings_only(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.MULTI_SELECT, value=["a", "b"], hlc=(40, 0)))
+        assert self._value(store, self.MULTI_SELECT) == json.dumps(["a", "b"])
+        for bad in ["a", [1], [None], {}]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, self.MULTI_SELECT, value=bad, hlc=(41, 0)))
+
+    def test_image_passes_through_unchecked(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # A v1-migrated asset payload rides the live log — it must not fail.
+        v1_payload = {"hash": "abc", "size": 12, "filename": "", "mime_type": "image/png"}
+        store.apply_remote(property_set_env(NODE, self.IMAGE, value=v1_payload, hlc=(40, 0)))
+        assert self._value(store, self.IMAGE) == json.dumps(v1_payload)
+
+    def test_single_value_schema_rejects_idx_above_zero(self, store: LocalStore) -> None:
+        self._seeded(store)
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, self.TEXT, value="x", idx=1, hlc=(40, 0)))
+        store.apply_remote(property_set_env(NODE, self.TEXT_MULTI, value="one", idx=1, hlc=(41, 0)))
+        assert self._value(store, self.TEXT_MULTI, idx=1) == json.dumps("one")
+
+    def test_date_refs_may_not_claim_finer_granularity_than_the_schema(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # day-precision schema (default): day/month/year refs all fine.
+        store.apply_remote(property_set_env(NODE, self.DATE, value={"nodeId": self.DAY_NODE}, hlc=(40, 0)))
+        store.apply_remote(property_set_env(NODE, self.DATE, value={"nodeId": self.YEAR_NODE}, hlc=(41, 0)))
+        # year-precision schema: a year ref is fine, a day/month ref fails loud.
+        store.apply_remote(property_set_env(NODE, self.DATE_YEAR, value={"nodeId": self.YEAR_NODE}, hlc=(42, 0)))
+        for ref in (self.DAY_NODE, self.MONTH_NODE):
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, self.DATE_YEAR, value={"nodeId": ref}, hlc=(43, 0)))
+
+    def test_target_class_filter_rejects_out_of_filter_targets(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.OBJECT_FILTERED, value={"nodeId": self.TARGET}, hlc=(40, 0)))
+        assert self._value(store, self.OBJECT_FILTERED) == json.dumps({"nodeId": self.TARGET})
+        # TARGET2 carries ClassB; the schema allows ClassA only.
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                property_set_env(NODE, self.OBJECT_FILTERED, value={"nodeId": self.TARGET2}, hlc=(41, 0))
+            )
+
+    def test_target_class_filter_is_extends_aware(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # The bibliography model filters authors by `agent` while persons
+        # EXTEND agent — a carried subclass satisfies the filter through the
+        # class_hierarchy walk.
+        store.apply_remote(class_env("class.create", self.SUB_A, hlc=(25, 0), name="SubA"))
+        store.apply_remote(extends_env(self.SUB_A, [self.CLASS_A], hlc=(26, 0)))
+        sub_target = uid("pg6-sub-target")
+        store.apply_remote(create_env(sub_target, class_ids=(self.SUB_A,), hlc=(27, 0), name="Sub"))
+        store.apply_remote(property_set_env(NODE, self.OBJECT_FILTERED, value={"nodeId": sub_target}, hlc=(40, 0)))
+        assert self._value(store, self.OBJECT_FILTERED) == json.dumps({"nodeId": sub_target})
+
+    def test_node_typed_refs_must_exist_and_trash_counts_as_existence(self, store: LocalStore) -> None:
+        self._seeded(store)
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, self.DATE, value={"nodeId": self.GHOST}, hlc=(40, 0)))
+        with pytest.raises(PropertyValueShapeError, match="does not exist"):
+            store.apply_remote(property_set_env(NODE, self.OBJECT_FILTERED, value={"nodeId": self.GHOST}, hlc=(41, 0)))
+        # date_range: either end missing fails (an open other end is fine).
+        store.apply_remote(
+            property_set_env(NODE, self.RANGE, value={"start": {"nodeId": self.DAY_NODE}, "end": None}, hlc=(42, 0))
+        )
+        with pytest.raises(PropertyValueShapeError, match="does not exist"):
+            store.apply_remote(
+                property_set_env(
+                    NODE,
+                    self.RANGE,
+                    value={"start": {"nodeId": self.DAY_NODE}, "end": {"nodeId": self.GHOST}},
+                    hlc=(43, 0),
+                )
+            )
+        # A TRASHED target still exists (trash is a state, not an absence) —
+        # and it still carries ClassA, so the filtered schema accepts it.
+        store.apply_remote(delete_env(self.TARGET, hlc=(50, 0)))
+        store.apply_remote(
+            property_set_env(self.OWNER2, self.OBJECT_FILTERED, value={"nodeId": self.TARGET}, hlc=(51, 0))
+        )
+        assert self._value(store, self.OBJECT_FILTERED, node_id=self.OWNER2) == json.dumps({"nodeId": self.TARGET})
+
+    def test_text_carrier_refs_stay_existence_lenient(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.TEXT, value={"nodeId": self.GHOST}, hlc=(40, 0)))
+        assert self._value(store, self.TEXT) == json.dumps({"nodeId": self.GHOST})
+
+    def test_unknown_schema_ids_store_unchecked(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.UNKNOWN, value={"anything": True}, idx=7, hlc=(40, 0)))
+        assert self._value(store, self.UNKNOWN, idx=7) == json.dumps({"anything": True})
+
+
+class TestPb2OneShapePerType:
+    """PB2 (§34.45): the one-shape-per-type gate — text = string-or-reference,
+    date/object = node reference (legacy bare uuid normalizes), date_range =
+    {start,end} of references. The gate lives in the PG6 validator the
+    property.set applier consults; unknown schema ids store unchecked.
+    Mirrors the monorepo store's property-values.test.ts PB2 suite."""
+
+    DATE_NODE = uid("pb2-date-node")
+
+    def _seeded(self, store: LocalStore) -> LocalStore:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(create_env(self.DATE_NODE, name="2026", hlc=(2, 0)))
+        for schema_id, body, hlc in [
+            (uid("pb2-text"), {"name": "notes", "type": "text"}, (3, 0)),
+            (uid("pb2-date"), {"name": "when", "type": "date"}, (4, 0)),
+            (uid("pb2-object"), {"name": "who", "type": "object"}, (5, 0)),
+            (uid("pb2-range"), {"name": "span", "type": "date_range"}, (6, 0)),
+        ]:
+            store.apply_remote(make_env("propertySchema.create", {"propertySchemaId": schema_id, **body}, hlc=hlc))
+        return store
+
+    def _value(self, store: LocalStore, schema_id: str) -> str | None:
+        rows = raw_rows(
+            store, "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ?", (NODE, schema_id)
+        )
+        return rows[0][0] if rows else None
+
+    def test_text_accepts_a_scalar_and_a_reference(self, store: LocalStore) -> None:
+        self._seeded(store)
+        text = uid("pb2-text")
+        store.apply_remote(property_set_env(NODE, text, value="kuhn1962", hlc=(40, 0)))
+        assert self._value(store, text) == json.dumps("kuhn1962")
+        store.apply_remote(property_set_env(NODE, text, value={"nodeId": self.DATE_NODE}, hlc=(41, 0)))
+        assert self._value(store, text) == json.dumps({"nodeId": self.DATE_NODE})
+
+    def test_text_rejects_non_string_non_reference_shapes(self, store: LocalStore) -> None:
+        self._seeded(store)
+        text = uid("pb2-text")
+        for bad in [42, True, ["x"], {"nope": 1}, {"nodeId": 5}]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, text, value=bad, hlc=(40, 0)))
+
+    def test_date_object_accept_refs_normalize_bare_uuid_reject_scalars(self, store: LocalStore) -> None:
+        self._seeded(store)
+        date = uid("pb2-date")
+        obj = uid("pb2-object")
+        store.apply_remote(property_set_env(NODE, date, value={"nodeId": self.DATE_NODE}, hlc=(40, 0)))
+        assert self._value(store, date) == json.dumps({"nodeId": self.DATE_NODE})
+        # Legacy bare uuid normalizes to the reference shape.
+        store.apply_remote(property_set_env(NODE, date, value=self.DATE_NODE, hlc=(41, 0)))
+        assert self._value(store, date) == json.dumps({"nodeId": self.DATE_NODE})
+        # A date-looking string is NOT a reference — dates are nodes.
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, date, value="2026-09-27", hlc=(42, 0)))
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, obj, value="not-a-reference", hlc=(43, 0)))
+
+    def test_date_range_accepts_either_side_open_and_rejects_bad_sides(self, store: LocalStore) -> None:
+        self._seeded(store)
+        rng = uid("pb2-range")
+        store.apply_remote(property_set_env(NODE, rng, value={"start": self.DATE_NODE, "end": None}, hlc=(40, 0)))
+        assert self._value(store, rng) == json.dumps({"start": {"nodeId": self.DATE_NODE}, "end": None})
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, rng, value="2026", hlc=(41, 0)))
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, rng, value={"start": 42, "end": None}, hlc=(42, 0)))
+        # Both sides must be carried — an open range needs explicit nulls.
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(NODE, rng, value={"start": self.DATE_NODE}, hlc=(43, 0)))
+
+    def test_null_values_bypass_shape_validation(self, store: LocalStore) -> None:
+        self._seeded(store)
+        date = uid("pb2-date")
+        store.apply_remote(property_set_env(NODE, date, value=None, hlc=(40, 0)))
+        assert self._value(store, date) == "null"
+
+    def test_unknown_schema_ids_store_unchecked(self, store: LocalStore) -> None:
+        self._seeded(store)
+        loose = uid("pb2-loose")
+        store.apply_remote(property_set_env(NODE, loose, value={"anything": True}, hlc=(40, 0)))
+        assert self._value(store, loose) == json.dumps({"anything": True})
+
+
+class TestPc2TypedDefaults:
+    """PC2: a class-binding defaultValue must be typed per the schema type —
+    the write path (class.property.set) fails loud, and the effective read
+    drops a stored default that drifted out of match (schema delete+recreate
+    with a different type). Mirrors the monorepo store's
+    property-values.test.ts PC2 suite."""
+
+    CLS = uid("pc2-cls")
+
+    def _bound_store(self, store: LocalStore, type_: str, schema_id: str) -> None:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(class_env("class.create", self.CLS, hlc=(2, 0), name="C"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create", {"propertySchemaId": schema_id, "name": "slot", "type": type_}, hlc=(3, 0)
+            )
+        )
+
+    def test_wrong_typed_default_fails_loud(self, store: LocalStore) -> None:
+        self._bound_store(store, "text", uid("pc2-text"))
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.CLS,
+                    hlc=(4, 0),
+                    **{"propertySchemaId": uid("pc2-text"), "defaultValue": True},
+                )
+            )
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.CLS,
+                    hlc=(5, 0),
+                    **{"propertySchemaId": uid("pc2-text"), "defaultValue": {"nodeId": NODE}},
+                )
+            )
+
+    def test_node_typed_schemas_reject_non_null_defaults(self, store: LocalStore) -> None:
+        self._bound_store(store, "object", uid("pc2-object"))
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.CLS,
+                    hlc=(4, 0),
+                    **{"propertySchemaId": uid("pc2-object"), "defaultValue": {"nodeId": NODE}},
+                )
+            )
+        # JSON null IS a real default for any type.
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.CLS,
+                hlc=(5, 0),
+                **{"propertySchemaId": uid("pc2-object"), "defaultValue": None},
+            )
+        )
+        assert raw_rows(
+            store,
+            "SELECT default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLS, uid("pc2-object")),
+        ) == [("null",)]
+
+    def test_typed_defaults_store_and_derive(self, store: LocalStore) -> None:
+        schema_id = uid("pc2-number")
+        self._bound_store(store, "number", schema_id)
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.CLS,
+                hlc=(4, 0),
+                **{"propertySchemaId": schema_id, "defaultValue": 7},
+            )
+        )
+        node = uid("pc2-node")
+        store.apply_remote(create_env(node, class_ids=(self.CLS,), hlc=(10, 0), name="N"))
+        effective = store.get_effective_properties(node)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [(7, "default", self.CLS)]
+
+    def test_drifted_default_yields_nothing_at_read(self, store: LocalStore) -> None:
+        schema_id = uid("pc2-drift")
+        self._bound_store(store, "number", schema_id)
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.CLS,
+                hlc=(4, 0),
+                **{"propertySchemaId": schema_id, "defaultValue": 7},
+            )
+        )
+        # PG3-style drift: delete + recreate the schema under the SAME id as text.
+        store.apply_remote(make_env("propertySchema.delete", {"propertySchemaId": schema_id}, hlc=(5, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": schema_id, "name": "slot", "type": "text"},
+                hlc=(6, 0),
+            )
+        )
+        node = uid("pc2-drift-node")
+        store.apply_remote(create_env(node, class_ids=(self.CLS,), hlc=(10, 0), name="N"))
+        # The binding row survives; the wrong-typed stored default is dropped.
+        assert store.get_effective_properties(node) == []
+
+    def test_unknown_schema_id_skips_default_validation(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(class_env("class.create", self.CLS, hlc=(2, 0), name="C"))
+        loose = uid("pc2-loose")
+        store.apply_remote(
+            class_env(
+                "class.property.set",
+                self.CLS,
+                hlc=(3, 0),
+                **{"propertySchemaId": loose, "defaultValue": {"anything": True}},
+            )
+        )
+        assert raw_rows(store, "SELECT default_value FROM class_property WHERE property_schema_id = ?", (loose,)) == [
+            (json.dumps({"anything": True}),)
+        ]
 
 
 # --------------------------------------------------------------------- helpers
