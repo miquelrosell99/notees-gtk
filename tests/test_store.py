@@ -1541,6 +1541,42 @@ class TestPropertySchema:
         store.apply_remote(make_env("propertySchema.delete", {"propertySchemaId": uid("ps-1")}, hlc=(3, 0)))
         assert raw_rows(store, f"SELECT name, active FROM property_schema WHERE id = '{uid('ps-1')}'") == [("State", 0)]
 
+    def test_number_formats_roundtrip_and_keep_vs_clear(self, store: LocalStore, tmp_path: Path) -> None:
+        """Lockstep with the TS reference (§34.79): numberPad/numberDecimals/
+        numberRounding ride propertySchema.create; update keeps absent fields
+        and clears explicit nulls (key presence, not value)."""
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": uid("ps-fmt"),
+                    "name": "Dex number",
+                    "type": "number",
+                    "numberPad": 4,
+                    "numberDecimals": 1,
+                    "numberRounding": "floor",
+                },
+                hlc=(1, 0),
+            )
+        )
+        def row() -> tuple:
+            return raw_rows(
+                store,
+                f"SELECT number_pad, number_decimals, number_rounding FROM property_schema WHERE id = '{uid('ps-fmt')}'",
+            )[0]
+
+        assert row() == (4, 1, "floor")
+        store.apply_remote(make_env("propertySchema.update", {"propertySchemaId": uid("ps-fmt"), "name": "Dex"}, hlc=(2, 0)))
+        assert row() == (4, 1, "floor")  # absent keeps
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": uid("ps-fmt"), "numberDecimals": None, "numberRounding": None},
+                hlc=(3, 0),
+            )
+        )
+        assert row() == (4, None, None)  # explicit null clears
+
 
 class TestPropertyValues:
     def test_set_lww_converges_both_orders(self, tmp_path: Path) -> None:

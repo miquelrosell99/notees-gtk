@@ -419,3 +419,44 @@ class TestPropertyWirePayloads:
         kept = PAYLOAD_SCHEMAS["class.property.set"].model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
         assert kept.active is None
         assert "active" not in kept.model_fields_set
+
+
+class TestPropertySchemaNumberFormats:
+    """§34.79 lockstep: numberPad/numberDecimals/numberRounding ride the
+    propertySchema payloads (additive-optional, nullable); the keep-vs-clear
+    contract distinguishes absent from explicit null via model_fields_set."""
+
+    def test_create_accepts_and_validates_the_format_fields(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.create"]
+        payload = schema.model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "name": "Dex number",
+                "type": "number",
+                "numberPad": 4,
+                "numberDecimals": 1,
+                "numberRounding": "floor",
+            }
+        )
+        assert payload.number_pad == 4
+        assert payload.number_decimals == 1
+        assert payload.number_rounding == "floor"
+        minimal = schema.model_validate({"propertySchemaId": UUID_1, "name": "x", "type": "number"})
+        assert minimal.number_pad is None
+        # Range + enum enforcement mirrors the TS reference.
+        with pytest.raises(ValidationError):
+            schema.model_validate({"propertySchemaId": UUID_1, "name": "x", "type": "number", "numberPad": 0})
+        with pytest.raises(ValidationError):
+            schema.model_validate({"propertySchemaId": UUID_1, "name": "x", "type": "number", "numberDecimals": 11})
+        with pytest.raises(ValidationError):
+            schema.model_validate(
+                {"propertySchemaId": UUID_1, "name": "x", "type": "number", "numberRounding": "sideways"}
+            )
+
+    def test_update_keep_vs_clear_via_fields_set(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.update"]
+        kept = schema.model_validate({"propertySchemaId": UUID_1})
+        assert "number_pad" not in kept.model_fields_set
+        cleared = schema.model_validate({"propertySchemaId": UUID_1, "numberPad": None})
+        assert "number_pad" in cleared.model_fields_set
+        assert cleared.number_pad is None
