@@ -102,10 +102,12 @@ _log = logging.getLogger(__name__)
 #: tombstones + the property_value rebuild (the UNIQUE(node, schema, idx)
 #: retires — the row id IS the element id), PC4 ``class_property.active``,
 #: and the property_schema date columns PC6 normalizes through.
-SCHEMA_VERSION = 10
 #: v10 (SCHEMA.md "Number formats", §34.79 lockstep): property_schema gained
 #: number_pad / number_decimals / number_rounding (display-only formatting
 #: for number schemas).
+#: v11 (§34.89 lockstep): class_property gained ``display`` — the binding's
+#: value-display position (NULL/'panel' = the properties section only).
+SCHEMA_VERSION = 11
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -240,6 +242,9 @@ class EffectiveProperty:
     visible, marked unbound). ``element_id`` is the PG5 element identity —
     the property_value row id for an authored row (the address multi-value
     removes target), ``default:{schema}:0`` for a derived default.
+    ``display`` (§34.89) is the winning binding's value-display position,
+    sanitized at the read — ``"bullet"``/``"inline"``, or ``None`` for
+    NULL/"panel" (the properties section only) and for unbound rows.
     """
 
     property_schema_id: str
@@ -254,6 +259,7 @@ class EffectiveProperty:
     readonly: bool | None
     hide_when_empty: bool | None
     sequence: int | None
+    display: str | None = None
 
 
 def _envelope_ts(env: RelayEnvelope) -> str:
@@ -1661,6 +1667,11 @@ class LocalStore:
         # metadata) while the ROW survives (unlike class.property.unset).
         # Absent payload = keep the stored flag (patch convention).
         active = flag("active")
+        # §34.89: the value-display position rides the row LWW the same way —
+        # presence-check semantics ("display" in payload), the value a
+        # non-null "panel"/"bullet"/"inline" string (explicit null is
+        # rejected by the payload gate above).
+        display = payload.get("display") if "display" in payload else None
         sequence = int(payload["sequence"]) if payload.get("sequence") is not None else None
         default_value = json.dumps(payload["defaultValue"]) if "defaultValue" in payload else None
         with self._conn:
@@ -1668,8 +1679,8 @@ class LocalStore:
                 self._conn.execute(
                     """INSERT INTO class_property
                          (class_id, property_schema_id, sequence, required, readonly, hide_when_empty,
-                          default_value, active, hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          default_value, active, display, hlc_physical, hlc_logical, actor_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         class_id,
                         schema_id,
@@ -1679,6 +1690,7 @@ class LocalStore:
                         flag("hideWhenEmpty"),
                         default_value,
                         active if active is not None else 1,
+                        display,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -1693,6 +1705,7 @@ class LocalStore:
                          hide_when_empty = COALESCE(?, hide_when_empty),
                          default_value = COALESCE(?, default_value),
                          active = COALESCE(?, active),
+                         display = COALESCE(?, display),
                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
                        WHERE class_id = ? AND property_schema_id = ?""",
                     (
@@ -1702,6 +1715,7 @@ class LocalStore:
                         flag("hideWhenEmpty"),
                         default_value,
                         active,
+                        display,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -2411,6 +2425,17 @@ class LocalStore:
         )
         for entry in TASK_FAMILY_SEED:
             schema_id = task_property_uuid(entry.property)
+            # The designed options ride verbatim (the seeds.ts manifest row
+            # shape): icon/color keys land only when the designed option
+            # carries them (zod optional parity).
+            designed_options = []
+            for option in entry.options:
+                designed: dict[str, Any] = {"id": option.id, "label": option.label}
+                if option.icon is not None:
+                    designed["icon"] = option.icon
+                if option.color is not None:
+                    designed["color"] = option.color
+                designed_options.append(designed)
             self._conn.execute(
                 """INSERT OR IGNORE INTO property_schema
                      (id, workspace_id, name, type, multi, scope, options, target_class_filter,
@@ -2421,7 +2446,7 @@ class LocalStore:
                     env.workspace_id,
                     entry.name,
                     entry.type,
-                    json.dumps([{"id": option_id, "label": label} for option_id, label in entry.options]),
+                    json.dumps(designed_options),
                     ts,
                     ts,
                 ),
@@ -2429,9 +2454,9 @@ class LocalStore:
             self._conn.execute(
                 """INSERT OR IGNORE INTO class_property
                      (class_id, property_schema_id, sequence, required, readonly, hide_when_empty,
-                      default_value, hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, NULL)""",
-                (class_id, schema_id, entry.sequence),
+                      default_value, display, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, 0, NULL)""",
+                (class_id, schema_id, entry.sequence, entry.display),
             )
 
     def _apply_workspace_feature_set(self, env: RelayEnvelope) -> bool:
@@ -2637,7 +2662,9 @@ class LocalStore:
         first-class-applied-wins over own bindings. Only ACTIVE binding rows
         are candidates (PC4: an inactive binding stops contributing defaults
         AND metadata — required/readonly/hideWhenEmpty/sequence — while the
-        ROW survives and authored values read as unbound, ``bound_by`` None).
+        ROW survives and authored values read as unbound, ``bound_by`` None;
+        §34.89: the winning binding's ``display`` position rides both the
+        authored and the derived row, sanitized NULL/'panel' → None).
         A stored default that no longer matches the schema type yields no
         default (PC2 read-side). A pure read over derived tables —
         deterministic on every replica, no writes, no clocks.
@@ -2690,8 +2717,8 @@ class LocalStore:
             physical, logical = int(cls[1]), int(cls[2])
             for ancestor_id, distance in reach_of(class_id):
                 for binding in self._conn.execute(
-                    "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value"
-                    " FROM class_property WHERE class_id = ? AND active = 1",
+                    "SELECT property_schema_id, sequence, required, readonly, hide_when_empty, default_value,"
+                    " display FROM class_property WHERE class_id = ? AND active = 1",
                     (ancestor_id,),
                 ).fetchall():
                     candidates.setdefault(str(binding[0]), []).append(
@@ -2725,6 +2752,11 @@ class LocalStore:
         def flag(value: Any) -> bool | None:
             return None if value is None else bool(value)
 
+        def display_of(value: Any) -> str | None:
+            # §34.89: sanitize the stored position (NULL/'panel'/unknown →
+            # None, the properties-section default — the effective.ts parity).
+            return value if value in ("bullet", "inline") else None
+
         def parse_json(raw: Any) -> Any:
             if not isinstance(raw, str):
                 return raw
@@ -2755,6 +2787,7 @@ class LocalStore:
                 readonly=flag(winner[1][3]) if winner else None,
                 hide_when_empty=flag(winner[1][4]) if winner else None,
                 sequence=int(winner[1][1]) if winner else None,
+                display=display_of(winner[1][6]) if winner else None,
             )
 
         for schema_id, (class_id, binding) in winner_by_schema.items():
@@ -2782,6 +2815,7 @@ class LocalStore:
                 readonly=flag(binding[3]),
                 hide_when_empty=flag(binding[4]),
                 sequence=int(binding[1]),
+                display=display_of(binding[6]),
             )
 
         # Deterministic presentation order: bound rows by binding sequence,
@@ -3231,6 +3265,9 @@ _CLASS_PROPERTY_DDL = """
 -- soft-unbind flag — an inactive row stops contributing to the effective
 -- read (no default, no metadata) while the ROW survives; absent column
 -- means active, so existing rows converge with zero migration.
+-- 'display' (§34.89): the binding's value-display position — NULL/'panel'
+-- keeps the value in the properties section only; 'bullet'/'inline' ride
+-- the block row (a render contract only, never read by queries).
 CREATE TABLE IF NOT EXISTS class_property (
     class_id TEXT NOT NULL,
     property_schema_id TEXT NOT NULL,
@@ -3240,6 +3277,7 @@ CREATE TABLE IF NOT EXISTS class_property (
     hide_when_empty INTEGER,
     default_value TEXT,
     active INTEGER NOT NULL DEFAULT 1,
+    display TEXT,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
@@ -3457,6 +3495,15 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
             """
         )
 
+
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """v11 — §34.89 lockstep: class_property gains the binding's value-display
+    position. Additive guarded column (the ``_add_column_if_missing`` parity
+    with PC4's active): the stored NULL default means "panel", so existing
+    rows converge with zero backfill and a fresh v11 create is untouched."""
+    LocalStore._add_column_if_missing(conn, "class_property", "display", "TEXT")
+
+
 #: Canonical auxiliary DDL applied on every upgrade before the versioned
 #: steps (the web schema.ts ``migrate`` parity): all CREATE IF NOT EXISTS, so
 #: a complete database is untouched and a partial one converges to the full
@@ -3477,4 +3524,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (8, _migrate_v8),
     (9, _migrate_v9),
     (10, _migrate_v10),
+    (11, _migrate_v11),
 )

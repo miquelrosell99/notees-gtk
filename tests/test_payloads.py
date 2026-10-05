@@ -460,3 +460,79 @@ class TestPropertySchemaNumberFormats:
         cleared = schema.model_validate({"propertySchemaId": UUID_1, "numberPad": None})
         assert "number_pad" in cleared.model_fields_set
         assert cleared.number_pad is None
+
+
+class TestPropertyDisplayPositions:
+    """§34.89 lockstep: class.property.set gains the optional ``display``
+    position (panel|bullet|inline — omitted keeps the stored value, an
+    explicit null is rejected like ``active``), and select option records
+    gain the optional ``icon`` (MDI camelCase, max 64) on a deliberately
+    NON-strict record: unknown keys inside an option STRIP instead of
+    rejecting, so icon-carrying envelopes sync through pre-batch parsers."""
+
+    def test_display_valid_positions_parse(self) -> None:
+        schema = PAYLOAD_SCHEMAS["class.property.set"]
+        for position in ("panel", "bullet", "inline"):
+            payload = schema.model_validate({"classId": UUID_1, "propertySchemaId": UUID_2, "display": position})
+            assert payload.display == position
+            assert "display" in payload.model_fields_set
+        minimal = schema.model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
+        assert minimal.display is None
+        assert "display" not in minimal.model_fields_set
+
+    def test_display_unknown_position_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="display"):
+            validate_payload(
+                "class.property.set",
+                {"classId": UUID_1, "propertySchemaId": UUID_2, "display": "sideways"},
+            )
+
+    def test_display_explicit_null_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="display"):
+            validate_payload(
+                "class.property.set",
+                {"classId": UUID_1, "propertySchemaId": UUID_2, "display": None},
+            )
+
+    def test_option_icon_parses_on_create_and_update(self) -> None:
+        create = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "name": "stage",
+                "type": "select",
+                "options": [{"id": "a", "label": "A", "icon": "mdiCircle"}],
+            }
+        )
+        assert create.options is not None
+        assert create.options[0].icon == "mdiCircle"
+        update = PAYLOAD_SCHEMAS["propertySchema.update"].model_validate(
+            {"propertySchemaId": UUID_1, "options": [{"id": "a", "label": "A", "icon": "mdiCircle"}]}
+        )
+        assert update.options is not None
+        assert update.options[0].icon == "mdiCircle"
+        with pytest.raises(ValidationError):
+            PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(
+                {
+                    "propertySchemaId": UUID_1,
+                    "name": "x",
+                    "type": "select",
+                    "options": [{"id": "a", "label": "A", "icon": "x" * 65}],
+                }
+            )
+
+    def test_option_record_is_non_strict_unknown_keys_strip(self) -> None:
+        """The §34.89 convergence contract: an option carrying keys a
+        pre-batch parser does not know (the §34.43 color grammar, a future
+        decoration) validates — the parsed model DROPS the unknown keys
+        instead of rejecting the envelope."""
+        payload = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "name": "stage",
+                "type": "select",
+                "options": [{"id": "a", "label": "A", "icon": "mdiCircle", "color": "yellow", "futureKey": 1}],
+            }
+        )
+        option = payload.options[0]
+        assert option.icon == "mdiCircle"
+        assert set(option.model_dump()) == {"id", "label", "icon"}  # stripped, never rejected

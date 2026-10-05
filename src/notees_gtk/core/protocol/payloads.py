@@ -32,6 +32,15 @@ the row id IS the element id in the store), PC4 ``class.property.set``
 write in the store applier). Retired feature ids and retired encodings are
 rejected outright — no wire compat (owner directive).
 
+Property display batch (§34.89, lockstep wave 2026-10-05):
+``class.property.set`` gains the optional ``display`` position
+(``"panel"``/``"bullet"``/``"inline"``, omitted = keep; an explicit null is
+rejected like ``active``), and select option records gain the optional
+``icon`` (MDI camelCase name, max 64). The option record is deliberately
+NON-strict — additive keys inside options strip instead of rejecting, so
+icon-carrying envelopes sync through pre-batch parsers (their stores drop
+the icon; wipe → replay restores it).
+
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
 (SCHEMA.md, 2026-10-01): no op payload carries a ``name`` — the builders
@@ -82,6 +91,9 @@ _PROPERTY_TYPE = Literal[
 _SCOPE = Literal["global", "class", "object"]
 _DATE_PRECISION = Literal["year", "month", "day"]
 _NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
+# §34.89: the binding's value-display position — where a select/multi_select
+# (or boolean) value renders on a block row. A render contract only.
+_DISPLAY_POSITION = Literal["panel", "bullet", "inline"]
 
 
 class _Strict(BaseModel):
@@ -211,11 +223,23 @@ class ClassPropertySetPayload(_Strict):
     # keep the stored flag (the patch convention). zod parity: an explicit
     # JSON null is NOT ``undefined`` — the strict schema rejects it.
     active: bool | None = Field(default=None)
+    # §34.89: the binding's value-display position — "panel" (the stored NULL
+    # default) keeps the value in the properties section only; "bullet"
+    # renders it as an icon button next to the block bullet; "inline" before
+    # the block content. Omitted = keep the stored value; an explicit null is
+    # rejected like ``active``.
+    display: _DISPLAY_POSITION | None = Field(default=None)
 
     @model_validator(mode="after")
     def _check_active_not_null(self) -> ClassPropertySetPayload:
         if "active" in self.model_fields_set and self.active is None:
             raise ValueError("class.property.set 'active' must be a boolean when present")
+        return self
+
+    @model_validator(mode="after")
+    def _check_display_not_null(self) -> ClassPropertySetPayload:
+        if "display" in self.model_fields_set and self.display is None:
+            raise ValueError("class.property.set 'display' must be a string when present")
         return self
 
 
@@ -224,9 +248,25 @@ class ClassPropertyUnsetPayload(_Strict):
     property_schema_id: UUID = Field(alias="propertySchemaId")
 
 
-class _OptionEntry(_Strict):
+class _OptionEntry(BaseModel):
+    """A select/multi_select option record (PG16 + §34.89): ``{id, label}``
+    plus optional decoration (``color`` in the §34.43 grammar, ``icon`` — an
+    MDI camelCase name, max 64 chars, absent/null = no icon).
+
+    Deliberately NON-strict (the zod ``propertySchemaOptionSchema`` is a
+    plain object, not ``.strict()``): web clients send additive keys inside
+    options, and unknown keys must STRIP, never reject — a pre-§34.89 parser
+    syncs icon-carrying envelopes through (its store drops the decoration;
+    wipe → replay restores it). The store appliers serialize the raw
+    ``payload["options"]`` verbatim, so a validated icon rides into the
+    options JSON automatically.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
     id: str
     label: str
+    icon: str | None = Field(default=None, max_length=64)
 
 
 class PropertySchemaCreatePayload(_Strict):

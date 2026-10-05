@@ -386,6 +386,47 @@ class TestMigrations:
         assert class_row.parent_id is None
         upgraded.close()
 
+    def test_v10_to_v11_migration_adds_the_display_column(self, tmp_path: Path) -> None:
+        """§34.89 lockstep: an on-disk v10 database upgrades in place — the
+        class_property table gains ``display``, and existing rows converge
+        with the NULL/'panel' default (zero backfill)."""
+        path = tmp_path / "v10.db"
+        instance = LocalStore(path)
+        instance.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        instance.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 3, "display": "bullet"},
+                hlc=(2, 0),
+            )
+        )
+        instance.close()
+        # Downgrade the on-disk shape to v10 (the pre-§34.89 column set).
+        with sqlite3.connect(path) as raw:
+            raw.execute("ALTER TABLE class_property DROP COLUMN display")
+            raw.execute("PRAGMA user_version = 10")
+        upgraded = LocalStore(path)
+        with sqlite3.connect(path) as raw:
+            version = raw.execute("PRAGMA user_version").fetchone()[0]
+            columns = {row[1] for row in raw.execute("PRAGMA table_info(class_property)")}
+            rows = raw.execute("SELECT sequence, display FROM class_property").fetchall()
+        assert version == SCHEMA_VERSION
+        assert "display" in columns
+        assert rows == [(3, None)]  # the pre-batch row keeps its data, display NULL
+        # The migrated store takes new display writes like a fresh v11 one.
+        upgraded.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "display": "inline"},
+                hlc=(3, 0),
+            )
+        )
+        assert raw_rows(
+            upgraded,
+            f"SELECT display FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [("inline",)]
+        upgraded.close()
+
 
 class TestOutbox:
     def test_enqueue_and_pending_roundtrip(self, store: LocalStore) -> None:
@@ -1236,6 +1277,151 @@ class TestClassPropertyBindings:
             f"SELECT default_value FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
         ) == [('"low"',)]
 
+    def test_display_position_roundtrips_row_and_effective_read(self, store: LocalStore) -> None:
+        """§34.89: display rides the binding row like active — the INSERT
+        persists the position, the effective read carries the WINNING
+        binding's display on both authored and derived rows, and a stored
+        NULL/'panel' sanitizes to None."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "State", "type": "select"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {
+                    "classId": uid("cls-1"),
+                    "propertySchemaId": uid("ps-1"),
+                    "sequence": 1,
+                    "defaultValue": "todo",
+                    "display": "bullet",
+                },
+                hlc=(3, 0),
+            )
+        )
+        assert raw_rows(
+            store,
+            f"SELECT display FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [("bullet",)]
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(uid("cls-1"),), hlc=(4, 0), name="Buy milk"))
+        # Derived default row: the winning binding's display rides along.
+        assert [(row.source, row.value, row.display) for row in store.get_effective_properties(member)] == [
+            ("default", "todo", "bullet")
+        ]
+        # Authored row: same winning binding supplies the display.
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": member, "propertySchemaId": uid("ps-1"), "value": "doing", "idx": 0},
+                hlc=(5, 0),
+                affected=(member,),
+            )
+        )
+        assert [(row.source, row.value, row.display) for row in store.get_effective_properties(member)] == [
+            ("authored", "doing", "bullet")
+        ]
+        # 'panel' stores on the row but reads as None (the sanitizer).
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "display": "panel"},
+                hlc=(6, 0),
+            )
+        )
+        assert raw_rows(
+            store,
+            f"SELECT display FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [("panel",)]
+        assert [row.display for row in store.get_effective_properties(member)] == [None]
+
+    def test_display_patch_omitted_keeps_stored_value_and_stale_hlc_drops(self, store: LocalStore) -> None:
+        """Row-LWW patch convention: a set omitting display keeps the stored
+        position; a stale set never rewrites it."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "display": "inline"},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "required": True},
+                hlc=(4, 0),
+            )
+        )
+        assert raw_rows(
+            store,
+            f"SELECT display, required FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [("inline", 1)]
+        assert (
+            store.apply_remote(
+                make_env(
+                    "class.property.set",
+                    {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "display": "bullet"},
+                    hlc=(2, 0),
+                )
+            )
+            is False
+        )
+        assert raw_rows(
+            store,
+            f"SELECT display FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [("inline",)]
+
+    def test_inactive_binding_contributes_no_display(self, store: LocalStore) -> None:
+        """PC4 × §34.89: an inactive binding never becomes a candidate, so an
+        authored value reads unbound with display None even though the ROW
+        keeps its stored position."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "State", "type": "select"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 1, "display": "bullet"},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "active": False},
+                hlc=(4, 0),
+            )
+        )
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(uid("cls-1"),), hlc=(5, 0), name="Buy milk"))
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": member, "propertySchemaId": uid("ps-1"), "value": "doing", "idx": 0},
+                hlc=(6, 0),
+                affected=(member,),
+            )
+        )
+        # The ROW survives with its position intact…
+        assert raw_rows(
+            store,
+            f"SELECT active, display FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [(0, "bullet")]
+        # …but the effective read marks the value unbound, display None.
+        assert [(row.source, row.bound_by, row.display) for row in store.get_effective_properties(member)] == [
+            ("authored", None, None)
+        ]
+
     def test_explicit_json_null_default_is_a_real_default(self, store: LocalStore) -> None:
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
@@ -1576,6 +1762,43 @@ class TestPropertySchema:
             )
         )
         assert row() == (4, None, None)  # explicit null clears
+
+    def test_option_icon_rides_verbatim_through_create_and_wholesale_update(self, store: LocalStore) -> None:
+        """§34.89: the appliers serialize raw ``payload["options"]`` verbatim,
+        so an option's icon (and any additive decoration) lands in the stored
+        options JSON on create and on the wholesale options replace."""
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": uid("ps-icon"),
+                    "name": "Stage",
+                    "type": "select",
+                    "options": [
+                        {"id": "opt-a", "label": "A", "icon": "mdiCircle", "color": "yellow"},
+                        {"id": "opt-b", "label": "B"},
+                    ],
+                },
+                hlc=(1, 0),
+            )
+        )
+        stored = raw_rows(store, f"SELECT options FROM property_schema WHERE id = '{uid('ps-icon')}'")
+        assert json.loads(stored[0][0]) == [
+            {"id": "opt-a", "label": "A", "icon": "mdiCircle", "color": "yellow"},
+            {"id": "opt-b", "label": "B"},
+        ]
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {
+                    "propertySchemaId": uid("ps-icon"),
+                    "options": [{"id": "opt-c", "label": "C", "icon": "mdiCheckCircle"}],
+                },
+                hlc=(2, 0),
+            )
+        )
+        replaced = raw_rows(store, f"SELECT options FROM property_schema WHERE id = '{uid('ps-icon')}'")
+        assert json.loads(replaced[0][0]) == [{"id": "opt-c", "label": "C", "icon": "mdiCheckCircle"}]
 
 
 class TestPropertyValues:
@@ -1936,6 +2159,52 @@ class TestWorkspaceFeatureToggle:
             "SELECT options FROM property_schema WHERE id = '00000000-0000-0000-0003-000000000001'",
         )
         assert '"00000000-0000-0000-0004-000000000008"' in options[0][0]  # backlog option id
+
+    def test_task_family_seed_pins_the_designed_status_style_and_display(self, store: LocalStore) -> None:
+        """§34.89 lockstep: the Status options carry the designed glyphs
+        (fixed ids, MDI icons, §34.43 color tokens) and ONLY the Status
+        binding defaults to display="bullet" — the rest stay NULL ('panel')."""
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        status_rows = raw_rows(
+            store, "SELECT options FROM property_schema WHERE id = ?", ("00000000-0000-0000-0003-000000000001",)
+        )
+        stored_status = json.loads(status_rows[0][0])
+        assert [(o["id"], o["label"], o["icon"], o["color"]) for o in stored_status] == [
+            ("00000000-0000-0000-0004-000000000008", "Backlog", "mdiCircleOutline", "gray"),
+            ("00000000-0000-0000-0004-000000000009", "Pending", "mdiCircle", "yellow"),
+            ("00000000-0000-0000-0004-00000000000a", "Doing", "mdiCircleHalfFull", "orange"),
+            ("00000000-0000-0000-0004-00000000000b", "Reviewing", "mdiEyeCircleOutline", "blue"),
+            ("00000000-0000-0000-0004-00000000000c", "Done", "mdiCheckCircle", "green"),
+            ("00000000-0000-0000-0004-00000000000d", "Cancelled", "mdiCloseCircle", "red"),
+        ]
+        assert all(set(option) == {"id", "label", "icon", "color"} for option in stored_status)
+        # The priority options stay decoration-free (id + label only).
+        priority_rows = raw_rows(
+            store, "SELECT options FROM property_schema WHERE id = ?", ("00000000-0000-0000-0003-000000000004",)
+        )
+        stored_priority = json.loads(priority_rows[0][0])
+        assert [(o["id"], o["label"]) for o in stored_priority] == [
+            ("00000000-0000-0000-0004-00000000000e", "Low"),
+            ("00000000-0000-0000-0004-00000000000f", "Medium"),
+            ("00000000-0000-0000-0004-000000000010", "High"),
+            ("00000000-0000-0000-0004-000000000011", "Urgent"),
+        ]
+        assert all(set(option) == {"id", "label"} for option in stored_priority)
+        displays = dict(
+            raw_rows(
+                store,
+                "SELECT property_schema_id, display FROM class_property WHERE class_id = ?",
+                (self.TASK_CLASS,),
+            )
+        )
+        assert displays == {
+            "00000000-0000-0000-0003-000000000001": "bullet",  # Status
+            "00000000-0000-0000-0003-000000000002": None,  # Deadline
+            "00000000-0000-0000-0003-000000000003": None,  # Scheduled
+            "00000000-0000-0000-0003-000000000004": None,  # Priority
+            "00000000-0000-0000-0003-000000000005": None,  # Closed
+            "00000000-0000-0000-0003-000000000006": None,  # Recurrence
+        }
 
     def test_ensure_is_insert_or_ignore_and_never_clobbers(self, store: LocalStore) -> None:
         store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0)))
