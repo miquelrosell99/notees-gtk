@@ -463,36 +463,74 @@ class TestPropertySchemaNumberFormats:
 
 
 class TestPropertyDisplayPositions:
-    """§34.89 lockstep: class.property.set gains the optional ``display``
-    position (panel|bullet|inline — omitted keeps the stored value, an
-    explicit null is rejected like ``active``), and select option records
-    gain the optional ``icon`` (MDI camelCase, max 64) on a deliberately
-    NON-strict record: unknown keys inside an option STRIP instead of
-    rejecting, so icon-carrying envelopes sync through pre-batch parsers."""
+    """§34.90 (owner review, correcting the §34.89 binding-level experiment):
+    the render contracts ``display``/``readonly``/``hideWhenEmpty`` are
+    PROPERTY-level — they live on ``propertySchema.create/update``
+    (nullable-optional; update-side absent keeps, null clears), and the
+    strict ``class.property.set`` schema rejects all three like any retired
+    key. ``required`` is the deliberate per-class exception that stays on
+    the binding. The select option ``icon`` (MDI camelCase, max 64) stays on
+    the deliberately NON-strict option record: unknown keys inside an option
+    STRIP instead of rejecting, so icon-carrying envelopes sync through
+    pre-batch parsers."""
 
-    def test_display_valid_positions_parse(self) -> None:
-        schema = PAYLOAD_SCHEMAS["class.property.set"]
-        for position in ("panel", "bullet", "inline"):
-            payload = schema.model_validate({"classId": UUID_1, "propertySchemaId": UUID_2, "display": position})
-            assert payload.display == position
-            assert "display" in payload.model_fields_set
-        minimal = schema.model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
-        assert minimal.display is None
-        assert "display" not in minimal.model_fields_set
+    def test_display_valid_positions_parse_on_the_schema_payloads(self) -> None:
+        for op_type in ("propertySchema.create", "propertySchema.update"):
+            schema = PAYLOAD_SCHEMAS[op_type]
+            base = {"propertySchemaId": UUID_1}
+            if op_type == "propertySchema.create":
+                base["name"] = "stage"
+                base["type"] = "select"
+            for position in ("panel", "bullet", "inline"):
+                payload = schema.model_validate({**base, "display": position})
+                assert payload.display == position
+                assert "display" in payload.model_fields_set
+            # §34.90: nullable — an explicit null parses (the update-side
+            # applier clears the stored value).
+            nulled = schema.model_validate({**base, "display": None})
+            assert nulled.display is None
+            assert "display" in nulled.model_fields_set
+            minimal = schema.model_validate(base)
+            assert minimal.display is None
+            assert "display" not in minimal.model_fields_set
 
-    def test_display_unknown_position_rejected(self) -> None:
+    def test_display_unknown_position_rejected_on_the_schema_payloads(self) -> None:
         with pytest.raises(ValidationError, match="display"):
             validate_payload(
-                "class.property.set",
-                {"classId": UUID_1, "propertySchemaId": UUID_2, "display": "sideways"},
+                "propertySchema.create",
+                {"propertySchemaId": UUID_1, "name": "stage", "type": "select", "display": "sideways"},
             )
-
-    def test_display_explicit_null_rejected(self) -> None:
         with pytest.raises(ValidationError, match="display"):
+            validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "display": "sideways"})
+
+    @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty"])
+    def test_class_property_set_render_contract_keys_rejected(self, key: str) -> None:
+        """§34.90: the binding payload carries ONLY the genuinely per-class
+        mechanics — display/readonly/hideWhenEmpty are retired keys there,
+        rejected outright by the strict schema (required stays)."""
+        with pytest.raises(ValidationError, match=key):
             validate_payload(
                 "class.property.set",
-                {"classId": UUID_1, "propertySchemaId": UUID_2, "display": None},
+                {"classId": UUID_1, "propertySchemaId": UUID_2, key: "bullet" if key == "display" else True},
             )
+
+    def test_schema_render_contract_flags_parse_on_create_and_update(self) -> None:
+        create = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "name": "stage",
+                "type": "select",
+                "readonly": True,
+                "hideWhenEmpty": False,
+            }
+        )
+        assert create.readonly is True
+        assert create.hide_when_empty is False
+        update = PAYLOAD_SCHEMAS["propertySchema.update"].model_validate(
+            {"propertySchemaId": UUID_1, "readonly": False, "hideWhenEmpty": True}
+        )
+        assert update.readonly is False
+        assert update.hide_when_empty is True
 
     def test_option_icon_parses_on_create_and_update(self) -> None:
         create = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(

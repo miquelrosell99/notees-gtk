@@ -298,9 +298,10 @@ class TaskFamilySeedEntry:
     type: Literal["select", "date"]
     sequence: int
     options: tuple[TaskSeedOption, ...] = ()
-    # §34.89: the binding's value-display position — only the Status binding
-    # defaults to "bullet" (the status value rides the block bullet as an
-    # icon button); the rest stay NULL ("panel", the properties section).
+    # §34.90 (owner review, property-LEVEL): the value-display position rides
+    # the SCHEMA entry the ensure authors — only the Status schema defaults
+    # to "bullet" (the status value rides the block bullet as an icon
+    # button); the rest stay NULL ("panel", the properties section).
     display: Literal["panel", "bullet", "inline"] | None = None
 
 
@@ -311,7 +312,8 @@ class TaskFamilySeedEntry:
 #: above); ``sequence`` is the task-panel display order. The Status options
 #: carry the designed §34.89 glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
 #: circle-family MDI icons with a distinct color each, so a task's state
-#: reads at a glance from the block bullet.
+#: reads at a glance from the block bullet. ``display`` (§34.90) lands on
+#: the property_schema row, never the binding.
 TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
     TaskFamilySeedEntry(
         "taskStatus",

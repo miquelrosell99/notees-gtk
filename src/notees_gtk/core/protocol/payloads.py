@@ -32,14 +32,16 @@ the row id IS the element id in the store), PC4 ``class.property.set``
 write in the store applier). Retired feature ids and retired encodings are
 rejected outright — no wire compat (owner directive).
 
-Property display batch (§34.89, lockstep wave 2026-10-05):
-``class.property.set`` gains the optional ``display`` position
-(``"panel"``/``"bullet"``/``"inline"``, omitted = keep; an explicit null is
-rejected like ``active``), and select option records gain the optional
-``icon`` (MDI camelCase name, max 64). The option record is deliberately
-NON-strict — additive keys inside options strip instead of rejecting, so
-icon-carrying envelopes sync through pre-batch parsers (their stores drop
-the icon; wipe → replay restores it).
+Property display batch (§34.89, corrected §34.90 owner review 2026-10-05):
+select option records gained the optional ``icon`` (MDI camelCase name,
+max 64; the option record is deliberately NON-strict — additive keys strip
+instead of rejecting, so icon-carrying envelopes sync through pre-batch
+parsers). The value-display position and the render contracts
+(``display``/``readonly``/``hideWhenEmpty``) are PROPERTY-level and live on
+``propertySchema.create/update`` (nullable-optional; update-side absent
+keeps, null clears) — §34.89's binding-level ``display`` on
+``class.property.set`` was withdrawn the same day, and ``required`` is the
+deliberate per-class exception that stays on the binding.
 
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
@@ -211,35 +213,34 @@ class ClassSetExtendsPayload(_Strict):
 
 
 class ClassPropertySetPayload(_Strict):
+    """The class → property-schema binding upsert — the genuinely PER-CLASS
+    mechanics only (panel order, the class's own default, the class's
+    soft-unbind, and per-class requirement).
+
+    §34.90 (owner review 2026-10-05): the render contracts readonly,
+    hideWhenEmpty, display are PROPERTY-level characteristics and live on the
+    property schema (``propertySchema.create/update``) — the strict schema
+    rejects them here like any retired key. ``required`` is the exception
+    the owner kept at the binding: a property may be mandatory for one
+    class, optional for another (TS parity: nullable here — an explicit
+    null clears, omitted keeps).
+    """
+
     class_id: UUID = Field(alias="classId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
     sequence: int | None = None
     required: bool | None = None
-    readonly: bool | None = None
-    hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
     default_value: Any = Field(default=None, alias="defaultValue")
     # PC4 (§34.57): the soft-unbind flag — an inactive binding stops
     # contributing to the effective read while the ROW survives. Omitted =
     # keep the stored flag (the patch convention). zod parity: an explicit
     # JSON null is NOT ``undefined`` — the strict schema rejects it.
     active: bool | None = Field(default=None)
-    # §34.89: the binding's value-display position — "panel" (the stored NULL
-    # default) keeps the value in the properties section only; "bullet"
-    # renders it as an icon button next to the block bullet; "inline" before
-    # the block content. Omitted = keep the stored value; an explicit null is
-    # rejected like ``active``.
-    display: _DISPLAY_POSITION | None = Field(default=None)
 
     @model_validator(mode="after")
     def _check_active_not_null(self) -> ClassPropertySetPayload:
         if "active" in self.model_fields_set and self.active is None:
             raise ValueError("class.property.set 'active' must be a boolean when present")
-        return self
-
-    @model_validator(mode="after")
-    def _check_display_not_null(self) -> ClassPropertySetPayload:
-        if "display" in self.model_fields_set and self.display is None:
-            raise ValueError("class.property.set 'display' must be a string when present")
         return self
 
 
@@ -285,6 +286,18 @@ class PropertySchemaCreatePayload(_Strict):
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
+    # §34.90 (owner review 2026-10-05): the render contracts are
+    # PROPERTY-level — a property displays/behaves the same everywhere it
+    # appears, whatever class binds it (or none). ``display`` is the
+    # value-display position ("panel" (absent/null) keeps the value in the
+    # properties section only; "bullet" renders it as an icon button next to
+    # the block bullet; "inline" before the block content — the v1
+    # icon_visibility port); ``readonly``/``hideWhenEmpty`` are the tri-state
+    # render flags. All nullable-optional (absent or null stores NULL).
+    # ``required`` is NOT here — it stays on the class binding (per-class).
+    display: _DISPLAY_POSITION | None = Field(default=None)
+    readonly: bool | None = Field(default=None)
+    hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
 
 
 class PropertySchemaUpdatePayload(_Strict):
@@ -298,6 +311,12 @@ class PropertySchemaUpdatePayload(_Strict):
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
+    # §34.90 render contracts (PROPERTY-level): same absent-keeps /
+    # null-clears contract as the number formats — `required` is NOT among
+    # them; it stays on the class binding.
+    display: _DISPLAY_POSITION | None = Field(default=None)
+    readonly: bool | None = Field(default=None)
+    hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
 
 
 class PropertySchemaDeletePayload(_Strict):

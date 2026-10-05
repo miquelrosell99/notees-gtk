@@ -168,8 +168,9 @@ class TestTaskFamilySeed:
         priority = TASK_FAMILY_SEED[3]
         assert all(option.icon is None and option.color is None for option in priority.options)
 
-    def test_only_the_status_binding_defaults_to_bullet_display(self) -> None:
-        """§34.89: the Status value rides the block bullet; every other
-        binding keeps display None ('panel', the properties section)."""
+    def test_only_the_status_entry_defaults_to_bullet_display(self) -> None:
+        """§34.90: the Status schema defaults to "bullet" (the manifest's
+        display rides the SCHEMA row the ensure authors); every other entry
+        keeps display None ('panel', the properties section)."""
         assert TASK_FAMILY_SEED[0].display == "bullet"
         assert all(entry.display is None for entry in TASK_FAMILY_SEED[1:])
