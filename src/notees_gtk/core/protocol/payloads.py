@@ -81,6 +81,7 @@ _PROPERTY_TYPE = Literal[
 ]
 _SCOPE = Literal["global", "class", "object"]
 _DATE_PRECISION = Literal["year", "month", "day"]
+_NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
 
 
 class _Strict(BaseModel):
@@ -238,6 +239,12 @@ class PropertySchemaCreatePayload(_Strict):
     target_class_filter: list[UUID] | None = Field(default=None, alias="targetClassFilter")
     date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
     date_qualified: bool | None = Field(default=None, alias="dateQualified")
+    # SCHEMA.md "Number formats": display-only formatting for number schemas
+    # (values stay exact; these shape render only). Lockstep with the TS
+    # reference (§34.79): additive-optional, nullable.
+    number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
+    number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
+    number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
 
 
 class PropertySchemaUpdatePayload(_Strict):
@@ -246,6 +253,11 @@ class PropertySchemaUpdatePayload(_Strict):
     options: list[_OptionEntry] | None = None
     date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
     date_qualified: bool | None = Field(default=None, alias="dateQualified")
+    # Absent keeps the stored value; explicit null clears it (the keep-vs-clear
+    # contract — the applier distinguishes absence from null by key presence).
+    number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
+    number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
+    number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
 
 
 class PropertySchemaDeletePayload(_Strict):

@@ -102,7 +102,10 @@ _log = logging.getLogger(__name__)
 #: tombstones + the property_value rebuild (the UNIQUE(node, schema, idx)
 #: retires — the row id IS the element id), PC4 ``class_property.active``,
 #: and the property_schema date columns PC6 normalizes through.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
+#: v10 (SCHEMA.md "Number formats", §34.79 lockstep): property_schema gained
+#: number_pad / number_decimals / number_rounding (display-only formatting
+#: for number schemas).
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1728,13 +1731,16 @@ class LocalStore:
             self._conn.execute(
                 """INSERT INTO property_schema
                      (id, workspace_id, name, type, multi, scope, options, target_class_filter,
-                      date_precision, date_qualified, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                      date_precision, date_qualified, number_pad, number_decimals, number_rounding,
+                      active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, type = excluded.type, multi = excluded.multi,
                      scope = excluded.scope, options = excluded.options,
                      target_class_filter = excluded.target_class_filter,
                      date_precision = excluded.date_precision, date_qualified = excluded.date_qualified,
+                     number_pad = excluded.number_pad, number_decimals = excluded.number_decimals,
+                     number_rounding = excluded.number_rounding,
                      active = 1, updated_at = excluded.updated_at""",
                 (
                     str(payload["propertySchemaId"]),
@@ -1747,6 +1753,9 @@ class LocalStore:
                     json.dumps(payload["targetClassFilter"]) if payload.get("targetClassFilter") is not None else None,
                     payload.get("datePrecision"),
                     (None if payload.get("dateQualified") is None else (1 if payload.get("dateQualified") else 0)),
+                    payload.get("numberPad"),
+                    payload.get("numberDecimals"),
+                    payload.get("numberRounding"),
                     ts,
                     ts,
                 ),
@@ -1770,6 +1779,17 @@ class LocalStore:
             if payload.get("dateQualified") is not None:
                 sets.append("date_qualified = ?")
                 values.append(1 if payload["dateQualified"] else 0)
+            # Number formats: key-PRESENCE distinguishes absent (keep) from an
+            # explicit null (clear) — the §34.79 keep-vs-clear contract.
+            if "numberPad" in payload:
+                sets.append("number_pad = ?")
+                values.append(payload["numberPad"])
+            if "numberDecimals" in payload:
+                sets.append("number_decimals = ?")
+                values.append(payload["numberDecimals"])
+            if "numberRounding" in payload:
+                sets.append("number_rounding = ?")
+                values.append(payload["numberRounding"])
             if not sets:
                 return False
             sets.append("updated_at = ?")
@@ -3069,6 +3089,11 @@ CREATE TABLE IF NOT EXISTS property_schema (
     -- refs through these).
     date_precision TEXT,
     date_qualified INTEGER,
+    -- SCHEMA.md "Number formats": display-only formatting for number
+    -- schemas (values stay exact; these shape render only).
+    number_pad INTEGER,
+    number_decimals INTEGER,
+    number_rounding TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT
@@ -3416,6 +3441,22 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
         )
 
 
+
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """v10 — number display formatting (SCHEMA.md "Number formats", §34.79
+    lockstep): additive property_schema columns, NULL = unformatted. The
+    column guard keeps the ALTER idempotent for databases that already carry
+    them (a fresh v10 create)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(property_schema)")}
+    if "number_pad" not in cols:
+        conn.executescript(
+            """
+            ALTER TABLE property_schema ADD COLUMN number_pad INTEGER;
+            ALTER TABLE property_schema ADD COLUMN number_decimals INTEGER;
+            ALTER TABLE property_schema ADD COLUMN number_rounding TEXT;
+            """
+        )
+
 #: Canonical auxiliary DDL applied on every upgrade before the versioned
 #: steps (the web schema.ts ``migrate`` parity): all CREATE IF NOT EXISTS, so
 #: a complete database is untouched and a partial one converges to the full
@@ -3435,4 +3476,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (7, _migrate_v7),
     (8, _migrate_v8),
     (9, _migrate_v9),
+    (10, _migrate_v10),
 )
