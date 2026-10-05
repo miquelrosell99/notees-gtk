@@ -624,11 +624,15 @@ class TestPropertyValueElementsFixture:
 
 
 class TestClassPropertyActiveFixture:
-    """Replay of class-property-active.json (PC4, §34.57): the disable wins
-    the row LWW race over the interleaved lower-HLC enable, so the derived
-    default vanishes while the ROW survives; an authored value written while
-    inactive reads unbound; the re-enable restores the flag (the authored
-    value at idx 0 keeps shadowing the default)."""
+    """Replay of class-property-active.json (PC4 §34.57 + the §34.89 display/
+    option-icon batch): the disable wins the row LWW race over the
+    interleaved lower-HLC enable, so the derived default vanishes while the
+    ROW survives; an authored value written while inactive reads unbound;
+    the re-enable restores the flag (the authored value at idx 0 keeps
+    shadowing the default). The schema's options carry the §34.89 icon (plus
+    the §34.43 color) verbatim into the stored options JSON, and the final
+    class.property.set positions the value display at the bullet (row-LWW
+    patch like active)."""
 
     SCHEMA = "0192a000-0000-7000-8000-000000000741"
     CLASS = "0192a000-0000-7000-8000-000000000742"
@@ -669,6 +673,25 @@ class TestClassPropertyActiveFixture:
         assert [(row.value, row.source, row.bound_by, row.sequence, row.element_id) for row in effective] == [
             ("opt-b", "authored", self.CLASS, 1, f"{self.ITEM}:{self.SCHEMA}:0")
         ]
+
+    def test_full_replay_carries_the_option_icon_color_and_bullet_display(self, store: LocalStore) -> None:
+        """§34.89: the option decoration lands in the stored options JSON
+        verbatim (the applier serializes the raw payload), and the trailing
+        display:"bullet" patch rides the row LWW into the effective read."""
+        for env in self._load():
+            assert store.apply_remote(env) is True
+        options = raw(store, "SELECT options FROM property_schema WHERE id = ?", (self.SCHEMA,))
+        assert json.loads(options[0][0]) == [
+            {"id": "opt-a", "label": "A", "icon": "mdiCircle", "color": "yellow"},
+            {"id": "opt-b", "label": "B"},
+        ]
+        assert raw(
+            store,
+            "SELECT display FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [("bullet",)]
+        effective = store.get_effective_properties(self.ITEM)
+        assert [row.display for row in effective] == ["bullet"]
 
 
 class TestPropertyDateQualifierFixture:

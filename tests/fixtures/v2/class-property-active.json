@@ -1,5 +1,5 @@
 {
-  "comment": "PC4 (§34.56): class_property.active — the binding row's soft-unbind flag (row LWW). A select schema binds to the Pipeline class with a default; a newer class.property.set flips active=false (an interleaved enable at a LOWER HLC loses the row LWW race), so the derived default vanishes from the effective read while the binding ROW survives. An authored value written while the binding is inactive still reads (boundBy null — unbound). A final re-enable restores the active flag (the authored value at idx 0 keeps shadowing the default). LOCKSTEP-PENDING: the active payload key ships inert until the GTK m6+/Flutter m16+ releases parse it.",
+  "comment": "PC4 (§34.56) + §34.89 (display + option icon): class_property.active — the binding row's soft-unbind flag (row LWW). A select schema binds to the Pipeline class with a default; a newer class.property.set flips active=false (an interleaved enable at a LOWER HLC loses the row LWW race), so the derived default vanishes from the effective read while the binding ROW survives. An authored value written while the binding is inactive still reads (boundBy null — unbound). A final re-enable restores the active flag (the authored value at idx 0 keeps shadowing the default). The schema's options carry the §34.89 icon (plus the §34.43 color grammar from PG16), parsed verbatim into the stored options JSON. A trailing class.property.set positions the value display at the bullet (§34.89 'display': panel|bullet|inline, row-LWW patch like active). LOCKSTEP-PENDING: the active payload key ships inert until the GTK m6+/Flutter m16+ releases parse it; display rides the same batch.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000731",
@@ -17,7 +17,7 @@
         "name": "stage",
         "type": "select",
         "options": [
-          { "id": "opt-a", "label": "A" },
+          { "id": "opt-a", "label": "A", "icon": "mdiCircle", "color": "yellow" },
           { "id": "opt-b", "label": "B" }
         ]
       }
@@ -140,6 +140,23 @@
         "classId": "0192a000-0000-7000-8000-000000000742",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
         "active": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000739",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200021700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000742"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:21.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000742",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
+        "display": "bullet"
       }
     }
   ]

@@ -44,6 +44,8 @@ __all__ = [
     "WORKSPACE_FEATURES",
     "WORKSPACE_FEATURE_MAP",
     "WorkspaceFeature",
+    "TaskFamilySeedEntry",
+    "TaskSeedOption",
     "family_class_names",
     "feature_for_managed_class",
     "gating_features_for_class",
@@ -276,6 +278,18 @@ _TASK_PROPERTY_UUIDS: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class TaskSeedOption:
+    """One designed select option (TS manifest row): fixed id + label plus
+    the §34.89 decoration (MDI icon name, §34.43 color token) — absent = the
+    key is omitted from the authored options JSON (zod optional parity)."""
+
+    id: str
+    label: str
+    icon: str | None = None
+    color: str | None = None
+
+
+@dataclass(frozen=True)
 class TaskFamilySeedEntry:
     """One schema + binding the enable path authors (TS manifest row)."""
 
@@ -283,14 +297,21 @@ class TaskFamilySeedEntry:
     name: str
     type: Literal["select", "date"]
     sequence: int
-    options: tuple[tuple[str, str], ...] = ()
+    options: tuple[TaskSeedOption, ...] = ()
+    # §34.89: the binding's value-display position — only the Status binding
+    # defaults to "bullet" (the status value rides the block bullet as an
+    # icon button); the rest stay NULL ("panel", the properties section).
+    display: Literal["panel", "bullet", "inline"] | None = None
 
 
 #: The task-family seed-ensure manifest: six schemas + their task-class
 #: bindings, authored idempotently by the store applier when the ``tasks``
 #: feature enables (§34.35 constraint 5 — closes the "task property schemas
 #: never authored in v2" row). Fixed ids end to end (schema + option uuids
-#: above); ``sequence`` is the task-panel display order.
+#: above); ``sequence`` is the task-panel display order. The Status options
+#: carry the designed §34.89 glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
+#: circle-family MDI icons with a distinct color each, so a task's state
+#: reads at a glance from the block bullet.
 TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
     TaskFamilySeedEntry(
         "taskStatus",
@@ -298,13 +319,14 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         "select",
         1,
         (
-            (TASK_STATUS_OPTION_UUIDS["backlog"], "Backlog"),
-            (TASK_STATUS_OPTION_UUIDS["pending"], "Pending"),
-            (TASK_STATUS_OPTION_UUIDS["doing"], "Doing"),
-            (TASK_STATUS_OPTION_UUIDS["reviewing"], "Reviewing"),
-            (TASK_STATUS_OPTION_UUIDS["done"], "Done"),
-            (TASK_STATUS_OPTION_UUIDS["cancelled"], "Cancelled"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["backlog"], "Backlog", "mdiCircleOutline", "gray"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["pending"], "Pending", "mdiCircle", "yellow"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["doing"], "Doing", "mdiCircleHalfFull", "orange"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["reviewing"], "Reviewing", "mdiEyeCircleOutline", "blue"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["done"], "Done", "mdiCheckCircle", "green"),
+            TaskSeedOption(TASK_STATUS_OPTION_UUIDS["cancelled"], "Cancelled", "mdiCloseCircle", "red"),
         ),
+        display="bullet",
     ),
     TaskFamilySeedEntry("taskScheduled", "Scheduled", "date", 2),
     TaskFamilySeedEntry("taskDeadline", "Deadline", "date", 3),
@@ -314,10 +336,10 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         "select",
         4,
         (
-            (TASK_PRIORITY_OPTION_UUIDS["low"], "Low"),
-            (TASK_PRIORITY_OPTION_UUIDS["medium"], "Medium"),
-            (TASK_PRIORITY_OPTION_UUIDS["high"], "High"),
-            (TASK_PRIORITY_OPTION_UUIDS["urgent"], "Urgent"),
+            TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["low"], "Low"),
+            TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["medium"], "Medium"),
+            TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["high"], "High"),
+            TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["urgent"], "Urgent"),
         ),
     ),
     TaskFamilySeedEntry("taskClosedDate", "Closed", "date", 5),

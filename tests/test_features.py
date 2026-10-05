@@ -136,7 +136,7 @@ class TestTaskFamilySeed:
     def test_deterministic_option_ids(self) -> None:
         status = TASK_FAMILY_SEED[0]
         assert status.type == "select"
-        assert [option_id for option_id, _label in status.options] == [
+        assert [option.id for option in status.options] == [
             "00000000-0000-0000-0004-000000000008",
             "00000000-0000-0000-0004-000000000009",
             "00000000-0000-0000-0004-00000000000a",
@@ -145,9 +145,31 @@ class TestTaskFamilySeed:
             "00000000-0000-0000-0004-00000000000d",
         ]
         priority = TASK_FAMILY_SEED[3]
-        assert [option_id for option_id, _label in priority.options] == [
+        assert [option.id for option in priority.options] == [
             "00000000-0000-0000-0004-00000000000e",
             "00000000-0000-0000-0004-00000000000f",
             "00000000-0000-0000-0004-000000000010",
             "00000000-0000-0000-0004-000000000011",
         ]
+
+    def test_status_options_carry_the_designed_icons_and_colors(self) -> None:
+        """§34.89 lockstep (seeds.ts ``TASK_STATUS_OPTIONS``): the six status
+        options carry the circle-family MDI glyphs with a distinct color
+        each; the priority options stay decoration-free."""
+        status = TASK_FAMILY_SEED[0]
+        assert [(option.label, option.icon, option.color) for option in status.options] == [
+            ("Backlog", "mdiCircleOutline", "gray"),
+            ("Pending", "mdiCircle", "yellow"),
+            ("Doing", "mdiCircleHalfFull", "orange"),
+            ("Reviewing", "mdiEyeCircleOutline", "blue"),
+            ("Done", "mdiCheckCircle", "green"),
+            ("Cancelled", "mdiCloseCircle", "red"),
+        ]
+        priority = TASK_FAMILY_SEED[3]
+        assert all(option.icon is None and option.color is None for option in priority.options)
+
+    def test_only_the_status_binding_defaults_to_bullet_display(self) -> None:
+        """§34.89: the Status value rides the block bullet; every other
+        binding keeps display None ('panel', the properties section)."""
+        assert TASK_FAMILY_SEED[0].display == "bullet"
+        assert all(entry.display is None for entry in TASK_FAMILY_SEED[1:])
