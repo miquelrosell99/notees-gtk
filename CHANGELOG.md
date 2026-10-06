@@ -8,6 +8,19 @@ history.
 
 ## 2026-10-06
 
+- **chore(sync): re-vendored the wire fixture corpus from the main repo —
+  lockstep convergence.** `tests/fixtures/wire/` is byte-identical to the main
+  repo's `packages/protocol/fixtures/` again: all 21 fixtures copied verbatim
+  (`cp -a`, bytes untouched), sha256sum pairwise against the main repo reports
+  zero mismatches, zero extras, zero missing. The corpus gains
+  `object-restore.json` (trash-restore probe: create → delete → restore) and
+  the drifted `class-property-defaults.json` is overwritten (gains the trailing
+  number-format `propertySchema.create`; the GTK models and appliers already
+  cover both). The exact-list assertion in
+  `test_every_fixture_file_is_covered` now maps all 21 files — that update is
+  the intended convergence signal, mirroring the TS protocol gate's
+  exact-list assertion. Gate after the re-vendor: `uv run pytest` 680 passed /
+  3 skipped, `uv run ruff check` clean, `uv run mypy src` clean.
 - **chore(docs): record-keeping retirement sweep — plan-era citations and
   legacy version names scrubbed; AGENTS.md + project skills + this changelog
   created.** Same treatment the main repo gave itself on 2026-10-06: ~180

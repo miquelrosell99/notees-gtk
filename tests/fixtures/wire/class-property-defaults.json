@@ -1,5 +1,5 @@
 {
-  "comment": "Class properties \u2014 bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings \u2014 the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
+  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings — the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000111",
@@ -208,6 +208,31 @@
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000302",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-0000000000f9",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011800,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:51.600Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-0000000000f8",
+        "name": "Number format probe",
+        "type": "number",
+        "multi": false,
+        "scope": "global",
+        "numberPad": 4,
+        "numberDecimals": 1,
+        "numberRounding": "floor"
       }
     }
   ]

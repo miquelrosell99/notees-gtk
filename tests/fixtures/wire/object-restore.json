@@ -1,0 +1,102 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-0000000000e1",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200006000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e2"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:06.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-0000000000e2",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Restore probe page"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-0000000000e2",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200006100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e3"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:06.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-0000000000e3",
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Body block"
+          }
+        ],
+        "parentId": "0192a000-0000-7000-8000-0000000000e2"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-0000000000e3",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200006200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e2"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:06.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-0000000000e2",
+        "permanent": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-0000000000e4",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200006300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e2"
+      ],
+      "opType": "object.restore",
+      "timestamp": "2026-09-24T12:00:06.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-0000000000e2"
+      }
+    }
+  ]
+}
