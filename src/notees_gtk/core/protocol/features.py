@@ -1,5 +1,5 @@
-"""Workspace feature map (§34.35, RESHAPED per owner directive 2026-10-04,
-§34.55) — the per-workspace feature toggles ARE the core class families:
+"""Workspace feature map (RESHAPED per owner directive 2026-10-04)
+— the per-workspace feature toggles ARE the core class families:
 tasks=task, events=event, meetings=meeting, sources=source, persons=person.
 
 ``packages/domain/src/features.ts`` parity for the GTK client. The TS domain
@@ -56,7 +56,7 @@ __all__ = [
     "task_property_uuid",
 ]
 
-#: The five core class families (owner directive 2026-10-04, §34.55) — the
+#: The five core class families (owner directive 2026-10-04) — the
 #: strict ``workspace.feature.set`` enum (op-types.ts ``WORKSPACE_FEATURES``).
 WorkspaceFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
 WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = ("tasks", "events", "meetings", "sources", "persons")
@@ -130,7 +130,7 @@ class WorkspaceFeatureSpec:
     powers: str
 
 
-#: The core class families (owner directive 2026-10-04, §34.55).
+#: The core class families (owner directive 2026-10-04).
 WORKSPACE_FEATURE_MAP: dict[WorkspaceFeature, WorkspaceFeatureSpec] = {
     "tasks": WorkspaceFeatureSpec("task", "Tasks", "Tasks hub + checkbox gestures"),
     "events": WorkspaceFeatureSpec("event", "Events", "The calendar day/month surfaces"),
@@ -217,7 +217,7 @@ def feature_for_managed_class(class_id: str) -> WorkspaceFeature | None:
 
 
 def gating_features_for_class(name: str) -> tuple[WorkspaceFeature, ...]:
-    """Chrome gating (§34.55): the features whose OFF state hides a class's
+    """Chrome gating: the features whose OFF state hides a class's
     surfaces — its own feature when it is a family base, plus the feature of
     every family-base ANCESTOR (the static extends walk). Empty for
     always-on/unmanaged classes. A class's chrome shows only when EVERY
@@ -242,7 +242,7 @@ def is_always_on_system_class(name: str) -> bool:
 
 # --------------------------------------------------------------------- task seed
 #
-# §34.35 constraint 5 — deterministic select-option ids for the APPLIER-side
+# Deterministic select-option ids for the APPLIER-side
 # task-family seed-ensure (the ``workspace.feature.set {feature:"tasks",
 # enabled:true}`` path authors the six schemas at apply time, so its option
 # ids must be fixed, not client-random). The select-option namespace
@@ -280,7 +280,7 @@ _TASK_PROPERTY_UUIDS: dict[str, str] = {
 @dataclass(frozen=True)
 class TaskSeedOption:
     """One designed select option (TS manifest row): fixed id + label plus
-    the §34.89 decoration (MDI icon name, §34.43 color token) — absent = the
+    the decoration (MDI icon name, color token) — absent = the
     key is omitted from the authored options JSON (zod optional parity)."""
 
     id: str
@@ -298,7 +298,7 @@ class TaskFamilySeedEntry:
     type: Literal["select", "date"]
     sequence: int
     options: tuple[TaskSeedOption, ...] = ()
-    # §34.90 (owner review, property-LEVEL): the value-display position rides
+    # Owner review (property-LEVEL): the value-display position rides
     # the SCHEMA entry the ensure authors — only the Status schema defaults
     # to "bullet" (the status value rides the block bullet as an icon
     # button); the rest stay NULL ("panel", the properties section).
@@ -307,12 +307,12 @@ class TaskFamilySeedEntry:
 
 #: The task-family seed-ensure manifest: six schemas + their task-class
 #: bindings, authored idempotently by the store applier when the ``tasks``
-#: feature enables (§34.35 constraint 5 — closes the "task property schemas
-#: never authored in v2" row). Fixed ids end to end (schema + option uuids
+#: feature enables (closes the "task property schemas never authored" gap).
+#: Fixed ids end to end (schema + option uuids
 #: above); ``sequence`` is the task-panel display order. The Status options
-#: carry the designed §34.89 glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
+#: carry the designed glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
 #: circle-family MDI icons with a distinct color each, so a task's state
-#: reads at a glance from the block bullet. ``display`` (§34.90) lands on
+#: reads at a glance from the block bullet. ``display`` lands on
 #: the property_schema row, never the binding.
 TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
     TaskFamilySeedEntry(
@@ -345,8 +345,8 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         ),
     ),
     TaskFamilySeedEntry("taskClosedDate", "Closed", "date", 5),
-    # v1 migrated recurrence as a plain select (no engine executes it —
-    # §34.28 #6); authored optionless until the recurrence spec lands.
+    # Migrated recurrence rides as a plain select (no engine executes it);
+    # authored optionless until the recurrence spec lands.
     TaskFamilySeedEntry("taskRecurrence", "Recurrence", "select", 6),
 )
 

@@ -1,4 +1,4 @@
-"""Data-level color grammar (owner 2026-10-03, implementation-plan §34.43).
+"""Data-level color grammar (owner 2026-10-03).
 
 ``colors.ts`` parity: a node/class ``color`` is ONE string field carrying
 either a preset token or a custom hex color. This replaces the first v3

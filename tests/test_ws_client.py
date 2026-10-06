@@ -40,7 +40,7 @@ HELLO = {"type": "hello", "wsProtocolVersion": 2, "restoreEpoch": 3, "latestSeq"
 OPS = {
     "type": "ops",
     "wsProtocolVersion": 2,
-    "envelopes": [json.loads((FIXTURES / "v2" / "envelope-minimal.json").read_text())],
+    "envelopes": [json.loads((FIXTURES / "wire" / "envelope-minimal.json").read_text())],
     "seqs": {"0192a000-0000-7000-8000-0000000000f1": 43},
 }
 
@@ -303,7 +303,7 @@ class TestReconnect:
 
 class TestSend:
     def test_send_batch_writes_a_batch_frame(self) -> None:
-        envelope = json.loads((FIXTURES / "v2" / "envelope-minimal.json").read_text())
+        envelope = json.loads((FIXTURES / "wire" / "envelope-minimal.json").read_text())
         with WsRelayStub(on_connect=lambda conn, _i: conn.send(json.dumps(HELLO))) as stub:
             client = make_client(stub)
             client.start()
@@ -318,7 +318,7 @@ class TestSend:
                 client.stop()
 
     def test_send_batch_without_connection_returns_false(self) -> None:
-        envelope = RelayEnvelope.model_validate(json.loads((FIXTURES / "v2" / "envelope-minimal.json").read_text()))
+        envelope = RelayEnvelope.model_validate(json.loads((FIXTURES / "wire" / "envelope-minimal.json").read_text()))
         with WsRelayStub() as stub:
             client = make_client(stub)
             assert client.send_batch([envelope]) is False

@@ -111,7 +111,7 @@ class TestObjectUpdateRefines:
 
 
 class TestColorGrammar:
-    """§34.43 (owner 2026-10-03): node/class ``color`` is a preset token or a
+    """node/class ``color`` (owner 2026-10-03) is a preset token or a
     custom ``#RRGGBB`` hex (colors.py grammar), or ``null`` to clear. The
     retired ``var(--color-preset-*)`` encoding and freeform strings are
     rejected outright by the strict schemas — no wire compat."""
@@ -318,7 +318,7 @@ class TestBuilders:
 
 
 class TestWorkspaceFeatureSet:
-    """§34.54/§34.55: the workspace.feature.set payload — the strict five-
+    """The workspace.feature.set payload — the strict five-
     family enum (tasks|events|meetings|sources|persons); the retired pre-
     reshape ids are rejected outright, no wire compat."""
 
@@ -360,7 +360,7 @@ class TestWorkspaceFeatureSet:
 
 
 class TestPropertyWirePayloads:
-    """§34.57 property-wire batch: the optional PG5 elementId (UUID, explicit
+    """The property-wire batch: the optional PG5 elementId (UUID, explicit
     null rejected — zod ``optional()`` parity) and the PC4 binding active
     flag (omitted = keep; explicit null rejected)."""
 
@@ -422,7 +422,7 @@ class TestPropertyWirePayloads:
 
 
 class TestPropertySchemaNumberFormats:
-    """§34.79 lockstep: numberPad/numberDecimals/numberRounding ride the
+    """numberPad/numberDecimals/numberRounding ride the
     propertySchema payloads (additive-optional, nullable); the keep-vs-clear
     contract distinguishes absent from explicit null via model_fields_set."""
 
@@ -463,9 +463,9 @@ class TestPropertySchemaNumberFormats:
 
 
 class TestPropertyDisplayPositions:
-    """§34.90 (owner review, correcting the §34.89 binding-level experiment):
-    the render contracts ``display``/``readonly``/``hideWhenEmpty`` are
-    PROPERTY-level — they live on ``propertySchema.create/update``
+    """The render contracts ``display``/``readonly``/``hideWhenEmpty`` are
+    PROPERTY-level (owner review, correcting the binding-level experiment) —
+    they live on ``propertySchema.create/update``
     (nullable-optional; update-side absent keeps, null clears), and the
     strict ``class.property.set`` schema rejects all three like any retired
     key. ``required`` is the deliberate per-class exception that stays on
@@ -485,7 +485,7 @@ class TestPropertyDisplayPositions:
                 payload = schema.model_validate({**base, "display": position})
                 assert payload.display == position
                 assert "display" in payload.model_fields_set
-            # §34.90: nullable — an explicit null parses (the update-side
+            # Nullable — an explicit null parses (the update-side
             # applier clears the stored value).
             nulled = schema.model_validate({**base, "display": None})
             assert nulled.display is None
@@ -505,7 +505,7 @@ class TestPropertyDisplayPositions:
 
     @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty"])
     def test_class_property_set_render_contract_keys_rejected(self, key: str) -> None:
-        """§34.90: the binding payload carries ONLY the genuinely per-class
+        """The binding payload carries ONLY the genuinely per-class
         mechanics — display/readonly/hideWhenEmpty are retired keys there,
         rejected outright by the strict schema (required stays)."""
         with pytest.raises(ValidationError, match=key):
@@ -559,8 +559,8 @@ class TestPropertyDisplayPositions:
             )
 
     def test_option_record_is_non_strict_unknown_keys_strip(self) -> None:
-        """The §34.89 convergence contract: an option carrying keys a
-        pre-batch parser does not know (the §34.43 color grammar, a future
+        """The convergence contract: an option carrying keys a
+        pre-batch parser does not know (the color grammar, a future
         decoration) validates — the parsed model DROPS the unknown keys
         instead of rejecting the envelope."""
         payload = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(

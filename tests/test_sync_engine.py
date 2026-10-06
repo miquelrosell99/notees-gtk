@@ -61,7 +61,7 @@ def make_env(
     actor: str = ACTOR_A,
     affected: tuple[str, ...] = (),
 ) -> RelayEnvelope:
-    """Build a minimal valid v2 envelope for engine tests."""
+    """Build a minimal valid envelope for engine tests."""
     return RelayEnvelope(
         id=new_uuid7(),
         protocolVersion=PROTOCOL_VERSION,

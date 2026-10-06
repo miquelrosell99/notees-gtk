@@ -1,7 +1,7 @@
-"""Tests for the v2 token-stream renderer (``notees_gtk.ui.ast_render``).
+"""Tests for the token-stream renderer (``notees_gtk.ui.ast_render``).
 
 Covers the SCHEMA.md Content grammar mapping to view records — text runs
-with v2 marks, hard_break, mention (displayText → resolved name → raw id),
+with marks, hard_break, mention (displayText → resolved name → raw id),
 class_chip, typed_link (underlined verb mark), external_link, math, quote
 (the only nested token), block tokens as labeled placeholders — plus the
 plaintext excerpt derivation and the editor's plaintext→token mapping.
@@ -235,7 +235,7 @@ def test_tokens_from_plaintext_empty_is_empty_stream() -> None:
 def test_tokens_from_plaintext_round_trips_through_plaintext() -> None:
     text = "first line\nsecond line"
     tokens = tokens_from_plaintext(text)
-    # The excerpt collapses the hard_break to a single space (v2 excerpt rules).
+    # The excerpt collapses the hard_break to a single space (the excerpt rules).
     assert ast_render.ast_to_plaintext(json.dumps(tokens)) == "first line second line"
 
 

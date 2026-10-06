@@ -1,7 +1,7 @@
-"""Acceptance suite: replay the vendored v2 protocol fixtures through the store.
+"""Acceptance suite: replay the vendored protocol fixtures through the store.
 
 This is the GTK client's half of the cross-implementation fixture gate: the
-same envelopes the monorepo's store tests replay (``v2/packages/store/test/
+same envelopes the monorepo's store tests replay (``packages/store/test/
 store.test.ts``) must converge to the same derived state here. The cycle
 fixture is deliberately excluded from the all-fixtures replay — its final two
 envelopes close cycles and MUST throw CycleError on apply (see
@@ -29,7 +29,7 @@ from notees_gtk.data.store import (
     LocalStore,
 )
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "v2"
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 
 #: The cycle fixture must throw — never part of the replay/determinism sets.
 REPLAY_EXCLUDED = {"class-extends-cycle.json"}
@@ -361,7 +361,7 @@ class TestClassUnassignFixture:
 
 
 class TestObjectColorFixture:
-    """Replay of object-color.json (§34.43: token | #hex | null-clear):
+    """Replay of object-color.json (token | #hex | null-clear):
     object.update applies the preset token, then the custom hex, then null
     as a clear; class.create carries a token color onto BOTH the node row
     and the registry row, and class.update null clears both."""
@@ -395,7 +395,7 @@ class TestObjectColorFixture:
 
 
 class TestWorkspaceFeatureSetFixture:
-    """Replay of workspace-feature-set.json (§34.54/§34.55): the racing
+    """Replay of workspace-feature-set.json: the racing
     tasks toggles resolve LWW to the higher-HLC phone disable, events
     disables, sources re-enables — and the LOSING laptop enable still ran the
     task-family ensure on every enable payload, so both delivery orders
@@ -450,7 +450,7 @@ class TestWorkspaceFeatureSetFixture:
 
 
 class TestClassDeleteManagedFixture:
-    """Replay of class-delete-managed.json (F4, §34.54/§34.55): the
+    """Replay of class-delete-managed.json (F4): the
     class.delete on the managed task BASE class routes to the toggle as a
     feature-disable — membership pairs survive untouched — and the racing
     re-enable wins the (workspace, tasks) slot under either delivery
@@ -497,7 +497,7 @@ class TestClassDeleteManagedFixture:
 
 
 class TestCodeBlockFixture:
-    """Replay of code-block.json (§34.54 B3): the code_block token is a
+    """Replay of code-block.json: the code_block token is a
     PROMOTION SURVIVOR — the promote op flattens the surrounding rich tokens
     to one text run but keeps the block (a code page is a real surface); the
     language-less inline block keeps its token verbatim."""
@@ -519,7 +519,7 @@ class TestCodeBlockFixture:
 
 
 class TestHrFixture:
-    """Replay of hr.json (§34.54 B5): hr is deliberately NOT a promotion
+    """Replay of hr.json: hr is deliberately NOT a promotion
     survivor — the promote op stringifies it away; an inline block keeps the
     token verbatim."""
 
@@ -534,7 +534,7 @@ class TestHrFixture:
 
 
 class TestEmbedRefViewFixture:
-    """Replay of embed-ref-view.json (§34.54 B8): the view field applies
+    """Replay of embed-ref-view.json: the view field applies
     verbatim — absent = the full transclusion default, wide_card rides the
     token; the small_card authored at create time was overwritten by the
     later content update (row LWW)."""
@@ -552,7 +552,7 @@ class TestEmbedRefViewFixture:
 
 
 class TestPropertyValueElementsFixture:
-    """Replay of property-value-elements.json (PG5, §34.57): same-idx
+    """Replay of property-value-elements.json (PG5): same-idx
     concurrent element adds coexist (ordered by element id), the element
     remove tombstones phone's element, the newer re-add revives it
     (add-wins), and the legacy positional add lands at its deterministic
@@ -624,16 +624,16 @@ class TestPropertyValueElementsFixture:
 
 
 class TestClassPropertyActiveFixture:
-    """Replay of class-property-active.json (PC4 §34.57 + the §34.89 option
-    icon, display position corrected to PROPERTY-level §34.90): the disable
+    """Replay of class-property-active.json (PC4 + the option
+    icon, display position corrected to PROPERTY-level): the disable
     wins the row LWW race over the interleaved lower-HLC enable, so the
     derived default vanishes while the ROW survives; an authored value
     written while inactive reads unbound; the re-enable restores the flag
     (the authored value at idx 0 keeps shadowing the default). The schema's
-    options carry the §34.89 icon (plus the §34.43 color) verbatim into the
+    options carry the icon (plus the color) verbatim into the
     stored options JSON, and a trailing propertySchema.update positions the
     value display at the bullet — a SCHEMA-side render contract since the
-    §34.90 owner review, read off the schema, never the binding."""
+    owner review, read off the schema, never the binding."""
 
     SCHEMA = "0192a000-0000-7000-8000-000000000741"
     CLASS = "0192a000-0000-7000-8000-000000000742"
@@ -676,7 +676,7 @@ class TestClassPropertyActiveFixture:
         ]
 
     def test_full_replay_carries_the_option_icon_color_and_bullet_display(self, store: LocalStore) -> None:
-        """§34.89/§34.90: the option decoration lands in the stored options
+        """The option decoration lands in the stored options
         JSON verbatim (the applier serializes the raw payload), and the
         trailing propertySchema.update{display:"bullet"} rides onto the
         SCHEMA row — the effective read sources the position from the schema,
@@ -694,7 +694,7 @@ class TestClassPropertyActiveFixture:
 
 
 class TestPropertyDateQualifierFixture:
-    """Replay of property-date-qualifier.json (PC6, §34.57): chain-created
+    """Replay of property-date-qualifier.json (PC6): chain-created
     refs apply verbatim at idx 0; the legacy ISO-string startDate at idx 1
     normalizes ON WRITE to the deterministic day-node ref."""
 

@@ -1,4 +1,4 @@
-"""Live end-to-end test: the real Python client stack against the REAL v2 server.
+"""Live end-to-end test: the real Python client stack against the REAL server.
 
 This is the first cross-implementation contact over the wire: the GTK
 client's real ``NoteesClient`` + ``SyncEngine`` + ``LocalStore`` sync against
@@ -62,7 +62,7 @@ SERVER_JS = V2_ROOT / "apps" / "server" / "dist" / "server.js"
 
 pytestmark = [
     pytest.mark.skipif(
-        not SERVER_JS.exists(), reason="monorepo v2 server not built (run: pnpm --filter @notees/server build)"
+        not SERVER_JS.exists(), reason="monorepo server not built (run: pnpm --filter @notees/server build)"
     ),
     pytest.mark.skipif(shutil.which("node") is None, reason="node runtime not available"),
 ]
@@ -143,7 +143,7 @@ def _wait_until_healthy(proc: subprocess.Popen[str], url: str, timeout: float = 
 
 @pytest.fixture
 def server_url(tmp_path: Path) -> Iterator[str]:
-    """Spawn the real v2 server on an ephemeral port; kill it in teardown."""
+    """Spawn the real server on an ephemeral port; kill it in teardown."""
     port = _free_port()
     env = {
         **os.environ,
@@ -461,7 +461,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
             "schemaId": PROPERTY_SCHEMA_PRIORITY,
             "schemaName": "Priority",
             "schemaType": "select",
-            # PG5 (§34.57): each property entry carries its element id — the
+            # PG5: each property entry carries its element id — the
             # deterministic positional id for a legacy positional write.
             "elementId": f"{PAGE_PROPS}:{PROPERTY_SCHEMA_PRIORITY}:0",
             "idx": 0,
@@ -509,7 +509,7 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     authored_after = device_b.store.get_effective_properties(PAGE_PROPS)
     assert [(row.source, row.bound_by) for row in authored_after] == [("authored", CLASS_KIND)]
 
-    # Server-side authored truth agrees. NOTE THE GAP: the M1 object API
+    # Server-side authored truth agrees. NOTE THE GAP: the object API
     # surfaces AUTHORED property_value rows only (fullObject joins
     # property_value); the effective read model — derived defaults included —
     # lives in the store's getEffectiveProperties, which has no REST exposure

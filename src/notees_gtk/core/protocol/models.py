@@ -1,9 +1,9 @@
 """Pydantic wire models for the Notees relay sync protocol v3.
 
-Mirrors ``v2/packages/protocol/src/envelope.ts`` and the v2 ``WIRE.md``
+Mirrors ``packages/protocol/src/envelope.ts`` and ``WIRE.md``
 (camelCase everywhere on the wire, ``protocolVersion: 3`` mandatory — only 3
 is accepted, Revision 11, 2026-10-02 — first-class ``deviceId``, optional
-``client`` provenance claim, and the M3 E2EE payload slot ``{"$e": {iv, ct}}``).
+``client`` provenance claim, and the E2EE payload slot ``{"$e": {iv, ct}}``).
 The envelope schema accepts only camelCase keys (``populate_by_name`` is
 deliberately off) and forbids extra keys — the fail-loud parity of the zod
 ``.strict()`` schemas. ``seq`` never appears inside an envelope; it rides on
@@ -50,11 +50,11 @@ __all__ = [
 #: version or any other value fails loud.
 PROTOCOL_VERSION = 3
 
-#: Version of the WebSocket message framing (``WIRE.md`` §2). Versioned
+#: Version of the WebSocket message framing (``WIRE.md``). Versioned
 #: independently of PROTOCOL_VERSION; a newer framing version fails loud.
 WS_PROTOCOL_VERSION = 2
 
-#: Maximum serialized payload size per envelope (WIRE.md §3).
+#: Maximum serialized payload size per envelope (WIRE.md).
 MAX_ENVELOPE_SIZE_BYTES = 1_000_000
 
 #: Provenance claim shape from ``envelope.ts`` clientClaimSchema.
@@ -81,7 +81,7 @@ class RelayEnvelope(BaseModel):
     Envelope fields are unencrypted so the server can route operations, enforce
     permissions, and serve catch-up queries without accessing payload contents.
     The wire format is camelCase-only and rejects unknown keys, matching the
-    zod ``envelopeSchema`` (``.strict()``) in ``v2/packages/protocol``.
+    zod ``envelopeSchema`` (``.strict()``) in ``packages/protocol``.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, extra="forbid")
@@ -101,7 +101,7 @@ class RelayEnvelope(BaseModel):
     @field_validator("protocol_version")
     @classmethod
     def _validate_protocol_version(cls, value: int) -> int:
-        """Fail loudly on missing or non-v3 envelope versions (WIRE.md §3)."""
+        """Fail loudly on missing or non-v3 envelope versions (WIRE.md)."""
         if value > PROTOCOL_VERSION:
             raise ValueError(
                 f"Unsupported protocol_version {value}: this client speaks v{PROTOCOL_VERSION} "
@@ -130,7 +130,7 @@ class RelayEnvelope(BaseModel):
     @field_validator("payload")
     @classmethod
     def _validate_payload_shape(cls, value: dict[str, Any]) -> dict[str, Any]:
-        """Validate the M3 E2EE slot shape only — contents stay opaque.
+        """Validate the E2EE slot shape only — contents stay opaque.
 
         A payload carrying the ``$e`` key must be exactly ``{"$e": {iv, ct}}``
         with string ``iv``/``ct``; anything else is a plaintext object, free-form.
@@ -147,7 +147,7 @@ class RelayEnvelope(BaseModel):
         return value
 
     def known_op_type(self) -> bool:
-        """Return whether ``op_type`` is in the v2 producer registry.
+        """Return whether ``op_type`` is in the producer registry.
 
         The envelope accepts any non-empty op type (``envelope.ts`` validates
         only ``min(1)``); unknown types are rejected at relay ingest with a 422
@@ -157,7 +157,7 @@ class RelayEnvelope(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    """A batch of operation envelopes submitted by a client (WIRE.md §1)."""
+    """A batch of operation envelopes submitted by a client (WIRE.md)."""
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
@@ -183,7 +183,7 @@ class CatchUpRequest(BaseModel):
     ``after_seq`` is the server-assigned sequence number of the last envelope
     the client has applied (0 for a cold start); it is an exclusive lower
     bound. The server seq is the sole ordering authority. Wire fields are
-    camelCase (WIRE.md §1).
+    camelCase (WIRE.md).
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -196,8 +196,8 @@ class CatchUpRequest(BaseModel):
 class CatchUpPaginatedResponse(BaseModel):
     """A paginated page of operation envelopes for catch-up sync.
 
-    Own fields are camelCase on the wire (WIRE.md §1); the nested envelopes
-    are v2 envelopes. ``restore_epoch`` change ⇒ wipe local state and resync.
+    Own fields are camelCase on the wire (WIRE.md); the nested envelopes
+    are relay envelopes. ``restore_epoch`` change ⇒ wipe local state and resync.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -212,7 +212,7 @@ class CatchUpPaginatedResponse(BaseModel):
 
 
 def _validate_framing_version(value: int) -> int:
-    """Fail loudly on newer WS framing versions (WIRE.md §2)."""
+    """Fail loudly on newer WS framing versions (WIRE.md)."""
     if value > WS_PROTOCOL_VERSION:
         raise ValueError(f"Unsupported wsProtocolVersion {value}: this client speaks WS framing v{WS_PROTOCOL_VERSION}")
     return value
@@ -240,7 +240,7 @@ class WsHelloMessage(BaseModel):
 
 
 class WsOpsMessage(BaseModel):
-    """Batch of envelopes broadcast to workspace subscribers (WIRE.md §2).
+    """Batch of envelopes broadcast to workspace subscribers (WIRE.md).
 
     ``seqs`` maps envelope id → server-assigned seq so receivers can advance
     their seq cursor from live frames alone. It lives on the frame, not inside
@@ -264,7 +264,7 @@ class WsBatchMessage(BaseModel):
     """Client → server frame submitting a batch over the socket.
 
     Same path and limits as HTTP ``POST /batch``; the server answers with an
-    ``ack`` frame. Carries no framing version (WIRE.md §2).
+    ``ack`` frame. Carries no framing version (WIRE.md).
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -318,7 +318,7 @@ def new_envelope(
         op_type: Operation type; producers should stick to ``KNOWN_OP_TYPES``
             (unknown types are rejected at ingest with 422).
         payload: Operation payload; rejected when it exceeds the serialized
-            size limit (WIRE.md §3) or deviates from the op's strict payload
+            size limit (WIRE.md) or deviates from the op's strict payload
             schema (the relay's 422 ``validation_failed`` gate, client-side).
             May be the E2EE slot ``{"$e": ...}`` (shape-checked only).
         clock: Local HLC clock; advanced with ``now_ms()`` to stamp causality.

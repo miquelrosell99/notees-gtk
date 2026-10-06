@@ -1,7 +1,7 @@
 """Tests for the deterministic date-node ids (packages/domain/src/dates.ts
-parity — the v1 scheme, layout fixed, never regenerate).
+parity — the scheme is layout-fixed, never regenerate).
 
-PC6 (§34.57) consumes :func:`day_node_id`: a well-formed ``YYYY-MM-DD``
+PC6 consumes :func:`day_node_id`: a well-formed ``YYYY-MM-DD``
 qualifier string normalizes to the deterministic day-node ref, so every
 client derives the same id without a graph write.
 """
@@ -66,5 +66,5 @@ class TestParseDateNodeId:
     def test_non_date_ids_return_none(self) -> None:
         assert parse_date_node_id("0192a000-0000-7000-8000-000000000001") is None
         assert parse_date_node_id("not-a-uuid") is None
-        # Outside the v1 1900..2200 window.
+        # Outside the 1900..2200 window.
         assert parse_date_node_id("00000000-0000-0000-00bb-089900000000") is None

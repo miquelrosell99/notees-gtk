@@ -1,4 +1,4 @@
-"""Pure token-stream → view-record renderer for the GTK UI (v2 content grammar).
+"""Pure token-stream → view-record renderer for the GTK UI (content grammar).
 
 Headless-testable by design: no GTK imports here (the UI smoke test in
 ``tests/test_ast_render.py`` guards the ``gi`` import separately).
@@ -12,12 +12,12 @@ presentation. Resolution rules implemented here:
   the captured ``text`` is non-authoritative (Fork 4);
 - ``class_chip``: render-only (Fork 3) — ``displayText`` ?? resolved class
   name ?? raw class id; inserting/deleting a chip never mutates ``class_ids``;
-- ``typed_link``: a mark on the prose word (01-knowledge-model.md §9) — the
-  marked word renders underlined, the verb is carried for tooltips/metadata;
+- ``typed_link``: a mark on the prose word —
+  the marked word renders underlined, the verb is carried for tooltips/metadata;
 - block-scale tokens (``asset_ref``/``embed_ref``/``query``/``whiteboard``)
   render as labeled placeholders until the GTK client grows real views.
 
-Plaintext (editor seed, sidebar names) is the v2 excerpt derivation
+Plaintext (editor seed, sidebar names) is the excerpt derivation
 (:func:`notees_gtk.core.protocol.content.plaintext_excerpt`) — derived, never
 stored as truth.
 """
@@ -52,7 +52,7 @@ __all__ = [
 #: "unresolvable" and triggers the raw-id fallback.
 type NameResolver = Callable[[str], str | None]
 
-#: v2 mark names (content-mark.ts MARKS): attributes on text runs, not nodes.
+#: Mark names (content-mark.ts MARKS): attributes on text runs, not nodes.
 _VALID_MARKS: frozenset[str] = frozenset({"bold", "italic", "strike", "highlight", "code"})
 
 #: Block-scale tokens rendered as labeled placeholders (no GTK views yet).
@@ -254,7 +254,7 @@ def ast_to_plaintext(
 ) -> str:
     """Flatten content to plain text (editor seed; sidebar names).
 
-    This is the v2 excerpt derivation (``plainTextExcerpt``): text and
+    This is the excerpt derivation (``plainTextExcerpt``): text and
     typed-link runs contribute their text, mentions their ``displayText``
     (captured text when absent), math its expression, quotes recurse, and
     ``hard_break`` becomes a space; whitespace collapses to single spaces.

@@ -1,4 +1,4 @@
-"""Content grammar helpers for the v2 flat token stream (SCHEMA.md normative).
+"""Content grammar helpers for the flat token stream (SCHEMA.md normative).
 
 A block node's content is ONE flat, ordered token array. This module holds the
 shared, UI-free operations both the store (plaintext derivation on apply) and
@@ -6,17 +6,17 @@ the renderer (display) consume:
 
 - :func:`parse_content_ast` — normalize the stored ``content`` column
   (serialized JSON array, or legacy plaintext) to a token list;
-- :func:`plaintext_excerpt` — port of ``plainTextExcerpt`` (v2
-  ``packages/domain/src/node.ts``): the FTS/sidebar text derived from tokens
+- :func:`plaintext_excerpt` — port of ``plainTextExcerpt``
+  (``packages/domain/src/node.ts``): the FTS/sidebar text derived from tokens
   (text + typed_link text, mention ``displayText ?? text``, math expressions,
   recursive quote children, ``hard_break`` as a space);
 - :func:`stringify_content_ast` — port of ``stringifyContentAst``: flatten any
   token stream to text-only content (pages and classes carry text-only
   content — SCHEMA.md "title-is-content"; structural ``whiteboard``/``query``
-  widgets survive, and ``code_block`` (§34.54) is a promotion survivor too —
+  widgets survive, and ``code_block`` is a promotion survivor too —
   a code page is a real surface);
 - :func:`validate_content_ast` / :func:`validate_content_token` — the strict
-  v3 content-grammar validators (``contentTokenSchema`` parity, §34.54):
+  v3 content-grammar validators (``contentTokenSchema`` parity):
   every token variant incl. ``code_block {language?, text}`` (the language
   hint is a strict lowercase tag) and ``hr {}``, plus the ``embed_ref.view``
   enum ("embed" | "small_card" | "wide_card", absent = full);
@@ -50,10 +50,10 @@ __all__ = [
 #: Display-name excerpt cap (``DISPLAY_NAME_MAX`` in domain/node.ts).
 DISPLAY_NAME_MAX = 80
 
-#: v2 mark names (content-mark.ts MARKS): attributes on text runs, not nodes.
+#: Mark names (content-mark.ts MARKS): attributes on text runs, not nodes.
 MARKS: tuple[str, ...] = ("bold", "italic", "strike", "highlight", "code")
 
-#: The embed_ref view enum (§34.54 B8): absent (or "embed") = the full live
+#: The embed_ref view enum: absent (or "embed") = the full live
 #: transclusion; the card views are bounded identity cards that never
 #: transclude.
 EMBED_VIEW_MODES: tuple[str, ...] = ("embed", "small_card", "wide_card")
@@ -69,7 +69,7 @@ _UUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 def parse_content_ast(raw: str | Sequence[Any] | None) -> list[Any]:
     """Normalize stored content to a raw token list.
 
-    The v2 ``content`` column holds a serialized JSON array of typed tokens;
+    The ``content`` column holds a serialized JSON array of typed tokens;
     legacy plaintext (anything that is not a JSON array) is returned as a
     single text token so old mirrors still render instead of vanishing.
     """
@@ -92,7 +92,7 @@ def parse_content_ast(raw: str | Sequence[Any] | None) -> list[Any]:
 def plaintext_excerpt(tokens: Sequence[Any]) -> str:
     """Derive the search/sidebar plaintext of a token array.
 
-    Port of v2 ``plainTextExcerpt``: text and typed-link runs contribute their
+    Port of ``plainTextExcerpt``: text and typed-link runs contribute their
     text, mentions their ``displayText`` (captured ``text`` when absent), math
     its expression, quotes recurse into their children, ``hard_break`` becomes
     a space; every other token is silent. Whitespace collapses to single
@@ -125,8 +125,8 @@ def plaintext_excerpt(tokens: Sequence[Any]) -> str:
 def stringify_content_ast(tokens: Sequence[Any] | None) -> list[Any]:
     """Flatten any token stream to text-only content.
 
-    Port of v2 ``stringifyContentAst`` (packages/domain/src/node.ts,
-    §34.54): pages and classes carry text-only content (SCHEMA.md
+    Port of ``stringifyContentAst`` (packages/domain/src/node.ts):
+    pages and classes carry text-only content (SCHEMA.md
     "title-is-content"). Inline rich tokens (mentions, chips, links, marks)
     fold into their plain text; block-scale structural widgets
     (``whiteboard``, ``query``) survive as tokens — they are displays, not
@@ -151,7 +151,7 @@ def stringify_content_ast(tokens: Sequence[Any] | None) -> list[Any]:
 
 # ------------------------------------------------------- strict token grammar
 #
-# ``contentTokenSchema`` parity (content-mark.ts, §34.54): the strict v3
+# ``contentTokenSchema`` parity (content-mark.ts): the strict v3
 # validators every client shares. The op payload schemas carry contentAst as
 # ``z.array(z.unknown())`` (the query token's loose-optional forward-compat
 # union forbids rejecting unknown payloads at the wire gate), so these
@@ -318,7 +318,7 @@ def validate_content_ast(tokens: Any) -> None:
 def format_date_node_name(name: str, class_ids: Sequence[str] | None = None) -> str | None:
     """Format a raw date-node label; ``None`` when not the YYYYMMDD shape.
 
-    Port of v2 ``formatDateNodeName``: 20290000 → 2029, 20290600 → 2029/06,
+    Port of ``formatDateNodeName``: 20290000 → 2029, 20290600 → 2029/06,
     20290627 → 2029/06/27 (zero-padded segments dropped). The class check is
     deliberately NOT required — migrated date pages may lack the
     day/month/year classes, and an 8-digit label is unambiguous.
@@ -338,7 +338,7 @@ def format_date_node_name(name: str, class_ids: Sequence[str] | None = None) -> 
 def derive_display_name(tokens: Sequence[Any] | None, class_ids: Sequence[str] | None = None) -> str:
     """Derive the display name from a node's content (title-is-content).
 
-    Port of v2 ``deriveDisplayName`` (packages/domain/src/node.ts,
+    Port of ``deriveDisplayName`` (packages/domain/src/node.ts,
     2026-10-01): a node's title IS its own text content — there is no name
     field for any node (pages, blocks AND classes); renames never propagate.
     Callers fall back to a human "Untitled" label when this returns "".
@@ -353,10 +353,10 @@ def derive_display_name(tokens: Sequence[Any] | None, class_ids: Sequence[str] |
 
 
 def tokens_from_plaintext(text: str) -> list[dict[str, Any]]:
-    """Map editor plaintext to the flat v2 token array (the honest MVP form).
+    """Map editor plaintext to the flat token array (the honest MVP form).
 
     Each source line becomes one ``text`` run; ``hard_break`` separates lines
-    (shift+enter is the only break in the v2 grammar — Enter creates a new
+    (shift+enter is the only break in the grammar — Enter creates a new
     node, which the plain-text editor cannot express). Empty input is an
     empty stream.
     """

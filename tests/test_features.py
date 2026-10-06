@@ -1,5 +1,5 @@
 """Tests for the workspace-feature map (packages/domain/src/features.ts
-parity, §34.55 RESHAPED): the five core class families, the extends-cascade
+parity, RESHAPED per owner directive): the five core class families, the extends-cascade
 family sets, the gating walks, and F4 base-only routing.
 
 The GTK client has no seed manifest of its own (seeding is server-side);
@@ -153,7 +153,8 @@ class TestTaskFamilySeed:
         ]
 
     def test_status_options_carry_the_designed_icons_and_colors(self) -> None:
-        """§34.89 lockstep (seeds.ts ``TASK_STATUS_OPTIONS``): the six status
+        """The status options (seeds.ts ``TASK_STATUS_OPTIONS`` lockstep):
+        the six status
         options carry the circle-family MDI glyphs with a distinct color
         each; the priority options stay decoration-free."""
         status = TASK_FAMILY_SEED[0]
@@ -169,7 +170,7 @@ class TestTaskFamilySeed:
         assert all(option.icon is None and option.color is None for option in priority.options)
 
     def test_only_the_status_entry_defaults_to_bullet_display(self) -> None:
-        """§34.90: the Status schema defaults to "bullet" (the manifest's
+        """The Status schema defaults to "bullet" (the manifest's
         display rides the SCHEMA row the ensure authors); every other entry
         keeps display None ('panel', the properties section)."""
         assert TASK_FAMILY_SEED[0].display == "bullet"

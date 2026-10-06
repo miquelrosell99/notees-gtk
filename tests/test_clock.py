@@ -1,6 +1,6 @@
 """Unit tests for the Hybrid Logical Clock implementation.
 
-Semantics verified against ``v2/packages/protocol/src/hlc.ts`` (the v2 norm):
+Semantics verified against ``packages/protocol/src/hlc.ts`` (the norm):
 ``advance``/``now`` reset the logical counter when physical time moves ahead
 and increment it otherwise; ``update`` merges a received HLC as
 ``max(physicalTime, last, received)`` with the logical counter resolved per

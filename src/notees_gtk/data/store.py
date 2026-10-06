@@ -3,7 +3,7 @@
 Owns the offline-capable client cache: the relay outbox (pending/quarantined
 envelopes), the op-id dedupe log, the sync watermark (seq cursor +
 ``restore_epoch``), and the mirrored node table with the applier semantics
-ported from v2 ``packages/store/src/appliers.ts``: row-level last-write-wins by
+ported from ``packages/store/src/appliers.ts``: row-level last-write-wins by
 ``(hlc_physical, hlc_logical, actor_id)``, OR-Set class/tag/collection
 membership, user-defined class order (``class.reorder``, LWW-by-arrival),
 title-is-content (a node's title IS its content — no ``name`` writes; nodes
@@ -14,17 +14,17 @@ applier-maintained transitive closure (cycles fail loud), fractional
 child-order positions, property values with tombstones, soft/permanent
 deletes with trash retention, per-workspace feature toggles
 (``workspace.feature.set`` — LWW rows, F4 ``class.delete`` routing, the
-``tasks`` enable family seed-ensure, §34.54/§34.55), PG5 per-element value
+``tasks`` enable family seed-ensure), PG5 per-element value
 identity (the row id IS the element id; OR-Set add-wins removes with element
 tombstones; the visible-set derivation every read consults), PC4 binding
 ``active`` (soft-unbind), PC6 date-node-backed qualifiers (normalize-on-write,
-read-lenient), and the §34.45 unset-carrier semantics (unsetting a node-backed
+read-lenient), and the unset-carrier semantics (unsetting a node-backed
 text value trashes the orphaned carrier block), PG4 extends-aware binding
 resolution (the diamond rule: own binding → shortest extends-path → earliest
 class-assignment HLC, ties by class id; ``bound_by`` names the supplying
 ancestor), and PG6 apply-time value validation (one-shape-per-type + scalar
 typing + cardinality/precision/filter/existence fail-loud at the property.set
-write path, §34.51).
+write path).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -33,9 +33,9 @@ serializes through a re-entrant lock (see :func:`_synchronized`); private
 helpers are only ever called from locked public methods.
 
 Schema notes: the client cache keeps its own table shapes where they match the
-v2 derived schema — the ``nodes`` mirror is keyed ``(workspace_id, id)`` (the
-v2 server keys ``id`` alone; node ids are uuid7, so the difference is
-theoretical) and carries the same v2 column names. Placement invariants the
+derived schema — the ``nodes`` mirror is keyed ``(workspace_id, id)`` (the
+server keys ``id`` alone; node ids are uuid7, so the difference is
+theoretical) and carries the same column names. Placement invariants the
 server enforces as CHECK constraints (Revision 11: the single
 ``is_class = 0 OR parent_id IS NULL`` check) are enforced in the applier here
 (:class:`~notees_gtk.data.errors.MoveGuardError`), so a corrupt local row
@@ -97,21 +97,21 @@ _log = logging.getLogger(__name__)
 #: class order list (web schema v6→v7 parity); v7 is the Revision-11
 #: render-state model (web schema v7→v8 parity): the node_type enumeration is
 #: replaced by ``is_class`` + ``present_as_main``; v8 adds the per-workspace
-#: feature toggle table (web schema v9→v10 parity, §34.54); v9 is the
-#: §34.57 property-wire batch (web schema v10→v11 parity): PG5 element
+#: feature toggle table (web schema v9→v10 parity); v9 is the
+#: property-wire batch (web schema v10→v11 parity): PG5 element
 #: tombstones + the property_value rebuild (the UNIQUE(node, schema, idx)
 #: retires — the row id IS the element id), PC4 ``class_property.active``,
 #: and the property_schema date columns PC6 normalizes through.
-#: v10 (SCHEMA.md "Number formats", §34.79 lockstep): property_schema gained
+#: v10 (SCHEMA.md "Number formats"): property_schema gained
 #: number_pad / number_decimals / number_rounding (display-only formatting
 #: for number schemas).
-#: v11 (§34.89 lockstep): class_property gained ``display`` — the binding's
+#: v11: class_property gained ``display`` — the binding's
 #: value-display position (NULL/'panel' = the properties section only).
-#: v12 (§34.90 owner review, same day): the render contracts are
+#: v12 (owner review, same day): the render contracts are
 #: PROPERTY-level — property_schema gains display / readonly /
 #: hide_when_empty (NULL = panel / unset), and class_property is REBUILT
 #: without the retired binding columns (readonly/hide_when_empty pre-v3.1.0,
-#: display the §34.89 v11 experiment); ``required`` survives on the row —
+#: display the v11 experiment); ``required`` survives on the row —
 #: the owner's per-class exception.
 SCHEMA_VERSION = 12
 
@@ -125,7 +125,7 @@ _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _SNAPSHOT_TABLES = frozenset({"node"})
 
 #: Snapshot node columns copied verbatim (client cache column → server column).
-#: v2 derived schema: same names, same polarity (``is_active`` is active on
+#: Server derived schema: same names, same polarity (``is_active`` is active on
 #: both sides now); ``updated_at`` falls back to an empty string literal and
 #: the LWW columns seed the row baseline when the snapshot carries them.
 #: ``tag_ids``/``class_order`` ride along when the snapshot was taken from a
@@ -157,7 +157,7 @@ def _quote_ident(name: str) -> str:
 
 
 def _snapshot_select_exprs(remote_columns: set[str]) -> dict[str, str]:
-    """Map client cache columns to snapshot SELECT expressions (v2 schema)."""
+    """Map client cache columns to snapshot SELECT expressions."""
     exprs: dict[str, str] = {}
     for target, source in _SNAPSHOT_VERBATIM_COLUMNS.items():
         if source in remote_columns:
@@ -188,7 +188,7 @@ class NodeRow:
             zoomed; false = inline body + block chrome. Unread for parentless
             nodes (document chrome by the second cascade branch) and classes
             (ClassView by the first branch).
-        name: Legacy display-name cache, never written by the v2 appliers
+        name: Legacy display-name cache, never written by the appliers
             (title-is-content: a node's title IS its content). Remaining
             readers are transition-only; snapshot restores may populate it.
         class_ids: OR-Set class membership projected from ``class_member_set``
@@ -230,7 +230,7 @@ def _now_iso() -> str:
 class EffectivePropertySchema:
     """Property schema projection inside an :class:`EffectiveProperty` row.
 
-    Carries the §34.90 PROPERTY-level render contracts (``display``
+    Carries the PROPERTY-level render contracts (``display``
     sanitized — ``"bullet"``/``"inline"`` or ``None`` for NULL/"panel";
     ``readonly``/``hide_when_empty`` tri-state flags) — the same for every
     carrier, class-bound or not."""
@@ -247,7 +247,7 @@ class EffectivePropertySchema:
 @dataclass(frozen=True)
 class EffectiveProperty:
     """One effective ``(schema, idx)`` row for a node — the property panel's
-    read surface (SCHEMA.md "Class properties", 2026-09-27; PG5/PC4 §34.57).
+    read surface (SCHEMA.md "Class properties", 2026-09-27; PG5/PC4).
 
     ``source`` tags authored vs derived; ``bound_by`` is the class supplying
     the binding metadata — the winning class for a default, the
@@ -256,7 +256,7 @@ class EffectiveProperty:
     visible, marked unbound). ``element_id`` is the PG5 element identity —
     the property_value row id for an authored row (the address multi-value
     removes target), ``default:{schema}:0`` for a derived default.
-    §34.90 (owner review 2026-10-05): the render contracts ``readonly``/
+    (owner review 2026-10-05): the render contracts ``readonly``/
     ``hide_when_empty``/``display`` are PROPERTY-level — SCHEMA-sourced and
     identical on authored and derived rows, unbound authored values
     included; ``required`` is the per-CLASS exception — it stays
@@ -288,7 +288,7 @@ def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
     ``color`` keeps wire PRESENCE: the key lands in the result only when the
     payload carried it, so an explicit ``null`` (clear) survives the mapping
-    instead of collapsing into "absent" (§34.43).
+    instead of collapsing into "absent".
     """
     fields: dict[str, Any] = {"content_ast": payload.get("contentAst"), "icon": payload.get("icon")}
     if "color" in payload:
@@ -298,7 +298,7 @@ def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 _UUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
-#: PC6 (§34.57): the reserved qualifier keys that canonicalize as date-node
+#: PC6: the reserved qualifier keys that canonicalize as date-node
 #: refs on dateQualified schemas (SCHEMA.md "Dates").
 _QUALIFIER_KEYS = ("startDate", "endDate")
 
@@ -316,7 +316,7 @@ def _node_ref_of_value(value: Any) -> str | None:
 
 
 def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) -> Any:
-    """PC6 normalize-on-write (§34.57, SCHEMA.md "Dates"): for a dateQualified
+    """PC6 normalize-on-write (SCHEMA.md "Dates"): for a dateQualified
     schema, the reserved qualifier keys canonicalize to date-node refs
     ``{"nodeId": <day chain node>}``. A well-formed ``YYYY-MM-DD`` string is
     the legacy encoding (the pre-PC6 panel wrote input[type=date] values) and
@@ -346,17 +346,17 @@ def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) 
     return normalized if changed else metadata
 
 
-# --- PG6 apply-time value validation (§34.51) --------------------------------
+# --- PG6 apply-time value validation ------------------------------------------
 #
 # Port of the main repo's packages/store/src/property-values.ts. Write shapes
 # by schema type: text = a scalar string OR a carrier reference {"nodeId": …}
 # (a legacy bare uuid normalizes to the reference shape); date/object = a node
 # reference; date_range = {"start": ref|null, "end": ref|null} — either side
 # open. Scalar typing: number = a finite number — a NUMERIC STRING is the
-# v1-migrated legacy encoding (live data carries epoch-millis strings) and
+# migrated legacy encoding (live data carries epoch-millis strings) and
 # normalizes to a number; boolean/url/email/select = their scalar;
 # multi_select = an array of strings. image stays UNCHECKED by design (PG14
-# owns the shape — live data carries v1 asset payloads, so any check would
+# owns the shape — live data carries migrated asset payloads, so any check would
 # break replay). `null` means "no value" and bypasses shape validation.
 
 #: SCHEMA.md "Dates": finest granularity a date value may claim.
@@ -442,7 +442,7 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
     if type_ == "number":
         if not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value):
             return value
-        # v1-migrated epoch-millis strings (live-data verified): normalize.
+        # migrated epoch-millis strings (live-data verified): normalize.
         if isinstance(value, str) and value.strip() != "":
             with contextlib.suppress(ValueError):
                 parsed = float(value)
@@ -756,7 +756,7 @@ class LocalStore:
             return False
         if "$e" in env.payload:
             raise EnvelopeValidationError(
-                "encrypted payload slot ($e) is reserved for M3 E2EE and cannot be applied yet",
+                "encrypted payload slot ($e) is reserved for E2EE and cannot be applied yet",
                 env.op_type,
             )
         try:
@@ -864,7 +864,7 @@ class LocalStore:
         content = json.dumps(tokens, ensure_ascii=False)
         content_plain = plaintext_excerpt(tokens)
 
-        # First create wins for duplicate node ids (v1 INSERT OR IGNORE): a
+        # First create wins for duplicate node ids (INSERT OR IGNORE): a
         # re-create must not touch the TREE — the earlier half-apply added a
         # second child_order row under the new parent while node.parent_id
         # stayed stale, rendering the node under TWO parents. The exceptions
@@ -963,7 +963,7 @@ class LocalStore:
         # the write keys off payload PRESENCE, not value (zod
         # ``colorValueSchema.nullish()`` parity — the TS applier gates on
         # ``p.color !== undefined``); a ``is not None`` test here would
-        # silently drop the clear (§34.43).
+        # silently drop the clear.
         if "color" in payload:
             sets.append("color = ?")
             values.append(payload["color"])
@@ -1375,7 +1375,7 @@ class LocalStore:
                 sets.append("icon = ?")
                 values.append(fields["icon"])
             # Color carries presence semantics: a present null CLEARS the
-            # column (§34.43), so callers put the key only when the payload
+            # column, so callers put the key only when the payload
             # had it and the write keys off membership, not value (the
             # create-time value already rode the INSERT above — the LWW-gated
             # UPDATE can never beat this envelope's own HLC, so routing
@@ -1449,7 +1449,7 @@ class LocalStore:
             # Color is nullable on the wire: a present null CLEARS the column,
             # so the write keys off payload PRESENCE, not value (TS parity:
             # ``p.color !== undefined``); a ``is not None`` test would silently
-            # drop the clear (§34.43).
+            # drop the clear.
             if "color" in payload:
                 sets.append("color = ?")
                 values.append(payload["color"])
@@ -1466,7 +1466,7 @@ class LocalStore:
         return True
 
     def _apply_class_delete(self, env: RelayEnvelope) -> bool:
-        """Class removal (§34.35/§34.54/§34.55).
+        """Class removal.
 
         F4 routing: a delete addressed at a family BASE class is applied as a
         FEATURE-DISABLE (LWW row + the per-class archival re-derivation), so
@@ -1650,7 +1650,7 @@ class LocalStore:
         if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
             return False
 
-        # PC2 (§34.45): defaultValue is typed per the schema type — a
+        # PC2: defaultValue is typed per the schema type — a
         # wrong-typed default fails loud here instead of deriving silently on
         # every read. Omitted defaultValue (patch keeps the stored one) skips
         # the check; a stored default that drifts out of match (schema
@@ -1673,7 +1673,7 @@ class LocalStore:
 
         # Omitted (absent) fields keep the stored value via COALESCE; explicit
         # false / JSON null are real writes (null default == JSON "null").
-        # §34.90: the binding row carries ONLY the genuinely per-class
+        # The binding row carries ONLY the genuinely per-class
         # mechanics (sequence, required, defaultValue, active) — the render
         # contracts (readonly/hideWhenEmpty/display) are PROPERTY-level and
         # live on property_schema.
@@ -1682,7 +1682,7 @@ class LocalStore:
                 return None  # absent → COALESCE keeps the stored value
             return 1 if payload[name] else 0  # explicit null (falsy) writes 0, as the TS port
 
-        # PC4 (§34.57): the soft-unbind flag rides the row LWW — an inactive
+        # PC4: the soft-unbind flag rides the row LWW — an inactive
         # binding stops contributing to the effective read (no default, no
         # sequence) while the ROW survives (unlike class.property.unset).
         # Absent payload = keep the stored flag (patch convention).
@@ -1779,7 +1779,7 @@ class LocalStore:
                     payload.get("numberPad"),
                     payload.get("numberDecimals"),
                     payload.get("numberRounding"),
-                    # §34.90 render contracts (PROPERTY-level): absent or
+                    # Render contracts (PROPERTY-level): absent or
                     # null stores NULL (panel / unset).
                     payload.get("display"),
                     (None if payload.get("readonly") is None else (1 if payload.get("readonly") else 0)),
@@ -1808,7 +1808,7 @@ class LocalStore:
                 sets.append("date_qualified = ?")
                 values.append(1 if payload["dateQualified"] else 0)
             # Number formats: key-PRESENCE distinguishes absent (keep) from an
-            # explicit null (clear) — the §34.79 keep-vs-clear contract.
+            # explicit null (clear) — the keep-vs-clear contract.
             if "numberPad" in payload:
                 sets.append("number_pad = ?")
                 values.append(payload["numberPad"])
@@ -1818,7 +1818,7 @@ class LocalStore:
             if "numberRounding" in payload:
                 sets.append("number_rounding = ?")
                 values.append(payload["numberRounding"])
-            # §34.90 render contracts (PROPERTY-level): same key-presence
+            # Render contracts (PROPERTY-level): same key-presence
             # keep-vs-clear contract — absent keeps the stored value, a
             # present null clears back to panel / unset. `required` is NOT
             # here; it stays on the class binding.
@@ -1848,7 +1848,7 @@ class LocalStore:
 
     # ---------------------------------------------------------------- property.*
     #
-    # PG5 (§34.57): the property_value row id IS the element id — writer-minted
+    # PG5: the property_value row id IS the element id — writer-minted
     # UUIDv7 for element adds, the deterministic composite node:schema:idx for
     # single-value slots and legacy positional writes (the pre-PG5 id
     # generation — replayed stored logs apply byte-identical). Multi-value
@@ -1856,9 +1856,9 @@ class LocalStore:
     # the element (add-wins: the membership comparator is HLC-only, so on
     # equal HLC the add wins regardless of actor), and the visible-set
     # derivation (:meth:`_visible_property_value_rows`) is consulted by every
-    # read. PC6 (§34.57): dateQualified schemas normalize the reserved
+    # read. PC6: dateQualified schemas normalize the reserved
     # qualifier keys to date-node refs on write (read-lenient — every reader
-    # accepts both shapes). §34.45 (PB2): unsetting a node-backed text value
+    # accepts both shapes). PB2: unsetting a node-backed text value
     # trashes the now-orphaned carrier block under the three guards.
 
     @staticmethod
@@ -1983,7 +1983,7 @@ class LocalStore:
         payload = env.payload
         node_id, schema_id, idx, element_id = self._property_slot(env)
         schema = self._property_schema_row(schema_id)
-        # PB2/PG6 (§34.45/§34.51): one-shape-per-type + schema-linked
+        # PB2/PG6: one-shape-per-type + schema-linked
         # integrity at the write path. The schema row (when known —
         # property.set has no schema FK) types the slot: shape/scalar
         # mismatch, a date ref finer than the schema's precision, a target
@@ -2200,7 +2200,7 @@ class LocalStore:
         if not remove_wins_by_hlc:
             return  # add-wins ties: the live row stays.
         self._conn.execute("DELETE FROM property_value WHERE id = ?", (element_id,))
-        # §34.45 (PB2): unsetting a node-backed text value deletes the
+        # PB2: unsetting a node-backed text value deletes the
         # carrier block under the same guards as the positional path.
         self._trash_text_carrier_if_orphaned(env.workspace_id, node_id, schema_id, str(existing[2]), _envelope_ts(env))
 
@@ -2228,7 +2228,7 @@ class LocalStore:
         ).fetchone()
         if existing is not None and self._incoming_wins(env, existing[1], existing[2], existing[3]):
             self._conn.execute("DELETE FROM property_value WHERE id = ?", (row_id,))
-            # §34.45 (PB2, SCHEMA.md "Node-backed text properties"): unsetting
+            # PB2 (SCHEMA.md "Node-backed text properties"): unsetting
             # a node-backed text value deletes the carrier block — trash +
             # retention, consistent with node deletion. Guards: the removed
             # value references a node, the target is an active non-class
@@ -2242,7 +2242,7 @@ class LocalStore:
     def _trash_text_carrier_if_orphaned(
         self, workspace_id: str, object_id: str, property_schema_id: str, removed_value_raw: str, timestamp: str
     ) -> None:
-        """The carrier-deletion half of property.unset (§34.45). The value row
+        """The carrier-deletion half of property.unset. The value row
         is already deleted; ``removed_value_raw`` is its stored JSON. Trashes
         the now-unreferenced carrier inside the same transaction."""
         schema_row = self._conn.execute(
@@ -2343,7 +2343,7 @@ class LocalStore:
 
     # --------------------------------------------------------- workspace.feature.*
     #
-    # Per-workspace feature toggles (§34.35/§34.54, RESHAPED §34.55): LWW by
+    # Per-workspace feature toggles (RESHAPED per owner directive 2026-10-04): LWW by
     # (workspace, feature) on the envelope (hlc, actor) — the winning row
     # lands in ``workspace_feature`` and the applier derives the
     # membership-preserving archival of the family's classes from it.
@@ -2409,7 +2409,7 @@ class LocalStore:
             )
 
     def _ensure_task_family_rows(self, env: RelayEnvelope) -> None:
-        """The ``tasks`` enable path (§34.35 constraint 5): author the task
+        """The ``tasks`` enable path: author the task
         class + the six property schemas + their bindings at the fixed seed
         ids. Purely additive (INSERT OR IGNORE everywhere) so a server-seeded
         family is never clobbered — first writer wins, convergent on the
@@ -2673,14 +2673,14 @@ class LocalStore:
             effective(node, schema, idx) = authored property_value
                                            ?? winning binding's defaultValue
 
-        Port of v2 ``packages/store/src/effective.ts`` (PG5/PC4, §34.57).
+        Port of ``packages/store/src/effective.ts`` (PG5/PC4).
         Authored rows always win and survive class removal; derived defaults
         are computed HERE and never materialized (the applier writes no
         property_value rows for them). Authored rows come through the PG5
         visible-set derivation (:meth:`_visible_property_value_rows` — slot
         tombstones + element tombstones) and carry their stable element id.
         Binding conflicts across the node's classes resolve per the SCHEMA.md
-        diamond rule (PG4, §34.45): candidates are (class, ancestor) pairs
+        diamond rule (PG4): candidates are (class, ancestor) pairs
         discovered by a shortest-path walk (BFS) over ``class_extends`` — own
         binding (distance 0) first, then inherited bindings by shortest
         extends-path, ties by the class's OR-Set membership add HLC (earliest
@@ -2690,8 +2690,8 @@ class LocalStore:
         first-class-applied-wins over own bindings. Only ACTIVE binding rows
         are candidates (PC4: an inactive binding stops contributing defaults
         AND binding metadata — required/sequence — while the ROW survives and
-        authored values read as unbound, ``bound_by`` None; §34.90: the
-        render contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
+        authored values read as unbound, ``bound_by`` None; the render
+        contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
         they ride authored and derived rows alike, unbound values included).
         A stored default that no longer matches the schema type yields no
         default (PC2 read-side). A pure read over derived tables —
@@ -2766,12 +2766,12 @@ class LocalStore:
             return None if value is None else bool(value)
 
         def display_of(value: Any) -> str | None:
-            # §34.90: sanitize the stored position (NULL/'panel'/unknown →
+            # Sanitize the stored position (NULL/'panel'/unknown →
             # None, the properties-section default — the effective.ts parity).
             return value if value in ("bullet", "inline") else None
 
         # Schema rows for everything referenced (authored rows survive schema
-        # deletion: the row renders with schema=None). §34.90: the schema
+        # deletion: the row renders with schema=None). The schema
         # carries the PROPERTY-level render contracts — display (sanitized)
         # and the readonly/hide-when-empty flags.
         schema_ids = {str(row["property_schema_id"]) for row in authored_rows} | set(winner_by_schema)
@@ -2821,7 +2821,7 @@ class LocalStore:
                 metadata=parse_json(authored["metadata"]) if authored["metadata"] is not None else None,
                 source="authored",
                 bound_by=winner[0] if winner else None,
-                # §34.90: required is per-CLASS (the winning binding);
+                # Required is per-CLASS (the winning binding);
                 # readonly/hideWhenEmpty/display are per-PROPERTY (the
                 # schema — unbound values included).
                 required=flag(winner[1][2]) if winner else None,
@@ -2883,8 +2883,8 @@ class LocalStore:
     def restore_snapshot(self, blob: bytes, *, workspace_id: str) -> bool:
         """Restore nodes from a downloaded snapshot blob (serialized derived DB).
 
-        The blob is a serialized copy of the server's v2 derived database,
-        whose node table is ``node`` (singular) with the v2 column names
+        The blob is a serialized copy of the server's derived database,
+        whose node table is ``node`` (singular) with the column names
         (``is_class``/``present_as_main``, ``is_active`` — same polarity as
         the cache, ``class_ids``, and the row-LWW columns
         ``hlc_physical``/``hlc_logical``/``actor_id`` which seed the cache's
@@ -2927,7 +2927,7 @@ class LocalStore:
                 params = (workspace_id,)
             with self._conn:
                 self._conn.execute(f"INSERT OR REPLACE INTO nodes ({columns}) {select}", params)
-                # The v2 server snapshot has no plaintext cache column (the
+                # The server snapshot has no plaintext cache column (the
                 # server derives FTS text); derive the client cache's excerpt
                 # for the restored rows.
                 restored = self._conn.execute(
@@ -3042,7 +3042,7 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "relay_outbox", "attempts", "INTEGER NOT NULL DEFAULT 0")
 
 
-_NODES_V2_DDL = """
+_NODES_DDL = """
 CREATE TABLE IF NOT EXISTS nodes (
     workspace_id TEXT NOT NULL,
     id TEXT NOT NULL,
@@ -3084,7 +3084,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 """
 
-_AUX_V2_DDL = """
+_AUX_DDL = """
 CREATE TABLE IF NOT EXISTS node_child_order (
     parent_id TEXT NOT NULL,
     child_id TEXT NOT NULL,
@@ -3160,7 +3160,7 @@ CREATE TABLE IF NOT EXISTS property_schema (
     -- SCHEMA.md "Dates": finest granularity a date value may claim
     -- (year|month|day; NULL = day default) and, for node-typed schemas,
     -- whether values may carry date qualifiers (metadata startDate/endDate,
-    -- PC6 §34.57 — the applier normalizes qualifier strings to date-node
+    -- PC6 — the applier normalizes qualifier strings to date-node
     -- refs through these).
     date_precision TEXT,
     date_qualified INTEGER,
@@ -3169,7 +3169,7 @@ CREATE TABLE IF NOT EXISTS property_schema (
     number_pad INTEGER,
     number_decimals INTEGER,
     number_rounding TEXT,
-    -- §34.90: the render contracts are PROPERTY-level (owner review
+    -- The render contracts are PROPERTY-level (owner review
     -- 2026-10-05) — display (panel|bullet|inline; NULL = panel) and the
     -- readonly/hide-when-empty tri-state flags, wherever the property
     -- appears (class-bound or not). ('required' deliberately stays on the
@@ -3185,7 +3185,7 @@ CREATE TABLE IF NOT EXISTS property_schema (
 
 -- Property values — the LIVE visible rows only (the applier deletes a row
 -- when its element's OR-Set remove wins). The row id IS the element id
--- (PG5 §34.57): writer-minted UUIDv7 for element adds, the deterministic
+-- (PG5): writer-minted UUIDv7 for element adds, the deterministic
 -- composite 'node:schema:idx' for single-value slots and legacy positional
 -- writes. The pre-PG5 UNIQUE(node_id, property_schema_id, idx) is GONE:
 -- per-element identity means concurrent adds at the same idx are DISTINCT
@@ -3263,12 +3263,12 @@ CREATE TABLE IF NOT EXISTS trash (
 
 
 def _migrate_v3(conn: sqlite3.Connection) -> None:
-    """Reshape the client cache to the v2 model (guarded, data-preserving).
+    """Reshape the client cache to the current model (guarded, data-preserving).
 
-    The ``nodes`` mirror is rebuilt at the v2 column names (``is_active``
+    The ``nodes`` mirror is rebuilt at the current column names (``is_active``
     replacing ``archived``, plus ``class_ids``/``content_plain`` and the
-    row-LWW columns), the v1 ``node_content_hlc`` watermark is dropped (its
-    job is done by the row-LWW columns), and the v2 auxiliary tables
+    row-LWW columns), the legacy ``node_content_hlc`` watermark is dropped (its
+    job is done by the row-LWW columns), and the auxiliary tables
     (child_order, OR-Sets, class registry/extends/closure, property
     registry/values/tombstones, assets, collections, trash) are created.
     The legacy ``node_type`` enumeration maps straight onto the Revision-11
@@ -3277,9 +3277,9 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
     if "is_active" in columns:
-        return  # already at the v2 shape (guarded re-run)
+        return  # already at the current shape (guarded re-run)
     conn.execute("ALTER TABLE nodes RENAME TO nodes_legacy")
-    conn.executescript(_NODES_V2_DDL + _AUX_V2_DDL)
+    conn.executescript(_NODES_DDL + _AUX_DDL)
     legacy = {row[1] for row in conn.execute("PRAGMA table_info(nodes_legacy)")}
     copy_exprs: dict[str, str] = {}
     for column in ("id", "workspace_id", "parent_id", "name", "icon", "color", "content", "updated_at"):
@@ -3312,11 +3312,11 @@ _CLASS_PROPERTY_DDL = """
 -- Registry rows authored by class.property.set/unset; LWW on the row by
 -- (hlc, actor). Defaults are a DERIVED read model (get_effective_properties),
 -- never materialized property_value rows.
--- §34.90 (owner review 2026-10-05): the row carries ONLY the genuinely
+-- (owner review 2026-10-05): the row carries ONLY the genuinely
 -- per-class mechanics (sequence, required, default_value, active). The
 -- render contracts (readonly/hide_when_empty, pre-v3.1.0, and display, the
--- §34.89 v11 experiment) moved to property_schema — PROPERTY-level; the v12
--- rebuild dropped them here. 'active' (PC4, §34.57): the soft-unbind flag —
+-- v11 experiment) moved to property_schema — PROPERTY-level; the v12
+-- rebuild dropped them here. 'active' (PC4): the soft-unbind flag —
 -- an inactive row stops contributing to the effective read (no default, no
 -- sequence) while the ROW survives; absent column means active, so existing
 -- rows converge with zero migration.
@@ -3433,7 +3433,7 @@ CREATE INDEX IF NOT EXISTS idx_tag_member_set_tag ON tag_member_set (tag_id);
 """
 
 _WORKSPACE_FEATURE_DDL = """
--- Per-workspace feature toggles (§34.35/§34.54): the winning LWW row per
+-- Per-workspace feature toggles: the winning LWW row per
 -- (workspace_id, feature); an ABSENT row means enabled (all features
 -- default ON — the empty table is the pre-toggle state, so existing
 -- workspaces need no migration). The applier derives the membership-
@@ -3453,7 +3453,7 @@ CREATE TABLE IF NOT EXISTS workspace_feature (
 
 
 def _migrate_v8(conn: sqlite3.Connection) -> None:
-    """Per-workspace feature toggles (web schema v9→v10 parity, §34.54).
+    """Per-workspace feature toggles (web schema v9→v10 parity).
     Purely additive — CREATE IF NOT EXISTS is a no-op for fresh databases
     that already ran the DDL; existing databases gain the empty table
     (empty = all features enabled)."""
@@ -3461,7 +3461,7 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v9(conn: sqlite3.Connection) -> None:
-    """The §34.57 property-wire batch (web schema v10→v11 parity): PG5
+    """The property-wire batch (web schema v10→v11 parity): PG5
     element identity + PC4 binding active + the property_schema date
     columns PC6 reads. Every step is guarded so a database whose DDL
     already carries the new shape (fresh chain) is untouched, and a v7
@@ -3530,7 +3530,7 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v10(conn: sqlite3.Connection) -> None:
-    """v10 — number display formatting (SCHEMA.md "Number formats", §34.79
+    """v10 — number display formatting (SCHEMA.md "Number formats")
     lockstep): additive property_schema columns, NULL = unformatted. The
     column guard keeps the ALTER idempotent for databases that already carry
     them (a fresh v10 create)."""
@@ -3546,19 +3546,19 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v11(conn: sqlite3.Connection) -> None:
-    """v11 — §34.89 lockstep: class_property gains the binding's value-display
+    """v11 — the binding gains the value-display
     position. Additive guarded column (the ``_add_column_if_missing`` parity
     with PC4's active): the stored NULL default means "panel", so existing
     rows converge with zero backfill and a fresh v11 create is untouched.
 
     Kept in the chain for databases still below v11: v12 rebuilds the table
-    without the column the same open (§34.90)."""
+    without the column the same open."""
     LocalStore._add_column_if_missing(conn, "class_property", "display", "TEXT")
 
 
 def _migrate_v12(conn: sqlite3.Connection) -> None:
-    """v12 — §34.90 (owner review 2026-10-05 — the render contracts move from
-    the binding to the property). Two guarded steps, each idempotent for a
+    """v12 — owner review 2026-10-05: the render contracts move from
+    the binding to the property. Two guarded steps, each idempotent for a
     fresh v12 create:
 
     (1) property_schema gains display + readonly/hide_when_empty
@@ -3566,7 +3566,7 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
         binding (the owner's per-class exception).
     (2) class_property is REBUILT without the retired binding columns
         (readonly/hide_when_empty from the original shape, display from the
-        §34.89 v11 experiment — the v9 property_value rebuild precedent:
+        v11 experiment — the v9 property_value rebuild precedent:
         same surviving columns, rows copy verbatim, indexes recreated).
         ``required`` survives on the row.
     """
@@ -3608,9 +3608,9 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 #: Canonical auxiliary DDL applied on every upgrade before the versioned
 #: steps (the web schema.ts ``migrate`` parity): all CREATE IF NOT EXISTS, so
 #: a complete database is untouched and a partial one converges to the full
-#: table set. ``_NODES_V2_DDL`` is deliberately excluded — the node table's
+#: table set. ``_NODES_DDL`` is deliberately excluded — the node table's
 #: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
-_CANONICAL_AUX_DDL = _AUX_V2_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL
+_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL
 
 
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.

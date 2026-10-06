@@ -1,6 +1,6 @@
 """Strict op payload schemas and builders — the zod ``.strict()`` parity layer.
 
-Mirrors ``v2/packages/protocol/src/op-types.ts`` (``OP_PAYLOAD_SCHEMAS``):
+Mirrors ``packages/protocol/src/op-types.ts`` (``OP_PAYLOAD_SCHEMAS``):
 every known op type has a pydantic model with ``extra="forbid"`` (an unknown
 or renamed wire key fails validation instead of drifting silently), uuid
 fields are format-checked, and the ``object.update`` refines ride along
@@ -16,12 +16,12 @@ bit — the retired ``nodeType`` key is rejected outright by these strict
 schemas (no wire compat of any kind; the stored log is rewritten in place by
 the one-time migration script).
 
-Color grammar (§34.43, owner 2026-10-03): node/class ``color`` is a preset
+Color grammar (owner 2026-10-03): node/class ``color`` is a preset
 token or a custom ``#RRGGBB`` hex (``colors.py``, the ``colors.ts`` parity
 module), never the retired ``var(--color-preset-*)`` encoding, and payloads
 accept an explicit ``null`` clear.
 
-Protocol batch (§34.54/§34.57, LOCKSTEP-PENDING wave 2026-10-04): the
+Protocol batch (LOCKSTEP-PENDING wave 2026-10-04): the
 workspace-feature op, the ``code_block``/``hr`` grammar (validated by
 ``content.py``'s strict token validators — the payload layer carries
 contentAst as ``list[Any]`` exactly like the zod ``z.array(z.unknown())``),
@@ -32,14 +32,14 @@ the row id IS the element id in the store), PC4 ``class.property.set``
 write in the store applier). Retired feature ids and retired encodings are
 rejected outright — no wire compat (owner directive).
 
-Property display batch (§34.89, corrected §34.90 owner review 2026-10-05):
+Property display batch (owner review 2026-10-05):
 select option records gained the optional ``icon`` (MDI camelCase name,
 max 64; the option record is deliberately NON-strict — additive keys strip
 instead of rejecting, so icon-carrying envelopes sync through pre-batch
 parsers). The value-display position and the render contracts
 (``display``/``readonly``/``hideWhenEmpty``) are PROPERTY-level and live on
 ``propertySchema.create/update`` (nullable-optional; update-side absent
-keeps, null clears) — §34.89's binding-level ``display`` on
+keeps, null clears) — the binding-level ``display`` on
 ``class.property.set`` was withdrawn the same day, and ``required`` is the
 deliberate per-class exception that stays on the binding.
 
@@ -93,7 +93,7 @@ _PROPERTY_TYPE = Literal[
 _SCOPE = Literal["global", "class", "object"]
 _DATE_PRECISION = Literal["year", "month", "day"]
 _NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
-# §34.89: the binding's value-display position — where a select/multi_select
+# The binding's value-display position — where a select/multi_select
 # (or boolean) value renders on a block row. A render contract only.
 _DISPLAY_POSITION = Literal["panel", "bullet", "inline"]
 
@@ -134,7 +134,7 @@ class ObjectUpdatePayload(_Strict):
     present_as_main: bool | None = Field(default=None, alias="presentAsMain")
     icon: str | None = Field(default=None, max_length=64)
     # Preset token (`sky`) or custom `#RRGGBB` hex (colors.py grammar);
-    # null CLEARS the node's color (§34.43).
+    # null CLEARS the node's color.
     color: ColorValue = Field(default=None)
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
@@ -217,7 +217,7 @@ class ClassPropertySetPayload(_Strict):
     mechanics only (panel order, the class's own default, the class's
     soft-unbind, and per-class requirement).
 
-    §34.90 (owner review 2026-10-05): the render contracts readonly,
+    (owner review 2026-10-05): the render contracts readonly,
     hideWhenEmpty, display are PROPERTY-level characteristics and live on the
     property schema (``propertySchema.create/update``) — the strict schema
     rejects them here like any retired key. ``required`` is the exception
@@ -231,7 +231,7 @@ class ClassPropertySetPayload(_Strict):
     sequence: int | None = None
     required: bool | None = None
     default_value: Any = Field(default=None, alias="defaultValue")
-    # PC4 (§34.57): the soft-unbind flag — an inactive binding stops
+    # PC4: the soft-unbind flag — an inactive binding stops
     # contributing to the effective read while the ROW survives. Omitted =
     # keep the stored flag (the patch convention). zod parity: an explicit
     # JSON null is NOT ``undefined`` — the strict schema rejects it.
@@ -250,13 +250,13 @@ class ClassPropertyUnsetPayload(_Strict):
 
 
 class _OptionEntry(BaseModel):
-    """A select/multi_select option record (PG16 + §34.89): ``{id, label}``
-    plus optional decoration (``color`` in the §34.43 grammar, ``icon`` — an
+    """A select/multi_select option record (PG16): ``{id, label}``
+    plus optional decoration (``color`` in the grammar, ``icon`` — an
     MDI camelCase name, max 64 chars, absent/null = no icon).
 
     Deliberately NON-strict (the zod ``propertySchemaOptionSchema`` is a
     plain object, not ``.strict()``): web clients send additive keys inside
-    options, and unknown keys must STRIP, never reject — a pre-§34.89 parser
+    options, and unknown keys must STRIP, never reject — a pre-batch parser
     syncs icon-carrying envelopes through (its store drops the decoration;
     wipe → replay restores it). The store appliers serialize the raw
     ``payload["options"]`` verbatim, so a validated icon rides into the
@@ -282,16 +282,16 @@ class PropertySchemaCreatePayload(_Strict):
     date_qualified: bool | None = Field(default=None, alias="dateQualified")
     # SCHEMA.md "Number formats": display-only formatting for number schemas
     # (values stay exact; these shape render only). Lockstep with the TS
-    # reference (§34.79): additive-optional, nullable.
+    # reference: additive-optional, nullable.
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
-    # §34.90 (owner review 2026-10-05): the render contracts are
-    # PROPERTY-level — a property displays/behaves the same everywhere it
+    # The render contracts are PROPERTY-level (owner review 2026-10-05) —
+    # a property displays/behaves the same everywhere it
     # appears, whatever class binds it (or none). ``display`` is the
     # value-display position ("panel" (absent/null) keeps the value in the
     # properties section only; "bullet" renders it as an icon button next to
-    # the block bullet; "inline" before the block content — the v1
+    # the block bullet; "inline" before the block content — the
     # icon_visibility port); ``readonly``/``hideWhenEmpty`` are the tri-state
     # render flags. All nullable-optional (absent or null stores NULL).
     # ``required`` is NOT here — it stays on the class binding (per-class).
@@ -311,7 +311,7 @@ class PropertySchemaUpdatePayload(_Strict):
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
-    # §34.90 render contracts (PROPERTY-level): same absent-keeps /
+    # Render contracts (PROPERTY-level): same absent-keeps /
     # null-clears contract as the number formats — `required` is NOT among
     # them; it stays on the class binding.
     display: _DISPLAY_POSITION | None = Field(default=None)
@@ -327,7 +327,7 @@ class PropertySetPayload(_Strict):
     object_id: UUID = Field(alias="objectId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
     value: Any
-    # PG5 element id (§34.57): the OR-Set add carrier for multi-value slots —
+    # PG5 element id: the OR-Set add carrier for multi-value slots —
     # the property_value row id IS the element id. Absent = the legacy
     # positional carrier (addresses the deterministic positional element at
     # ``idx``). zod parity: an explicit null is rejected, not "absent".
@@ -383,7 +383,7 @@ class CollectionMemberRemovePayload(_Strict):
 
 
 class WorkspaceFeatureSetPayload(_Strict):
-    """Per-workspace feature toggle (§34.35/§34.54, RESHAPED §34.55).
+    """Per-workspace feature toggle (RESHAPED per owner directive 2026-10-04).
 
     ``feature`` is fixed protocol vocabulary — the five core class families
     (tasks=task, events=event, meetings=meeting, sources=source,
@@ -512,7 +512,7 @@ def build_object_update(
     """Build an ``object.update`` payload (at least one field required).
 
     ``color=None`` sends an explicit null that CLEARS the node's color
-    (§34.43 — the UI's "No color"); omitting ``color`` leaves it untouched.
+    (the UI's "No color"); omitting ``color`` leaves it untouched.
     """
     payload: dict[str, Any] = {"objectId": object_id}
     if present_as_main is not None:
@@ -631,7 +631,7 @@ def build_tag_unassign(object_id: str, tag_id: str) -> dict[str, Any]:
 
 
 def build_workspace_feature_set(feature: str, enabled: bool) -> dict[str, Any]:
-    """Build a ``workspace.feature.set`` payload (§34.35, the Features tab).
+    """Build a ``workspace.feature.set`` payload (the Features tab).
 
     ``feature`` is one of the five core class families (the
     ``WORKSPACE_FEATURES`` enum in ``features.py``); the strict schema

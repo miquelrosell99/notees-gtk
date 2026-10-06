@@ -1,17 +1,17 @@
-"""Deterministic date-node ids — the v1 scheme ported from
+"""Deterministic date-node ids — the scheme ported from
 ``app/domain/entities/constants.py`` (``generate_day_uuid`` and siblings),
 mirroring ``packages/domain/src/dates.ts``.
 
 A date is a node, not a string (SCHEMA.md "Dates"): every ISO date maps to a
 year / month / day node chain with ids content-addressed from the date, so
-chain creation is an idempotent no-op on re-create and v1 data locks step
-with v2. Layout (FIXED — lockstep with v1, never regenerate):
+chain creation is an idempotent no-op on re-create and migrated data locks
+step with the server. Layout (FIXED — never regenerate):
 
 - day    ``00000000-0000-0000-00dd-YYYYMMDD0000``
 - month  ``00000000-0000-0000-00aa-YYYYMM000000``
 - year   ``00000000-0000-0000-00bb-YYYY00000000``
 
-PC6 (§34.57) consumes :func:`day_node_id`: the property applier normalizes a
+PC6 consumes :func:`day_node_id`: the property applier normalizes a
 well-formed ``YYYY-MM-DD`` qualifier string to the deterministic day-node
 ref, so the stored shape canonicalizes without any graph side effects.
 """
@@ -33,7 +33,7 @@ __all__ = [
     "year_node_id",
 ]
 
-#: v1 ``parse_date_uuid`` acceptance window (1900..2200 inclusive).
+#: ``parse_date_uuid`` acceptance window (1900..2200 inclusive).
 DATE_UUID_MIN_YEAR = 1900
 DATE_UUID_MAX_YEAR = 2200
 
@@ -60,18 +60,18 @@ def parse_iso_date(iso_date: str) -> date:
 
 
 def year_node_id(iso_date: str) -> str:
-    """``00000000-0000-0000-00bb-YYYY00000000`` (v1 ``generate_year_uuid``)."""
+    """``00000000-0000-0000-00bb-YYYY00000000`` (``generate_year_uuid``)."""
     return f"{YEAR_PREFIX}{parse_iso_date(iso_date).year:04d}00000000"
 
 
 def month_node_id(iso_date: str) -> str:
-    """``00000000-0000-0000-00aa-YYYYMM000000`` (v1 ``generate_month_uuid``)."""
+    """``00000000-0000-0000-00aa-YYYYMM000000`` (``generate_month_uuid``)."""
     parsed = parse_iso_date(iso_date)
     return f"{MONTH_PREFIX}{parsed.year:04d}{parsed.month:02d}000000"
 
 
 def day_node_id(iso_date: str) -> str:
-    """``00000000-0000-0000-00dd-YYYYMMDD0000`` (v1 ``generate_day_uuid``)."""
+    """``00000000-0000-0000-00dd-YYYYMMDD0000`` (``generate_day_uuid``)."""
     parsed = parse_iso_date(iso_date)
     return f"{DAY_PREFIX}{parsed.year:04d}{parsed.month:02d}{parsed.day:02d}0000"
 
@@ -91,9 +91,9 @@ def chain_node_ids(iso_date: str) -> dict[str, str]:
 
 
 def parse_date_node_id(node_id: str) -> dict[str, int | str] | None:
-    """v1 ``parse_date_uuid`` port: extract precision + date components from a
+    """``parse_date_uuid`` port: extract precision + date components from a
     date-node id, or ``None`` when the id is not a date UUID (or falls outside
-    the v1 1900..2200 window). Round-trips with the generators above."""
+    the 1900..2200 window). Round-trips with the generators above."""
     if not isinstance(node_id, str) or len(node_id) != 36:
         return None
     data = node_id[24:]  # trailing 12-digit payload

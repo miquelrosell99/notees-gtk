@@ -1,6 +1,6 @@
 """Hybrid Logical Clock implementation.
 
-Ports ``app/core/clock.py`` from the Notees backend (SPEC §2) line-for-line,
+Ports ``app/core/clock.py`` from the Notees backend line-for-line,
 with :class:`Hlc` as a frozen Pydantic model so wire validation (both
 components non-negative) lives on the type itself. HLCs provide causality
 tracking with constant-size timestamps that combine a physical (wall-clock)
