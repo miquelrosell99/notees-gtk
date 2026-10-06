@@ -1,4 +1,4 @@
-"""Typed store errors for the v2 appliers (port of v2 ``packages/store/src/errors.ts``).
+"""Typed store errors for the appliers (port of ``packages/store/src/errors.ts``).
 
 Guard violations fail loud with a typed error so callers (and tests) can tell
 a convergence-relevant rejection from a bug: cycle closes, cross-row move
@@ -51,7 +51,7 @@ class NotFoundError(StoreError):
 
 
 class PropertyValueShapeError(StoreError):
-    """PG6 apply-time value validation (§34.51): a property.set value (or a
+    """PG6 apply-time value validation: a property.set value (or a
     class.property.set defaultValue) violates the schema's contract — shape,
     scalar typing, cardinality, datePrecision ceiling, targetClassFilter
     membership, or node-target existence. Deterministic on every replica:

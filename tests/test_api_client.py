@@ -1,8 +1,8 @@
 """Tests for the Notees REST API client (relay protocol v2).
 
 All HTTP traffic is faked with ``httpx.MockTransport``: handlers assert the
-exact request path, headers, and body (per ``v2/packages/protocol/WIRE.md``
-§1–3 for the relay and the Notees auth router for login) and never touch the
+exact request path, headers, and body (per ``packages/protocol/WIRE.md``
+for the relay and the Notees auth router for login) and never touch the
 network.
 """
 
@@ -561,7 +561,7 @@ class TestErrorTaxonomy:
         ],
     )
     def test_v2_error_envelope_codes_map_to_taxonomy(self, code: str, status: int, expected: type[ApiError]) -> None:
-        """WIRE.md §3 stable codes take priority over status heuristics."""
+        """WIRE.md stable codes take priority over status heuristics."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

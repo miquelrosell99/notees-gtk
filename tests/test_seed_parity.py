@@ -18,7 +18,7 @@ specs:
   ``{type: object, multi: true, bindTo: source, targetClassFilter: [agent]}``
   at UUID ``…000000000012``. The text-authors experiment (verbatim strings,
   no targetClassFilter) was reversed by the owner;
-- withdrawn ids are never reused (v1 ``locator`` …0018 precedent):
+- withdrawn ids are never reused (the ``locator`` …0018 precedent):
   ``…0025`` (``linkedAuthors``) is WITHDRAWN 2026-09-27, reversed same day.
 
 It fails loud if a future registry/applier change breaks seed application.
@@ -55,7 +55,7 @@ CONFERENCE = "00000000-0000-0000-0001-000000000038"
 AUTHORS_SCHEMA = "00000000-0000-0000-0000-000000000012"
 
 #: Withdrawn system property ids — never reuse (seeds.ts registers them as
-#: dead slots): v1 ``locator`` …0018, and …0025 (``linkedAuthors``) —
+#: dead slots): the ``locator`` …0018, and …0025 (``linkedAuthors``) —
 #: WITHDRAWN 2026-09-27, reversed same day in the FINAL authors model.
 WITHDRAWN_PROPERTY_IDS = (
     "00000000-0000-0000-0000-000000000018",
@@ -185,7 +185,7 @@ class TestNewSourceSubclasses:
         assert len(set(class_ids + schema_ids)) == len(class_ids) + len(schema_ids)
         for class_id in class_ids:
             assert class_id.startswith(SYSTEM_CLASS_BLOCK_PREFIX)
-        # Withdrawn ids (v1 locator …0018; linkedAuthors …0025, WITHDRAWN
+        # Withdrawn ids (locator …0018; linkedAuthors …0025, WITHDRAWN
         # 2026-09-27) are dead slots: never assigned to an active schema.
         assert not set(WITHDRAWN_PROPERTY_IDS) & set(schema_ids)
 

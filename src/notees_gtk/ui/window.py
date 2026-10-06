@@ -67,7 +67,7 @@ class NoteesWindow(Adw.ApplicationWindow):
 
         if (
             config.token or config.api_key
-        ):  # v2-port: compat — key-only config skips the login page until the M1 login UI lands
+        ):  # compat — key-only config skips the login page until the login UI lands
             self._build_main()
             self._stack.set_visible_child_name("main")
         else:
@@ -101,7 +101,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         if old_main is not None:
             self._stack.remove(old_main)
         if self._client is None:
-            # v2-port: compat — API key (v2 relay auth) passes through; login-token path stays until the M1 login UI lands
+            # compat — API key (v2 relay auth) passes through; login-token path stays until the login UI lands
             self._client = NoteesClient(self._config.server_url, token=self._config.token, api_key=self._config.api_key)
         self._config.data_dir.mkdir(parents=True, exist_ok=True)
         if self._store is None:

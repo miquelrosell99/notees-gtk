@@ -1,9 +1,9 @@
-"""Validate protocol fixtures against the GTK client's v2 wire models.
+"""Validate protocol fixtures against the GTK client's wire models.
 
 Two fixture sets live under ``tests/fixtures/``:
 
 - the repo's own wire fixtures (batch/catch-up/WS frames), and
-- ``v2/`` — a verbatim port of ``v2/packages/protocol/fixtures/`` from the
+- ``wire/`` — a verbatim port of ``packages/protocol/fixtures/`` from the
   Notees monorepo. That port is the cross-implementation parity anchor: every
   envelope the TypeScript reference produces must parse through these models
   and round-trip field-by-field.
@@ -53,32 +53,32 @@ FIXTURE_MODELS: dict[str, tuple[type[BaseModel], bool]] = {
     "ws-error.json": (WsErrorMessage, True),
 }
 
-# v2/ parity port: fixtures holding a single envelope document.
-V2_SINGLE_ENVELOPE_FIXTURES = [
-    "v2/envelope-minimal.json",
-    "v2/object-create.json",
+# wire/ parity port: fixtures holding a single envelope document.
+WIRE_SINGLE_ENVELOPE_FIXTURES = [
+    "wire/envelope-minimal.json",
+    "wire/object-create.json",
 ]
 
-# v2/ parity port: fixtures holding {"comment": ..., "envelopes": [...]}.
-V2_ENVELOPE_LIST_FIXTURES = [
-    "v2/class-delete-managed.json",
-    "v2/class-extends-cycle.json",
-    "v2/class-extends-m2m.json",
-    "v2/class-property-active.json",
-    "v2/class-property-defaults.json",
-    "v2/class-unassign.json",
-    "v2/code-block.json",
-    "v2/embed-ref-view.json",
-    "v2/hr.json",
-    "v2/object-color.json",
-    "v2/object-move-before.json",
-    "v2/object-move.json",
-    "v2/property-date-qualifier.json",
-    "v2/property-set-lww.json",
-    "v2/property-value-elements.json",
-    "v2/typed-link-mark.json",
-    "v2/typed-link-mark-deleted.json",
-    "v2/workspace-feature-set.json",
+# wire/ parity port: fixtures holding {"comment": ..., "envelopes": [...]}.
+WIRE_ENVELOPE_LIST_FIXTURES = [
+    "wire/class-delete-managed.json",
+    "wire/class-extends-cycle.json",
+    "wire/class-extends-m2m.json",
+    "wire/class-property-active.json",
+    "wire/class-property-defaults.json",
+    "wire/class-unassign.json",
+    "wire/code-block.json",
+    "wire/embed-ref-view.json",
+    "wire/hr.json",
+    "wire/object-color.json",
+    "wire/object-move-before.json",
+    "wire/object-move.json",
+    "wire/property-date-qualifier.json",
+    "wire/property-set-lww.json",
+    "wire/property-value-elements.json",
+    "wire/typed-link-mark.json",
+    "wire/typed-link-mark-deleted.json",
+    "wire/workspace-feature-set.json",
 ]
 
 
@@ -98,16 +98,16 @@ def test_fixture_round_trips_through_model(fixture_name: str) -> None:
     _round_trip(raw, parsed.model_dump(mode="json", by_alias=by_alias), fixture_name)
 
 
-@pytest.mark.parametrize("fixture_name", V2_SINGLE_ENVELOPE_FIXTURES)
-def test_v2_single_envelope_fixture_round_trips(fixture_name: str) -> None:
+@pytest.mark.parametrize("fixture_name", WIRE_SINGLE_ENVELOPE_FIXTURES)
+def test_wire_single_envelope_fixture_round_trips(fixture_name: str) -> None:
     """The monorepo's single-envelope fixtures parse and re-serialize exactly."""
     raw = json.loads((FIXTURES_DIR / fixture_name).read_text())
     parsed = RelayEnvelope.model_validate(raw)
     _round_trip(raw, parsed.model_dump(mode="json", by_alias=True), fixture_name)
 
 
-@pytest.mark.parametrize("fixture_name", V2_ENVELOPE_LIST_FIXTURES)
-def test_v2_envelope_list_fixture_round_trips(fixture_name: str) -> None:
+@pytest.mark.parametrize("fixture_name", WIRE_ENVELOPE_LIST_FIXTURES)
+def test_wire_envelope_list_fixture_round_trips(fixture_name: str) -> None:
     """The monorepo's multi-envelope fixtures: every envelope parses and re-serializes."""
     raw = json.loads((FIXTURES_DIR / fixture_name).read_text())
     envelopes = raw["envelopes"]
@@ -119,28 +119,28 @@ def test_v2_envelope_list_fixture_round_trips(fixture_name: str) -> None:
 def test_every_fixture_file_is_covered() -> None:
     """A fixture file that is not round-tripped here silently rots."""
     on_disk = {str(path.relative_to(FIXTURES_DIR)) for path in FIXTURES_DIR.rglob("*.json")}
-    covered = set(FIXTURE_MODELS) | set(V2_SINGLE_ENVELOPE_FIXTURES) | set(V2_ENVELOPE_LIST_FIXTURES)
+    covered = set(FIXTURE_MODELS) | set(WIRE_SINGLE_ENVELOPE_FIXTURES) | set(WIRE_ENVELOPE_LIST_FIXTURES)
     assert on_disk == covered, (
         f"fixture files without a model mapping: {on_disk - covered}; mappings without a file: {covered - on_disk}"
     )
 
 
-def test_v2_envelopes_declare_protocol_version_three() -> None:
-    for fixture_name in V2_SINGLE_ENVELOPE_FIXTURES:
+def test_wire_envelopes_declare_protocol_version_three() -> None:
+    for fixture_name in WIRE_SINGLE_ENVELOPE_FIXTURES:
         raw = json.loads((FIXTURES_DIR / fixture_name).read_text())
         assert raw["protocolVersion"] == PROTOCOL_VERSION
 
 
 def test_envelope_protocol_version_is_mandatory() -> None:
-    raw = json.loads((FIXTURES_DIR / "v2/envelope-minimal.json").read_text())
+    raw = json.loads((FIXTURES_DIR / "wire/envelope-minimal.json").read_text())
     without_version = {key: value for key, value in raw.items() if key != "protocolVersion"}
     with pytest.raises(ValidationError, match="protocolVersion"):
         RelayEnvelope.model_validate(without_version)
 
 
 def test_envelope_rejects_snake_case_field_names() -> None:
-    """v2 is camelCase-only (envelope.ts .strict()); snake keys must fail loud."""
-    raw = json.loads((FIXTURES_DIR / "v2/envelope-minimal.json").read_text())
+    """The wire is camelCase-only (envelope.ts .strict()); snake keys must fail loud."""
+    raw = json.loads((FIXTURES_DIR / "wire/envelope-minimal.json").read_text())
     snake = {
         "id": raw["id"],
         "protocol_version": raw["protocolVersion"],

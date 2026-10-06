@@ -1,6 +1,6 @@
 """Plain-text editor for node content (the honest MVP round-trip).
 
-The read-only view renders the v2 token stream; editing goes through a
+The read-only view renders the token stream; editing goes through a
 plain-text ``Gtk.TextView`` seeded with :func:`ast_to_plaintext` — the same
 non-CRDT form the Flutter client uses. Saving maps the buffer back to the flat
 token array (:func:`tokens_from_plaintext`: one ``text`` run per source line,

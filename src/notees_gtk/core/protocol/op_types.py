@@ -1,6 +1,6 @@
 """Known operation types for the relay sync protocol (v2).
 
-Mirrors ``v2/packages/protocol/src/op-types.ts`` (the M1 op registry): exactly
+Mirrors ``packages/protocol/src/op-types.ts`` (the op registry): exactly
 these 22 op types have payload schemas server-side. The envelope schema itself
 accepts any non-empty ``opType`` string (see ``envelope.ts``); unknown op types
 are rejected at relay ingest with ``validation_failed`` (422). Producers should
@@ -42,7 +42,7 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         # Collections (membership only — collections are nodes)
         "collection.member.add",
         "collection.member.remove",
-        # Workspace (per-workspace feature toggles, §34.35/§34.54)
+        # Workspace (per-workspace feature toggles)
         "workspace.feature.set",
     ]
 )

@@ -1,7 +1,7 @@
-"""Tests for the local SQLite store: outbox, op-id dedupe, v2 appliers, migrations, snapshots.
+"""Tests for the local SQLite store: outbox, op-id dedupe, appliers, migrations, snapshots.
 
-The applier semantics asserted here are the v2 convergence rules ported from
-``v2/packages/store/src/appliers.ts``: row-level LWW by (hlc, actor), OR-Set
+The applier semantics asserted here are the convergence rules ported from
+``packages/store/src/appliers.ts``: row-level LWW by (hlc, actor), OR-Set
 class/tag/collection membership, user-defined class order (class.reorder,
 LWW-by-arrival), title-is-content (no ``name`` writes; document-chrome nodes
 carry text-only content), the Revision-11 render-state model (``is_class``
@@ -62,7 +62,7 @@ def uid(label: str) -> str:
 NODE = uid("node-1")
 
 
-V2_TABLES = {
+WIRE_TABLES = {
     "node_child_order",
     "class_property",
     "class_member_set",
@@ -91,7 +91,7 @@ def make_env(
     actor_id: str = ACTOR,
     affected: tuple[str, ...] = (),
 ) -> RelayEnvelope:
-    """Build a minimal valid v2 envelope for store tests."""
+    """Build a minimal valid envelope for store tests."""
     return RelayEnvelope(
         id=env_id or new_uuid7(),
         protocolVersion=PROTOCOL_VERSION,
@@ -244,10 +244,10 @@ class TestMigrations:
             version = raw.execute("PRAGMA user_version").fetchone()[0]
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
         assert tables >= {"relay_outbox", "relay_operations", "sync_watermark", "nodes"}
-        assert tables >= V2_TABLES
+        assert tables >= WIRE_TABLES
         assert version == SCHEMA_VERSION
-        # v2 node column names: is_active replaces archived; row-LWW columns
-        # replace the v1 node_content_hlc watermark.
+        # node column names: is_active replaces archived; row-LWW columns
+        # replace the node_content_hlc watermark.
         assert {"is_active", "class_ids", "content_plain", "hlc_physical", "hlc_logical", "actor_id"} <= columns
         # v5 tags + v6 class order (web schema v5→v6 / v6→v7 parity) and the
         # Revision-11 render-state booleans (web schema v7→v8 parity).
@@ -281,8 +281,8 @@ class TestMigrations:
         assert reopened.node(WS_A, NODE) is not None
         reopened.close()
 
-    def test_v1_shape_database_is_reshaped_data_preserving(self, tmp_path: Path) -> None:
-        """A pre-v2 cache (archived polarity, no v2 columns) upgrades in place."""
+    def test_legacy_shape_database_is_reshaped_data_preserving(self, tmp_path: Path) -> None:
+        """A pre-reshape cache (archived polarity, no row-LWW columns) upgrades in place."""
         path = tmp_path / "legacy.db"
         with sqlite3.connect(path) as raw:
             raw.executescript(
@@ -312,7 +312,7 @@ class TestMigrations:
         assert row is not None
         assert row.is_active is False  # archived=1 → is_active=0
         assert row.content == '"old"'
-        # Revision-11 mapping straight from the v1 reshape: page → presents
+        # Revision-11 mapping straight from the reshape: page → presents
         # as main (the v7 rebuild is a no-op on this path).
         assert row.is_class is False
         assert row.present_as_main is True
@@ -387,11 +387,11 @@ class TestMigrations:
         upgraded.close()
 
     def test_v11_to_v12_migration_moves_the_render_contracts_to_the_schema(self, tmp_path: Path) -> None:
-        """§34.90 (owner review): an on-disk v11 database upgrades in place —
+        """An on-disk v11 database upgrades in place —
         property_schema gains display/readonly/hide_when_empty (NULL
         defaults, zero backfill) and class_property is REBUILT without the
         retired binding columns (readonly/hide_when_empty pre-v3.1.0, display
-        the §34.89 v11 experiment): the surviving per-class columns
+        the v11 experiment): the surviving per-class columns
         (sequence, required, default_value, active + LWW causality) keep
         their rows verbatim."""
         path = tmp_path / "v11.db"
@@ -412,7 +412,7 @@ class TestMigrations:
         )
         instance.close()
         # Downgrade the on-disk shape to v11: property_schema loses the three
-        # §34.90 columns; class_property regains the retired binding columns
+        # render-contract columns; class_property regains the retired binding columns
         # (with data — the rebuild must drop them).
         with sqlite3.connect(path) as raw:
             raw.execute("ALTER TABLE property_schema DROP COLUMN display")
@@ -774,7 +774,7 @@ class TestObjectUpdate:
         assert raw_rows(store, "SELECT hlc_physical, hlc_logical FROM nodes WHERE id = ?", (NODE,)) == [(11, 0)]
 
     def test_color_presence_vs_null_clear(self, store: LocalStore) -> None:
-        """§34.43: a color field ABSENT from the payload writes nothing; a
+        """A color field ABSENT from the payload writes nothing; a
         color field PRESENT with null writes NULL (the clear the UI's "No
         color" sends). Presence, not value, gates the write."""
         store.apply_remote(create_env(hlc=(10, 0)))
@@ -1083,8 +1083,8 @@ class TestObjectDelete:
 
 
 class TestObjectRestore:
-    """Lockstep with the TS reference's applyObjectRestore (implementation-plan
-    §34.38): whole-tree restore, independent-trash exclusion, the
+    """Lockstep with the TS reference's applyObjectRestore: whole-tree
+    restore, independent-trash exclusion, the
     dangling-parent corner, fail-loud on permanently deleted ids."""
 
     def test_restore_reactivates_subtree_and_consumes_trash_row(self, store: LocalStore, tmp_path: Path) -> None:
@@ -1159,7 +1159,7 @@ class TestClassOps:
         # Reference semantics (appliers.ts upsertClassNode): create-time
         # icon/color ride the INSERT — the LWW-gated UPDATE can never beat
         # the create's own (hlc, actor) — so both land on the class node
-        # row immediately, same as the registry row (§34.43 color fixture
+        # row immediately, same as the registry row (the color fixture
         # asserts exactly this for color).
         assert (row.icon, row.color) == ("📕", "blue")
         registry = raw_rows(
@@ -1172,7 +1172,7 @@ class TestClassOps:
         assert row is not None and (row.icon, row.color) == ("📕", "blue")
 
     def test_class_update_null_color_clears_both_rows(self, store: LocalStore) -> None:
-        """§34.43: class.update with an explicit null clears the color on the
+        """class.update with an explicit null clears the color on the
         class node row AND the registry row; a color-absent update leaves the
         cleared state untouched."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Book", color="blue"))
@@ -1326,7 +1326,7 @@ class TestClassPropertyBindings:
         ) == [('"low"',)]
 
     def test_display_position_is_schema_sourced_on_effective_rows(self, store: LocalStore) -> None:
-        """§34.90: the position is PROPERTY-level — it rides the SCHEMA row
+        """The position is PROPERTY-level — it rides the SCHEMA row
         (propertySchema.create/update), and the effective read carries it on
         both authored and derived rows; a stored NULL/'panel' sanitizes to
         None. The binding row knows nothing about it."""
@@ -1380,7 +1380,7 @@ class TestClassPropertyBindings:
         assert [row.display for row in store.get_effective_properties(member)] == [None]
 
     def test_schema_render_contracts_keep_vs_clear_via_update(self, store: LocalStore) -> None:
-        """§34.90: propertySchema.update's key-PRESENCE contract — absent
+        """propertySchema.update's key-PRESENCE contract — absent
         keeps the stored contract, an explicit null clears it (the number
         formats keep-vs-clear shape, now for display/readonly/hideWhenEmpty)."""
         store.apply_remote(
@@ -1421,7 +1421,7 @@ class TestClassPropertyBindings:
         assert row() == (None, 0, None)
 
     def test_class_property_set_render_contract_keys_fail_loud(self, store: LocalStore) -> None:
-        """§34.90: display/readonly/hideWhenEmpty are retired keys on the
+        """display/readonly/hideWhenEmpty are retired keys on the
         binding payload — the apply-time strict gate rejects the envelope
         outright (required stays a real binding field)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
@@ -1436,7 +1436,7 @@ class TestClassPropertyBindings:
                 )
 
     def test_inactive_binding_keeps_schema_contracts_on_unbound_authored(self, store: LocalStore) -> None:
-        """PC4 × §34.90: an inactive binding never becomes a candidate, so an
+        """PC4: an inactive binding never becomes a candidate, so an
         authored value reads unbound — required/sequence drop to None (they
         are binding-sourced) — while the schema's render contracts still
         ride the row (they are PROPERTY-level, unbound values included)."""
@@ -1790,7 +1790,7 @@ class TestPropertySchema:
         assert raw_rows(store, f"SELECT name, active FROM property_schema WHERE id = '{uid('ps-1')}'") == [("State", 0)]
 
     def test_number_formats_roundtrip_and_keep_vs_clear(self, store: LocalStore, tmp_path: Path) -> None:
-        """Lockstep with the TS reference (§34.79): numberPad/numberDecimals/
+        """Lockstep with the TS reference: numberPad/numberDecimals/
         numberRounding ride propertySchema.create; update keeps absent fields
         and clears explicit nulls (key presence, not value)."""
         store.apply_remote(
@@ -1826,7 +1826,7 @@ class TestPropertySchema:
         assert row() == (4, None, None)  # explicit null clears
 
     def test_option_icon_rides_verbatim_through_create_and_wholesale_update(self, store: LocalStore) -> None:
-        """§34.89: the appliers serialize raw ``payload["options"]`` verbatim,
+        """The appliers serialize raw ``payload["options"]`` verbatim,
         so an option's icon (and any additive decoration) lands in the stored
         options JSON on create and on the wholesale options replace."""
         store.apply_remote(
@@ -2129,7 +2129,7 @@ class TestSnapshotRestore:
 
 
 class TestWorkspaceFeatureToggle:
-    """The workspace.feature.set applier (§34.54/§34.55): LWW rows, the
+    """The workspace.feature.set applier: LWW rows, the
     family archival re-derivation with the event→meeting/birthday cascade,
     the tasks-enable family ensure, and F4 routing."""
 
@@ -2223,8 +2223,8 @@ class TestWorkspaceFeatureToggle:
         assert '"00000000-0000-0000-0004-000000000008"' in options[0][0]  # backlog option id
 
     def test_task_family_seed_pins_the_designed_status_style_and_display(self, store: LocalStore) -> None:
-        """§34.90: the Status options carry the designed glyphs (fixed ids,
-        MDI icons, §34.43 color tokens) and ONLY the Status SCHEMA defaults
+        """The Status options carry the designed glyphs (fixed ids,
+        MDI icons, color tokens) and ONLY the Status SCHEMA defaults
         to display="bullet" — the rest stay NULL ('panel'). The binding
         table knows nothing about display."""
         assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
@@ -2302,7 +2302,7 @@ class TestWorkspaceFeatureToggle:
 
 
 class TestPropertyUnsetCarrierTrash:
-    """§34.45 (PB2): unsetting a node-backed text value trashes the carrier
+    """PB2: unsetting a node-backed text value trashes the carrier
     block — trash + retention under the three guards (text schema, node-ref
     value, active non-class child of the owner, exclusively referenced)."""
 
@@ -2402,7 +2402,7 @@ class TestPropertyUnsetCarrierTrash:
 
 
 class TestPropertyWireBatch:
-    """PG5/PC4/PC6 unit semantics on the appliers (§34.57) beyond the
+    """PG5/PC4/PC6 unit semantics on the appliers beyond the
     vendored fixtures."""
 
     def test_same_idx_element_adds_coexist_and_order_by_element_id(self, store: LocalStore) -> None:
@@ -2667,7 +2667,7 @@ class TestPropertyWireBatch:
 
 
 class TestPg4ExtendsAwareBindings:
-    """PG4 (§34.45): the diamond rule — own binding (distance 0) → shortest
+    """PG4: the diamond rule — own binding (distance 0) → shortest
     extends-path → earliest class-assignment HLC, ties by class id. A subclass
     node inherits its ancestors' bindings; ``bound_by`` names the ANCESTOR
     whose row supplies the default + metadata. Mirrors the monorepo store's
@@ -2785,7 +2785,7 @@ class TestPg4ExtendsAwareBindings:
 
     def test_inherited_binding_metadata_surfaces_on_authored_rows(self, store: LocalStore) -> None:
         self._chain_store(store, [self.BASE])
-        # §34.90: required rides the BINDING; readonly is PROPERTY-level and
+        # Required rides the BINDING; readonly is PROPERTY-level and
         # rides the SCHEMA — the authored row surfaces both, boundBy naming
         # the ancestor whose binding won.
         store.apply_remote(
@@ -2814,8 +2814,8 @@ class TestPg4ExtendsAwareBindings:
 
 
 class TestPg6ApplyTimeValidation:
-    """PG6 (§34.51): apply-time fail-loud validation at the property.set write
-    path — scalar typing (number normalizes the v1-migrated numeric-string
+    """PG6: apply-time fail-loud validation at the property.set write
+    path — scalar typing (number normalizes the migrated numeric-string
     encoding), the multi cardinality ceiling, the datePrecision ceiling,
     targetClassFilter membership (extends-aware), and node-typed target
     existence (trash counts as existence). Evidence-scoped deviations: image
@@ -2893,7 +2893,7 @@ class TestPg6ApplyTimeValidation:
         self._seeded(store)
         store.apply_remote(property_set_env(NODE, self.NUMBER, value=42, hlc=(40, 0)))
         assert self._value(store, self.NUMBER) == "42"
-        # v1-migrated epoch-millis encoding (live-data evidence): normalizes.
+        # migrated epoch-millis encoding (live-data evidence): normalizes.
         store.apply_remote(property_set_env(NODE, self.NUMBER, value="1757427533728", hlc=(41, 0)))
         assert self._value(store, self.NUMBER) == "1757427533728"
         for bad in ["abc", "", [1], {}, True, float("nan")]:
@@ -2919,7 +2919,7 @@ class TestPg6ApplyTimeValidation:
 
     def test_image_passes_through_unchecked(self, store: LocalStore) -> None:
         self._seeded(store)
-        # A v1-migrated asset payload rides the live log — it must not fail.
+        # A migrated asset payload rides the live log — it must not fail.
         v1_payload = {"hash": "abc", "size": 12, "filename": "", "mime_type": "image/png"}
         store.apply_remote(property_set_env(NODE, self.IMAGE, value=v1_payload, hlc=(40, 0)))
         assert self._value(store, self.IMAGE) == json.dumps(v1_payload)
@@ -3003,7 +3003,7 @@ class TestPg6ApplyTimeValidation:
 
 
 class TestPb2OneShapePerType:
-    """PB2 (§34.45): the one-shape-per-type gate — text = string-or-reference,
+    """PB2: the one-shape-per-type gate — text = string-or-reference,
     date/object = node reference (legacy bare uuid normalizes), date_range =
     {start,end} of references. The gate lives in the PG6 validator the
     property.set applier consults; unknown schema ids store unchecked.

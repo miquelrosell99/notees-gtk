@@ -1,8 +1,8 @@
 """Validation tests for the v3 relay wire models and ``new_envelope``.
 
-Covers the WIRE.md §3 / envelope.ts invariants: ``protocolVersion: 3``
+Covers the WIRE.md / envelope.ts invariants: ``protocolVersion: 3``
 mandatory (missing rejected, only 3 accepted — Revision 11, no backward
-compatibility), ``deviceId`` (1–128) and ``timestamp`` mandatory, the M3 E2EE
+compatibility), ``deviceId`` (1–128) and ``timestamp`` mandatory, the E2EE
 slot ``{"$e": {iv, ct}}`` shape, camelCase-only keys, extra keys forbidden,
 and the ``wsProtocolVersion`` framing on WS hello/ops frames.
 """
@@ -47,8 +47,8 @@ VALID_ENVELOPE: dict[str, Any] = {
 
 
 class TestOpTypeRegistry:
-    def test_registry_matches_v2_op_types_ts(self) -> None:
-        """Exact parity with OP_PAYLOAD_SCHEMAS keys in v2 op-types.ts."""
+    def test_registry_matches_op_types_ts(self) -> None:
+        """Exact parity with OP_PAYLOAD_SCHEMAS keys in op-types.ts."""
         assert (
             frozenset(
                 {

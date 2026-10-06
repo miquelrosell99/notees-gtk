@@ -5,7 +5,7 @@ react by class: 401/403 trigger re-auth, other 4xx quarantine the offending
 operations, 429 backs off, 5xx retries, and transport failures surface as
 :class:`NetworkError` with no response attached.
 
-v2 relay endpoints (WIRE.md §3) answer with a machine-readable error
+v2 relay endpoints (WIRE.md) answer with a machine-readable error
 envelope — ``{"error": {"code", "message", "status"}}`` — whose stable codes
 take priority over status-code heuristics:
 
@@ -114,7 +114,7 @@ class NetworkError(ApiError):
         super().__init__(detail, status=None)
 
 
-#: Stable v2 error codes (WIRE.md §3) mapped onto the exception taxonomy.
+#: Stable v2 error codes (WIRE.md) mapped onto the exception taxonomy.
 _ERROR_CODE_MAP: dict[str, type[ApiError]] = {
     "unauthenticated": AuthenticationError,
     "forbidden": ForbiddenError,

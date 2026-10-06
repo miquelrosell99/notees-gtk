@@ -1,4 +1,4 @@
-"""Realtime WebSocket client — the relay's acceleration path (WIRE.md §2).
+"""Realtime WebSocket client — the relay's acceleration path (WIRE.md).
 
 Built on the ``websockets`` library's SYNCHRONOUS client API so it fits this
 repo's threading model: the engine runs on worker threads with a blocking
@@ -13,7 +13,7 @@ Framing contract (v2):
 - A ``hello``/``ops`` with a NEWER framing version fails loud:
   :class:`ProtocolVersionError` via the error callback, the socket is closed
   and the client NEVER reconnects (silently applying newer framing is the
-  failure mode WIRE.md §2 forbids).
+  failure mode WIRE.md forbids).
 - Malformed JSON answers the error callback and keeps the connection.
 - Abnormal closes reconnect on the backoff schedule [1s, 2s, 5s, 10s, 30s],
   reset after a successful ``hello``; :meth:`stop` closes cleanly (code 1000)
@@ -234,7 +234,7 @@ class RealtimeClient:
 
     def _handle_frame(self, raw: object) -> None:
         """Parse and dispatch one frame; malformed frames answer the error
-        callback and keep the connection (WIRE.md §2 unknown-frame semantics)."""
+        callback and keep the connection (WIRE.md unknown-frame semantics)."""
         try:
             if not isinstance(raw, str):
                 raise RealtimeProtocolError(f"frame is not text: {type(raw).__name__}")
@@ -257,7 +257,7 @@ class RealtimeClient:
         elif frame_type == "error":
             message = frame.get("message")
             self._emit_error(RuntimeError(message if isinstance(message, str) else "relay error"))
-        # Unknown frame types are ignored (WIRE.md §2).
+        # Unknown frame types are ignored (WIRE.md).
 
     def _on_hello_frame(self, frame: dict[str, object]) -> None:
         if self._check_framing_version(frame):

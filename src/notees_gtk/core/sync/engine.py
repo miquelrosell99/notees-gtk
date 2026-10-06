@@ -10,7 +10,7 @@ Pull pages catch-up from the persisted seq cursor, persisting the cursor after
 every page so a mid-page crash only re-fetches the tail; op-id dedupe makes
 catch-up/live overlap harmless.
 
-Realtime (WIRE.md §2): :meth:`start_realtime` subscribes to the workspace's WS
+Realtime (WIRE.md): :meth:`start_realtime` subscribes to the workspace's WS
 acceleration path. Live ``ops`` apply directly; ops arriving while a catch-up
 pull is in flight are buffered and drained when the pull finishes (op-id
 dedupe makes the overlap harmless — every envelope applies exactly once). A
@@ -338,7 +338,7 @@ class SyncEngine:
 
         Applies directly unless a catch-up pull is in flight — the consumer
         buffers while catching up and relies on op-id dedupe, so an envelope
-        that rode both paths applies exactly once (WIRE.md §2 overlap
+        that rode both paths applies exactly once (WIRE.md overlap
         discipline). The socket is an accelerator: the seq cursor stays
         authoritative, so live ops deliberately do NOT advance it.
         """

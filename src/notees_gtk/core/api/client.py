@@ -1,8 +1,8 @@
 """Synchronous REST client for a Notees server (relay protocol v2).
 
 Covers the endpoints the sync engine drives: v2 relay endpoints under
-``/api/relay/v2`` (WIRE.md §1: batch submit, catch-up, snapshot probe/download/
-upload, stats) plus the pre-v2 workspace listing and the login/2FA path (kept
+``/api/relay/v2`` (WIRE.md: batch submit, catch-up, snapshot probe/download/
+upload, stats) plus the legacy workspace listing and the login/2FA path (kept
 for servers that still issue bearer sessions; the v2 relay authenticates with
 a single-user API key, ``X-API-Key``). All relay request/response bodies are
 camelCase JSON; envelopes travel inside them per the protocol models.
@@ -38,10 +38,10 @@ __all__ = [
     "WorkspaceRef",
 ]
 
-#: Maximum envelopes per ``POST /batch`` submission (WIRE.md §3).
+#: Maximum envelopes per ``POST /batch`` submission (WIRE.md).
 MAX_BATCH_SIZE = 1000
 
-#: Base path of the v2 relay API (WIRE.md §1).
+#: Base path of the v2 relay API (WIRE.md).
 RELAY_V2_BASE = "/api/relay/v2"
 
 #: 2FA-gated login: the password step returns this pre-auth token + purpose instead of tokens.
@@ -74,9 +74,9 @@ class WorkspaceRef(BaseModel):
 
 
 class SnapshotMeta(BaseModel):
-    """Snapshot metadata from ``GET /api/relay/v2/snapshot`` (WIRE.md §1).
+    """Snapshot metadata from ``GET /api/relay/v2/snapshot`` (WIRE.md).
 
-    v2 shape: ``snapshotId``, ``hlc``, ``hasSnapshot``, ``restoreEpoch``,
+    Wire shape: ``snapshotId``, ``hlc``, ``hasSnapshot``, ``restoreEpoch``,
     ``upToSeq`` (null when no snapshot exists). ``workspaceId`` deliberately
     does not ride along — the client asked for exactly one workspace.
     """
@@ -102,7 +102,7 @@ class SnapshotUploadResult(BaseModel):
 
 
 class RelayStats(BaseModel):
-    """Relay statistics from ``GET /api/relay/v2/stats`` (WIRE.md §1)."""
+    """Relay statistics from ``GET /api/relay/v2/stats`` (WIRE.md)."""
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
@@ -213,7 +213,7 @@ class NoteesClient:
 
         Duplicate envelope ids are silently ignored server-side, so
         ``savedIds`` may omit ids that were sent (retry-safe). Client-side
-        pre-checks (WIRE.md §3 limits) raise ``ValueError`` before any request
+        pre-checks (WIRE.md limits) raise ``ValueError`` before any request
         is made: at most :data:`MAX_BATCH_SIZE` envelopes, each payload at most
         :data:`MAX_ENVELOPE_SIZE_BYTES` bytes serialized.
 
@@ -236,7 +236,7 @@ class NoteesClient:
         return list(BatchResponse.model_validate(data).saved_ids)
 
     def catch_up(self, workspace_id: str, after_seq: int = 0, limit: int = 1000) -> CatchUpPaginatedResponse:
-        """Fetch one page of envelopes newer than the seq cursor (WIRE.md §1).
+        """Fetch one page of envelopes newer than the seq cursor (WIRE.md).
 
         Args:
             workspace_id: Workspace to catch up on.
@@ -250,17 +250,17 @@ class NoteesClient:
         return CatchUpPaginatedResponse.model_validate(data)
 
     def snapshot_probe(self, workspace_id: str) -> SnapshotMeta:
-        """Probe the newest snapshot's metadata without downloading it (WIRE.md §1)."""
+        """Probe the newest snapshot's metadata without downloading it (WIRE.md)."""
         data = self._get_json(f"{RELAY_V2_BASE}/snapshot", params={"workspaceId": workspace_id})
         return SnapshotMeta.model_validate(data)
 
     def snapshot_data(self, workspace_id: str) -> bytes:
-        """Download the newest snapshot blob as raw bytes (WIRE.md §1)."""
+        """Download the newest snapshot blob as raw bytes (WIRE.md)."""
         response = self._send("GET", f"{RELAY_V2_BASE}/snapshot/data", params={"workspaceId": workspace_id})
         return response.content
 
     def upload_snapshot(self, workspace_id: str, data: bytes, *, hlc: Hlc) -> SnapshotUploadResult:
-        """Upload a client-produced snapshot blob (WIRE.md §1).
+        """Upload a client-produced snapshot blob (WIRE.md).
 
         Args:
             workspace_id: Workspace the snapshot belongs to.
@@ -280,7 +280,7 @@ class NoteesClient:
         return SnapshotUploadResult.model_validate(response.json())
 
     def stats(self, workspace_id: str) -> RelayStats:
-        """Return the relay stats document for a workspace (WIRE.md §1)."""
+        """Return the relay stats document for a workspace (WIRE.md)."""
         data = self._get_json(f"{RELAY_V2_BASE}/stats", params={"workspaceId": workspace_id})
         return RelayStats.model_validate(data)
 

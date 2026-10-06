@@ -1,6 +1,6 @@
 """Tests for the content-grammar helpers (title-is-content lockstep).
 
-Ports of the v2 ``packages/domain/src/node.ts`` helpers the store and the
+Ports of the ``packages/domain/src/node.ts`` helpers the store and the
 sidebar now share: ``stringifyContentAst`` (pages/classes carry text-only
 content), ``deriveDisplayName`` (the display name IS the content excerpt,
 capped at 80 chars) and ``formatDateNodeName`` (YYYYMMDD shapes render as
@@ -92,7 +92,7 @@ class TestPlaintextExcerptParity:
 
 
 class TestCodeBlockAndHrGrammar:
-    """§34.54 B3/B5: ``code_block`` is a promotion survivor (with whiteboard/
+    """``code_block`` is a promotion survivor (with whiteboard/
     query); ``hr`` is deliberately NOT — promotion stringifies it away."""
 
     def test_code_block_survives_stringification_with_surrounding_text_first(self) -> None:
@@ -126,7 +126,7 @@ class TestCodeBlockAndHrGrammar:
 
 
 class TestStrictTokenValidation:
-    """The §34.54 strict grammar entries (contentTokenSchema parity): the
+    """The strict grammar entries (contentTokenSchema parity): the
     code_block language tag, the hr shape, and the embed_ref.view enum."""
 
     @pytest.mark.parametrize(

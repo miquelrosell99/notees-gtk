@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 #: Verbatim copy of the server derived schema's ``node`` table
-#: (``v2/packages/store/src/schema.ts`` in the Notees monorepo, SCHEMA_VERSION 8 —
+#: (``packages/store/src/schema.ts`` in the Notees monorepo, SCHEMA_VERSION 8 —
 #: the Revision-11 render-state model). A snapshot blob is a serialized
 #: derived database, so snapshot fakes MUST be built from the real DDL —
 #: inventing a ``nodes``-plural table here once hid a restore bug that only
