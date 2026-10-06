@@ -73,6 +73,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/object-color.json",
     "wire/object-move-before.json",
     "wire/object-move.json",
+    "wire/object-restore.json",
     "wire/property-date-qualifier.json",
     "wire/property-set-lww.json",
     "wire/property-value-elements.json",
