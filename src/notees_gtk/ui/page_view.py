@@ -4,11 +4,15 @@ The heavy lifting (token parsing, mention/chip resolution) lives in the pure
 :mod:`notees_gtk.ui.ast_render` module; this file only turns view records into
 labels: Pango markup for marked runs and pills, monospace frames for math,
 dimmed placeholders for block-scale tokens (asset/embed/query/whiteboard).
+
+Above the content the widget renders the node-alias chrome (when the window
+passes it — see :mod:`notees_gtk.ui.aliases`): the Aliases section on an
+aliased node's view and the Aliased-node row on the alias's own view.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 
 import gi
 
@@ -16,6 +20,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
+from notees_gtk.ui.aliases import AliasEntry, build_aliased_node_row, build_aliases_section
 from notees_gtk.ui.ast_render import (
     ClassChipRun,
     ExternalLinkRun,
@@ -86,8 +91,23 @@ class PageViewWidget(Gtk.Box):
         clamp.set_child(self._content)
         scrolled.set_child(clamp)
 
-    def show_page(self, title: str, view: PageView) -> None:
-        """Render ``view`` with ``title`` as the page header."""
+    def show_page(
+        self,
+        title: str,
+        view: PageView,
+        *,
+        aliases: Sequence[AliasEntry] = (),
+        aliased_main: AliasEntry | None = None,
+        repoint_candidates: Sequence[AliasEntry] = (),
+        on_open_node: Callable[[str], None] | None = None,
+        on_repoint: Callable[[str | None], None] | None = None,
+    ) -> None:
+        """Render ``view`` with ``title`` as the page header.
+
+        The alias chrome (both directions of the ``aliasedNodeId`` relation)
+        renders above the content when supplied: the Aliases section on the
+        aliased node's view, the Aliased-node row on the alias's own view.
+        """
         while child := self._content.get_first_child():
             self._content.remove(child)
 
@@ -97,6 +117,18 @@ class PageViewWidget(Gtk.Box):
             heading.add_css_class("page-title")
             self._content.append(heading)
             self._content.append(Gtk.Separator())
+
+        if aliased_main is not None and on_repoint is not None:
+            self._content.append(
+                build_aliased_node_row(
+                    main=aliased_main,
+                    candidates=repoint_candidates,
+                    on_open_node=on_open_node or (lambda _id: None),
+                    on_repoint=on_repoint,
+                )
+            )
+        if aliases and on_open_node is not None:
+            self._content.append(build_aliases_section(aliases, on_open_node))
 
         line: list[object] = []
         for item in view.items:

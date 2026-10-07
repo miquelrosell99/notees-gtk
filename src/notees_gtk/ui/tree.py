@@ -113,6 +113,36 @@ class NodeTreeSidebar(Gtk.Box):
             return None
         return str(row.node_id)
 
+    def select_node(self, node_id: str) -> bool:
+        """Select ``node_id``, expanding collapsed ancestors so its row builds.
+
+        The alias chrome's navigate calls this: the selection signal drives
+        the show. Returns ``False`` for unknown ids (no rows to select).
+        """
+        by_id = {row.id: row for row in self._rows}
+        if node_id not in by_id:
+            return False
+        # Expand the ancestor chain (cycle-guarded like _visible_rows) so the
+        # target row is actually built, then rebuild the list.
+        expanded_any = False
+        seen: set[str] = set()
+        parent = by_id[node_id].parent_id
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            if parent not in self._expanded:
+                self._expanded.add(parent)
+                expanded_any = True
+            parent = by_id[parent].parent_id if parent in by_id else None
+        if expanded_any:
+            self.set_nodes(self._rows)
+        child = self._list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow) and str(child.node_id) == node_id:
+                self._list.select_row(child)
+                return True
+            child = child.get_next_sibling()
+        return False
+
     # ----------------------------------------------------------------- private
 
     def _on_dropdown_changed(self, *_args: object) -> None:
