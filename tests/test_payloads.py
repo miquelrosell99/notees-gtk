@@ -170,6 +170,69 @@ class TestColorGrammar:
             build_class_update(UUID_1, color="not-a-color")
 
 
+class TestWireNodeFields:
+    """M27: ``object.update`` carries the optional nullable ``coverAssetId``
+    / ``bannerAssetId`` / ``aliasedNodeId`` node fields — presence writes,
+    present-null clears (the zod ``uuid.nullish()`` parity). ``object.create``
+    carries none of them (the strict schema rejects the keys outright, no
+    wire compat)."""
+
+    @pytest.mark.parametrize(
+        "key", ["coverAssetId", "bannerAssetId", "aliasedNodeId"]
+    )
+    def test_object_update_accepts_the_field_and_its_null_clear(self, key: str) -> None:
+        validate_payload("object.update", {"objectId": UUID_1, key: UUID_2})
+        # A null-only update still satisfies the at-least-one-field refine
+        # (key presence, the zod ``Object.keys(p).length > 1`` parity).
+        validate_payload("object.update", {"objectId": UUID_1, key: None})
+
+    @pytest.mark.parametrize(
+        "key", ["coverAssetId", "bannerAssetId", "aliasedNodeId"]
+    )
+    def test_the_fields_are_uuid_format_checked(self, key: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("object.update", {"objectId": UUID_1, key: "not-a-uuid"})
+
+    @pytest.mark.parametrize(
+        "key", ["coverAssetId", "bannerAssetId", "aliasedNodeId"]
+    )
+    def test_object_create_rejects_the_update_only_fields(self, key: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("object.create", {"objectId": UUID_1, key: UUID_2})
+
+    def test_builder_sends_clears_only_when_asked(self) -> None:
+        """``None`` emits an explicit null (the clear); omitting the
+        parameter leaves the key off the wire entirely (absence = no write)."""
+        assert build_object_update(UUID_1, aliased_node_id=None) == {"objectId": UUID_1, "aliasedNodeId": None}
+        assert build_object_update(UUID_1, cover_asset_id=UUID_2, banner_asset_id=UUID_3) == {
+            "objectId": UUID_1,
+            "coverAssetId": UUID_2,
+            "bannerAssetId": UUID_3,
+        }
+        payload = build_object_update(UUID_1, icon="📄")
+        for key in ("coverAssetId", "bannerAssetId", "aliasedNodeId"):
+            assert key not in payload
+
+
+class TestAssetPropertyType:
+    """M38: the property-schema type enum gains ``asset`` (node-typed values
+    whose target must carry the asset class — the filter is implicit in the
+    type)."""
+
+    def test_property_schema_create_accepts_asset(self) -> None:
+        validate_payload(
+            "propertySchema.create",
+            {"propertySchemaId": UUID_1, "name": "Attachment", "type": "asset", "multi": True, "scope": "class"},
+        )
+
+    def test_property_schema_create_rejects_unknown_types(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(
+                "propertySchema.create",
+                {"propertySchemaId": UUID_1, "name": "X", "type": "asset_node"},
+            )
+
+
 class TestRenderStateModelStrictness:
     """Revision 11: object.create/update dropped the ``nodeType`` enumeration
     and gained the optional ``presentAsMain`` render bit — the retired key is

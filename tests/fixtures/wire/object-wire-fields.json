@@ -1,0 +1,197 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000520",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Wire fields probe"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000521",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052b"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052b",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Cover asset"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000522",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052c"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052c",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Main page"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000523",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "coverAssetId": "0192a000-0000-7000-8000-00000000052b"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000524",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "bannerAssetId": "0192a000-0000-7000-8000-00000000052b",
+        "aliasedNodeId": "0192a000-0000-7000-8000-00000000052c"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000525",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "aliasedNodeId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000526",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "coverAssetId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000527",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "bannerAssetId": null
+      }
+    }
+  ]
+}

@@ -360,6 +360,127 @@ class TestClassUnassignFixture:
         ]
 
 
+class TestObjectWireFieldsFixture:
+    """Replay of object-wire-fields.json (M27): the three wire node fields
+    land set-then-clear through object.update — presence writes, present-null
+    clears — and an absent field is never a write (mirrors the monorepo
+    store test's fixture replay)."""
+
+    PAGE = "0192a000-0000-7000-8000-00000000052a"
+    ASSET = "0192a000-0000-7000-8000-00000000052b"
+    MAIN = "0192a000-0000-7000-8000-00000000052c"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("object-wire-fields.json")]
+
+    def test_the_fixture_lands_set_then_clear_through_object_update(self, store: LocalStore) -> None:
+        create_page, create_asset, create_main, *updates = self._load()
+        assert store.apply_remote(create_page) is True
+        assert store.apply_remote(create_asset) is True
+        assert store.apply_remote(create_main) is True
+        row = store.node(WS, self.PAGE)
+        assert row is not None
+        assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (None, None, None)
+        assert store.apply_remote(updates[0]) is True  # coverAssetId = ASSET
+        assert store.node(WS, self.PAGE).cover_asset_id == self.ASSET
+        assert store.apply_remote(updates[1]) is True  # bannerAssetId = ASSET, aliasedNodeId = MAIN
+        row = store.node(WS, self.PAGE)
+        assert (row.banner_asset_id, row.aliased_node_id) == (self.ASSET, self.MAIN)
+        assert store.apply_remote(updates[2]) is True  # aliasedNodeId = null (clear)
+        row = store.node(WS, self.PAGE)
+        assert row.aliased_node_id is None and row.cover_asset_id == self.ASSET
+        assert store.apply_remote(updates[3]) is True  # coverAssetId = null
+        row = store.node(WS, self.PAGE)
+        assert (row.cover_asset_id, row.banner_asset_id) == (None, self.ASSET)
+        assert store.apply_remote(updates[4]) is True  # bannerAssetId = null
+        row = store.node(WS, self.PAGE)
+        assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (None, None, None)
+
+    def test_the_fields_are_columns_on_the_derived_node_table(self, store: LocalStore) -> None:
+        """The wire fields project as derived node columns (store schema
+        v13, web v16 parity) — the NodeRow read surfaces them."""
+        for envelope in self._load():
+            store.apply_remote(envelope)
+        columns = {row[1] for row in raw(store, "PRAGMA table_info(nodes)")}
+        assert {"cover_asset_id", "banner_asset_id", "aliased_node_id"} <= columns
+
+
+class TestClassConvertFixture:
+    """Replay of class-convert.json (M47): class.create on an EXISTING node
+    DECLARES it a class — the identity bit flips, a parented node is cut to
+    a root (parent edge + child-order row drop), the render bit clears, the
+    registry adopts the existing title, re-declaration is a replace no-op,
+    and a fresh id still declares a brand-new class (mirrors the monorepo
+    store test)."""
+
+    PAGE = "0192a000-0000-7000-8000-00000000053a"
+    RACK = "0192a000-0000-7000-8000-00000000053b"
+    SHELF = "0192a000-0000-7000-8000-00000000053c"
+    FRESH = "0192a000-0000-7000-8000-00000000053d"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-convert.json")]
+
+    def test_declares_an_existing_parentless_page_a_class_the_title_rides(self, store: LocalStore) -> None:
+        page_create, _rack, _shelf, convert_page = self._load()[:4]
+        assert store.apply_remote(page_create) is True
+        assert store.apply_remote(convert_page) is True
+        row = store.node(WS, self.PAGE)
+        assert row is not None
+        assert (row.is_class, row.present_as_main, row.parent_id) == (True, False, None)
+        # Title-is-content: the node's existing text content is the class
+        # title (the conversion payload carried no contentAst).
+        assert json.loads(row.content or "[]") == [{"type": "text", "text": "Genre collection"}]
+        # The registry row adopted the title + the hierarchy self-row landed.
+        assert raw(store, "SELECT name, active FROM class WHERE id = ?", (self.PAGE,)) == [
+            ("Genre collection", 1)
+        ]
+        assert raw(
+            store, "SELECT 1 FROM class_hierarchy WHERE class_id = ? AND ancestor_id = ?", (self.PAGE, self.PAGE)
+        ) == [(1,)]
+
+    def test_converting_a_parented_node_cuts_it_to_a_root(self, store: LocalStore) -> None:
+        _page, rack_create, shelf_create, _convert_page, convert_shelf = self._load()[:5]
+        assert store.apply_remote(rack_create) is True
+        assert store.apply_remote(shelf_create) is True
+        assert [row.id for row in store.children(WS, self.RACK)] == [self.SHELF]
+        assert store.apply_remote(convert_shelf) is True
+        row = store.node(WS, self.SHELF)
+        assert row is not None and (row.is_class, row.parent_id) == (True, None)
+        assert store.children(WS, self.RACK) == []
+        assert raw(store, "SELECT COUNT(*) FROM node_child_order WHERE child_id = ?", (self.SHELF,)) == [(0,)]
+
+    def test_redeclaration_is_a_replace_noop_and_fresh_declaration_keeps_working(self, store: LocalStore) -> None:
+        page_create, _rack, _shelf, convert_page, _convert_shelf, redeclare, fresh_create = self._load()
+        assert store.apply_remote(page_create) is True
+        assert store.apply_remote(convert_page) is True
+        content_before = store.node(WS, self.PAGE).content
+        assert store.apply_remote(redeclare) is True
+        # Absent fields preserve on re-declaration: the content rides untouched.
+        assert store.node(WS, self.PAGE).content == content_before
+        assert store.apply_remote(fresh_create) is True
+        fresh = store.node(WS, self.FRESH)
+        assert fresh is not None and fresh.is_class is True
+        assert json.loads(fresh.content or "[]") == [{"type": "text", "text": "Fresh genre"}]
+
+
+class TestPropertyAssetTypeFixture:
+    """Replay of property-asset-type.json (M38): asset-typed schemas land
+    (multi class-scoped + single object-scoped) and a name-only update
+    coexists on the single-value schema (mirrors the monorepo store test)."""
+
+    def test_the_fixture_lands_asset_typed_schemas_and_the_update_coexists(self, store: LocalStore) -> None:
+        for envelope in load_fixture("property-asset-type.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        assert raw(
+            store,
+            "SELECT id, type, multi, scope, name FROM property_schema ORDER BY id",
+        ) == [
+            ("0192a000-0000-7000-8000-000000000541", "asset", 1, "class", "Attachment"),
+            ("0192a000-0000-7000-8000-000000000542", "asset", 0, "object", "Cover file (renamed)"),
+        ]
+
+
 class TestObjectColorFixture:
     """Replay of object-color.json (token | #hex | null-clear):
     object.update applies the preset token, then the custom hex, then null
