@@ -20,6 +20,12 @@ specs:
   no targetClassFilter) was reversed by the owner;
 - withdrawn ids are never reused (the ``locator`` …0018 precedent):
   ``…0025`` (``linkedAuthors``) is WITHDRAWN 2026-09-27, reversed same day.
+- the #14 follow-up five (owner list, 2026-10-06): ``definition`` /
+  ``idea`` / ``place`` / ``project`` / ``trip`` (block ``…0001-…``,
+  …0043-…0047), plain seeds with their mdi icons + display titles;
+  ``trip`` extends ``event`` so the events-family toggle cascades to it —
+  the gating/family groupings mirror ``features.ts`` (the four plain ones
+  stay unmanaged: no gating, not always-on).
 
 It fails loud if a future registry/applier change breaks seed application.
 """
@@ -72,6 +78,26 @@ RETIRED_CLASS_META_ID = "00000000-0000-0000-0001-000000000001"
 #: …0034 extends source, so the SOURCES family toggle archives it.
 WEBLINK = "00000000-0000-0000-0001-000000000034"
 ASSET = "00000000-0000-0000-0001-000000000009"
+
+#: The #14 follow-up five (owner list, 2026-10-06 — seeds.ts …0043-…0047):
+#: the deploy catalog's missing everyday classes, plain seeds (zero wire
+#: cost, seed convergence only). trip extends event — a trip is
+#: calendar-bound, so the events toggle cascades to it.
+DEFINITION = "00000000-0000-0000-0001-000000000043"
+IDEA = "00000000-0000-0000-0001-000000000044"
+PLACE = "00000000-0000-0000-0001-000000000045"
+PROJECT = "00000000-0000-0000-0001-000000000046"
+TRIP = "00000000-0000-0000-0001-000000000047"
+EVENT = "00000000-0000-0000-0001-000000000040"
+
+#: The WITHDRAWN class slots the five must never collide with: …0001 (the
+#: seeded `class` meta class, retired 2026-10-07) and …0042 (`cover`,
+#: withdrawn 2026-10-04 the day it was minted) — dead slots, never reused
+#: (the seeds.ts withdrawal comments, the locator …0018 precedent).
+WITHDRAWN_CLASS_IDS = (
+    "00000000-0000-0000-0001-000000000001",
+    "00000000-0000-0000-0001-000000000042",
+)
 
 
 def seed_env(op_type: str, payload: dict[str, object], physical: int) -> RelayEnvelope:
@@ -299,3 +325,139 @@ class TestWeblinkExtendsSource:
                 (WEBLINK, SOURCE),
             ).fetchall()
         assert closure == [(SOURCE,)]
+
+
+class TestDeployCatalogFive:
+    """The #14 follow-up seed convergence (owner list, 2026-10-06): the
+    deploy catalog's missing everyday classes — ``definition`` /
+    ``idea`` / ``place`` / ``project`` as plain seeds, ``trip`` extending
+    ``event`` so the events-family cascade reaches it. The GTK static map
+    never got these five (the seed drift this class pins shut): the map
+    gains their fixed UUIDs, icons, and display titles, and the
+    gating/family groupings mirror ``features.ts`` exactly (the four plain
+    ones stay unmanaged — no gating, not always-on)."""
+
+    FIVE: tuple[tuple[str, str, str, str], ...] = (
+        # (seed key, uuid, mdi icon, display title) — the seeds.ts record, pinned.
+        ("definition", DEFINITION, "mdiBookOpenPageVariant", "Definition"),
+        ("idea", IDEA, "mdiThoughtBubbleOutline", "Idea"),
+        ("place", PLACE, "mdiMapMarkerOutline", "Place"),
+        ("project", PROJECT, "mdiBriefcaseOutline", "Project"),
+        ("trip", TRIP, "mdiAirplane", "Trip"),
+    )
+
+    def test_fixed_ids_block_prefixed_unique_and_withdrawn_slots_untouched(self) -> None:
+        ids = [class_id for _name, class_id, _icon, _title in self.FIVE]
+        assert len(set(ids)) == len(ids)
+        for class_id in ids:
+            assert class_id.startswith(SYSTEM_CLASS_BLOCK_PREFIX)
+        assert set(ids).isdisjoint(WITHDRAWN_CLASS_IDS)
+        assert RETIRED_CLASS_META_ID not in ids
+
+    def test_static_map_carries_the_five_with_seeds_icons_and_titles(self) -> None:
+        """The drift guard: every one of the five resolves through the GTK
+        static map at its fixed id, with the seeds.ts icon + display title —
+        a future main-repo seed change that skips this port fails here."""
+        from notees_gtk.core.protocol.features import (  # noqa: PLC0415
+            SYSTEM_CLASS_DISPLAY_NAMES,
+            SYSTEM_CLASS_ICONS,
+            system_class_uuid,
+        )
+
+        for name, class_id, icon, title in self.FIVE:
+            assert system_class_uuid(name) == class_id
+            assert SYSTEM_CLASS_ICONS[name] == icon
+            assert SYSTEM_CLASS_DISPLAY_NAMES[name] == title
+
+    def test_seed_replay_creates_the_classes_with_display_titles(self, store: LocalStore) -> None:
+        """The seed-op shape ``buildSeedEnvelopes`` emits for the five
+        (class.create with the display title as content + the mdi icon —
+        the server seed authors ``SYSTEM_CLASS_DISPLAY_NAMES`` into the
+        text content, title-is-content)."""
+        for offset, (_name, class_id, icon, title) in enumerate(self.FIVE):
+            assert (
+                store.apply_remote(
+                    seed_env(
+                        "class.create",
+                        {"classId": class_id, "contentAst": [{"type": "text", "text": title}], "icon": icon},
+                        1 + offset,
+                    )
+                )
+                is True
+            )
+        for _name, class_id, _icon, title in self.FIVE:
+            row = store.node(WS, class_id)
+            assert row is not None
+            assert row.is_class is True
+            assert row.present_as_main is False
+            assert row.content_plain == title  # title-is-content: the display title IS the content
+            assert row.parent_id is None  # classes are always roots
+        with sqlite3.connect(_db_path(store)) as raw:
+            registry = {
+                class_id: (name, icon)
+                for class_id, name, icon in raw.execute("SELECT id, name, icon FROM class WHERE active = 1").fetchall()
+            }
+        for _name, class_id, icon, title in self.FIVE:
+            assert registry[class_id] == (title, icon)
+
+    def test_trip_extends_event_and_replays_through_the_appliers(self, store: LocalStore) -> None:
+        assert (
+            store.apply_remote(
+                seed_env(
+                    "class.create",
+                    {"classId": EVENT, "contentAst": [{"type": "text", "text": "Event"}], "icon": "mdiCalendar"},
+                    1,
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                seed_env(
+                    "class.create",
+                    {"classId": TRIP, "contentAst": [{"type": "text", "text": "Trip"}], "icon": "mdiAirplane"},
+                    2,
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(seed_env("class.setExtends", {"classId": TRIP, "parentClassIds": [EVENT]}, 10))
+            is True
+        )
+        with sqlite3.connect(_db_path(store)) as raw:
+            edges = raw.execute("SELECT class_id, parent_class_id FROM class_extends WHERE class_id = ?", (TRIP,)).fetchall()
+            closure = raw.execute(
+                "SELECT ancestor_id FROM class_hierarchy WHERE class_id = ? AND ancestor_id = ?",
+                (TRIP, EVENT),
+            ).fetchall()
+        assert edges == [(TRIP, EVENT)]
+        assert closure == [(EVENT,)]
+
+    def test_gating_and_family_groupings_mirror_features_ts(self) -> None:
+        """features.ts parity: trip joined the events family (the cascade
+        set + the gating walk), while the four plain seeds are unmanaged —
+        exactly like the TS record, where they are absent from
+        ``ALWAYS_ON_SYSTEM_CLASSES`` and gate on nothing."""
+        from notees_gtk.core.protocol.features import (  # noqa: PLC0415
+            family_class_names,
+            gating_features_for_class,
+            is_always_on_system_class,
+            managed_class_ids,
+            system_class_ancestors,
+        )
+
+        assert system_class_ancestors("trip") == frozenset({"event"})
+        assert family_class_names("events") == ("event", "birthday", "meeting", "trip")
+        assert managed_class_ids("events") == (
+            EVENT,
+            "00000000-0000-0000-0001-000000000041",  # birthday
+            "00000000-0000-0000-0001-000000000039",  # meeting
+            TRIP,
+        )
+        assert gating_features_for_class("trip") == ("events",)
+        for name in ("definition", "idea", "place", "project"):
+            assert system_class_ancestors(name) == frozenset()
+            assert gating_features_for_class(name) == ()
+            assert not is_always_on_system_class(name)
+        assert not is_always_on_system_class("trip")

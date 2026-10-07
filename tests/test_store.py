@@ -2188,13 +2188,14 @@ class TestSnapshotRestore:
 
 class TestWorkspaceFeatureToggle:
     """The workspace.feature.set applier: LWW rows, the
-    family archival re-derivation with the event→meeting/birthday cascade,
-    the tasks-enable family ensure, and F4 routing."""
+    family archival re-derivation with the event→meeting/birthday/trip
+    cascade, the tasks-enable family ensure, and F4 routing."""
 
     TASK_CLASS = "00000000-0000-0000-0001-000000000012"
     EVENT_CLASS = "00000000-0000-0000-0001-000000000040"
     MEETING_CLASS = "00000000-0000-0000-0001-000000000039"
     BIRTHDAY_CLASS = "00000000-0000-0000-0001-000000000041"
+    TRIP_CLASS = "00000000-0000-0000-0001-000000000047"
     BOOK_CLASS = "00000000-0000-0000-0001-000000000024"
 
     @staticmethod
@@ -2212,6 +2213,9 @@ class TestWorkspaceFeatureToggle:
             (self.EVENT_CLASS, "event", (1, 0)),
             (self.MEETING_CLASS, "meeting", (2, 0)),
             (self.BIRTHDAY_CLASS, "birthday", (3, 0)),
+            # The #14 follow-up (owner list, 2026-10-06): trip extends
+            # event, so the events toggle cascades to it too.
+            (self.TRIP_CLASS, "trip", (4, 0)),
         ):
             store.apply_remote(class_env("class.create", class_id, hlc=hlc, name=name))
 
@@ -2228,14 +2232,16 @@ class TestWorkspaceFeatureToggle:
     def test_disable_cascades_through_the_extends_children(self, store: LocalStore) -> None:
         self._seed_calendar_family(store)
         store.apply_remote(self.feature_env("events", False, hlc=(30, 0)))
-        for class_id in (self.EVENT_CLASS, self.MEETING_CLASS, self.BIRTHDAY_CLASS):
+        for class_id in (self.EVENT_CLASS, self.MEETING_CLASS, self.BIRTHDAY_CLASS, self.TRIP_CLASS):
             assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (class_id,)) == [(0,)]
             assert raw_rows(store, "SELECT is_active FROM nodes WHERE id = ? AND is_class = 1", (class_id,)) == [(0,)]
-        # Meetings off alone leaves the event base live.
+        # Meetings off alone leaves the event base live; the trip child
+        # comes back with the events base (it has no toggle of its own).
         store.apply_remote(self.feature_env("meetings", False, hlc=(40, 0)))
         store.apply_remote(self.feature_env("events", True, hlc=(50, 0)))
         assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.EVENT_CLASS,)) == [(1,)]
         assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.BIRTHDAY_CLASS,)) == [(1,)]
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.TRIP_CLASS,)) == [(1,)]
         # Per-class re-derivation: the meetings-off meeting stays archived…
         assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.MEETING_CLASS,)) == [(0,)]
         # …until its own toggle comes back on.

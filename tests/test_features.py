@@ -33,6 +33,7 @@ SOURCE = "00000000-0000-0000-0001-000000000023"
 PERSON = "00000000-0000-0000-0001-000000000030"
 BOOK = "00000000-0000-0000-0001-000000000024"
 AGENT = "00000000-0000-0000-0001-000000000029"
+TRIP = "00000000-0000-0000-0001-000000000047"
 
 
 class TestFiveFamilyMap:
@@ -50,8 +51,11 @@ class TestFiveFamilyMap:
 
 class TestFamilySets:
     def test_events_family_cascades_through_the_extends_children(self) -> None:
-        assert family_class_names("events") == ("event", "birthday", "meeting")
-        assert managed_class_ids("events") == (EVENT, BIRTHDAY, MEETING)
+        """The #14 follow-up (owner list, 2026-10-06): trip extends event —
+        a trip is calendar-bound, so the events family set archives it with
+        meeting and birthday (the four-strong cascade)."""
+        assert family_class_names("events") == ("event", "birthday", "meeting", "trip")
+        assert managed_class_ids("events") == (EVENT, BIRTHDAY, MEETING, TRIP)
 
     def test_sources_family_is_the_eleven_strong_family(self) -> None:
         """weblink joined the source tree (owner ruling 2026-10-07): the
@@ -99,6 +103,18 @@ class TestGatingWalk:
         """The source-family child: its chrome hides when SOURCES is off."""
         assert gating_features_for_class("weblink") == ("sources",)
 
+    def test_trip_gates_on_events(self) -> None:
+        """The #14 follow-up: trip extends event, so its chrome hides when
+        EVENTS is off — exactly like meeting and birthday."""
+        assert gating_features_for_class("trip") == ("events",)
+
+    def test_the_four_plain_deploy_catalog_seeds_have_no_gating(self) -> None:
+        """features.ts parity: definition/idea/place/project are plain seeds —
+        unmanaged, like the TS record (absent from ALWAYS_ON_SYSTEM_CLASSES,
+        no family base ancestor, gate on nothing)."""
+        for name in ("definition", "idea", "place", "project"):
+            assert gating_features_for_class(name) == ()
+
 
 class TestF4Routing:
     def test_only_the_five_bases_route(self) -> None:
@@ -120,7 +136,11 @@ class TestAlwaysOnAndAncestors:
     def test_always_on_list(self) -> None:
         for name in ("year", "month", "day", "asset", "highlight", "collection", "agent", "organization"):
             assert is_always_on_system_class(name)
-        for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "weblink"):
+        for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "weblink", "trip"):
+            assert not is_always_on_system_class(name)
+        # The #14 follow-up's four plain seeds are unmanaged, not always-on
+        # (features.ts parity — they are absent from the TS always-on list).
+        for name in ("definition", "idea", "place", "project"):
             assert not is_always_on_system_class(name)
         assert set(ALWAYS_ON_SYSTEM_CLASSES).isdisjoint(
             name for feature in WORKSPACE_FEATURES for name in family_class_names(feature)
@@ -136,11 +156,16 @@ class TestAlwaysOnAndAncestors:
     def test_static_extends_closure(self) -> None:
         assert system_class_ancestors("meeting") == frozenset({"event"})
         assert system_class_ancestors("birthday") == frozenset({"event"})
+        assert system_class_ancestors("trip") == frozenset({"event"})
         assert system_class_ancestors("book") == frozenset({"source"})
         assert system_class_ancestors("weblink") == frozenset({"source"})
         assert system_class_ancestors("person") == frozenset({"agent"})
         assert system_class_ancestors("event") == frozenset()
+        # The #14 follow-up's four plain seeds extend nothing.
+        for name in ("definition", "idea", "place", "project"):
+            assert system_class_ancestors(name) == frozenset()
         assert system_class_uuid("task") == TASK
+        assert system_class_uuid("trip") == TRIP
 
 
 class TestTaskFamilySeed:

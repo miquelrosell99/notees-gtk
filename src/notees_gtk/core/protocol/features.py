@@ -9,7 +9,10 @@ the store's ``class_extends`` table — so the applier's archival re-derivation
 converges on replicas that have not seen the seed envelopes yet. The same
 static map is ported here (the GTK client has no seed manifest of its own;
 seeding is server-side, and the store only needs the family-relevant subset of
-the fixed system-class UUIDs — never rename, never regenerate, never reuse).
+the fixed system-class UUIDs — never rename, never regenerate, never reuse —
+plus the #14 follow-up five, owner list 2026-10-06: the deploy catalog's
+missing everyday classes, trip extending event so the events cascade reaches
+it).
 
 Semantics (F1–F4, owner-confirmed, mirroring the TS record):
 
@@ -38,6 +41,8 @@ from typing import Literal
 
 __all__ = [
     "ALWAYS_ON_SYSTEM_CLASSES",
+    "SYSTEM_CLASS_DISPLAY_NAMES",
+    "SYSTEM_CLASS_ICONS",
     "TASK_FAMILY_SEED",
     "TASK_PRIORITY_OPTION_UUIDS",
     "TASK_STATUS_OPTION_UUIDS",
@@ -65,7 +70,9 @@ WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = ("tasks", "events", "meetings
 #: flip list and F4 routing resolve through these fixed ids), plus the two
 #: ids the property/applier semantics resolve through: ``asset`` (the
 #: implicit filter of an asset-typed property schema, M38) and ``weblink``
-#: (the source-family child, the 2026-10-07 convergence).
+#: (the source-family child, the 2026-10-07 convergence), plus the #14
+#: follow-up five (owner list, 2026-10-06 — the deploy catalog's missing
+#: everyday classes, plain seeds per the meeting-system precedent).
 _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "asset": "00000000-0000-0000-0001-000000000009",
     "task": "00000000-0000-0000-0001-000000000012",
@@ -86,6 +93,14 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "event": "00000000-0000-0000-0001-000000000040",
     "birthday": "00000000-0000-0000-0001-000000000041",
     "weblink": "00000000-0000-0000-0001-000000000034",
+    # The #14 follow-up five (owner list, 2026-10-06): the deploy catalog's
+    # missing everyday classes — plain seeds per the meeting-system ruling
+    # (zero wire cost, seed convergence only; seeds.ts …0043-…0047).
+    "definition": "00000000-0000-0000-0001-000000000043",
+    "idea": "00000000-0000-0000-0001-000000000044",
+    "place": "00000000-0000-0000-0001-000000000045",
+    "project": "00000000-0000-0000-0001-000000000046",
+    "trip": "00000000-0000-0000-0001-000000000047",
 }
 
 #: The task class icon (seeds.ts ``SYSTEM_CLASS_ICONS`` subset — the
@@ -115,6 +130,33 @@ _SYSTEM_CLASS_EXTENDS: dict[str, tuple[str, ...]] = {
     # family's bibliographic bindings, and disabling `source` hides
     # weblinks with the rest of the family.
     "weblink": ("source",),
+    # A trip IS an event (the #14 follow-up, owner list 2026-10-06): a trip
+    # is calendar-bound, so the events toggle cascades to it — this map is
+    # the cascade authority (seeds.ts ``SYSTEM_CLASS_EXTENDS`` parity).
+    "trip": ("event",),
+}
+
+#: The #14 follow-up five's seed decorations (seeds.ts ``SYSTEM_CLASS_ICONS``
+#: / ``SYSTEM_CLASS_DISPLAY_NAMES`` subset — the GTK map's classes only).
+#: The server seed authors the display titles into the class nodes' text
+#: content (title-is-content) and the icons onto the class rows.
+SYSTEM_CLASS_ICONS: dict[str, str] = {
+    "definition": "mdiBookOpenPageVariant",
+    "idea": "mdiThoughtBubbleOutline",
+    "place": "mdiMapMarkerOutline",
+    "project": "mdiBriefcaseOutline",
+    "trip": "mdiAirplane",
+}
+
+#: The display titles the seed authors for the five (seeds.ts
+#: ``SYSTEM_CLASS_DISPLAY_NAMES`` subset; the raw keys stay code-facing
+#: vocabulary — these are the human wordings).
+SYSTEM_CLASS_DISPLAY_NAMES: dict[str, str] = {
+    "definition": "Definition",
+    "idea": "Idea",
+    "place": "Place",
+    "project": "Project",
+    "trip": "Trip",
 }
 
 
@@ -172,7 +214,11 @@ def feature_for_base_class(name: str) -> WorkspaceFeature | None:
 #: the toggle set, weblink included since it became a source-family child
 #: (2026-10-07). The retired `class` meta class (…0001, withdrawn
 #: 2026-10-07) left the manifest with its retirement — it is nobody's
-#: anchor anymore.
+#: anchor anymore. The #14 follow-up five (2026-10-06, owner list) are not
+#: here either: trip rides the events family through its extends edge, and
+#: the four plain seeds (definition, idea, place, project) are unmanaged —
+#: no gating, not always-on (features.ts semantics — they are absent from
+#: the TS ``ALWAYS_ON_SYSTEM_CLASSES`` too).
 ALWAYS_ON_SYSTEM_CLASSES: tuple[str, ...] = (
     "year",
     "month",

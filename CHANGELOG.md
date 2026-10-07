@@ -8,6 +8,33 @@ history.
 
 ## 2026-10-07
 
+- **feat(seed): the #14 follow-up five — definition/idea/place/project/trip
+  seeds ported to the static map; the events family gains the trip cascade;
+  the seed-parity suite pins the manifest so drift fails the gate.** The GTK
+  side of the monorepo's #14 follow-up (owner list, 2026-10-06 — plain seeds
+  per the meeting-system precedent, zero wire cost), ported from
+  `packages/domain/src/seeds.ts` + `features.ts`:
+  - **The static map** (`core/protocol/features.py`) gains the five fixed
+    class UUIDs (…0043-…0047), their MDI icons + display titles (the
+    `SYSTEM_CLASS_ICONS` / `SYSTEM_CLASS_DISPLAY_NAMES` subset), and the
+    `trip → event` extends edge — so the events-family cascade (family set,
+    gating walk, the applier's archival re-derivation) now reaches trip
+    exactly like meeting/birthday, while the four plain seeds stay
+    unmanaged: no gating, not always-on (features.ts parity — they are
+    absent from the TS `ALWAYS_ON_SYSTEM_CLASSES` too).
+  - **The seed-parity test** (`tests/test_seed_parity.py`) grows the
+    `TestDeployCatalogFive` class: the five ids pinned (block prefix,
+    uniqueness, the withdrawn …0001/…0042 slots untouched), the static-map
+    coverage guard, the seed-op replay (`class.create` with the display
+    title as content + the icon, `class.setExtends` for trip→event) through
+    the store appliers, and the gating/family semantics mirroring
+    `features.ts`.
+  - **The feature/store tests** pin the four-strong events family
+    (`family_class_names("events") == ("event", "birthday", "meeting",
+    "trip")`) and the toggle cascade with trip seeded alongside the
+    calendar family.
+  - **Fixtures untouched** — the seed change emits server-side seed
+    envelopes; the corpus stays byte-identical (`diff -r` clean).
 - **feat(protocol+store): the M27/M12/M47/M38 alignment — wire node fields,
   the title-flatten ruling, class conversion, alias cycle validation, the
   asset property type, seed convergence; the three new fixtures re-vendored
