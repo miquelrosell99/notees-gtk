@@ -3,15 +3,22 @@
 The applier semantics asserted here are the convergence rules ported from
 ``packages/store/src/appliers.ts``: row-level LWW by (hlc, actor), OR-Set
 class/tag/collection membership, user-defined class order (class.reorder,
-LWW-by-arrival), title-is-content (no ``name`` writes; document-chrome nodes
-carry text-only content), the Revision-11 render-state model (``is_class``
-identity + ``present_as_main`` render bit; classes are containers and always
-roots), m2m class extends with a maintained closure (cycles fail loud),
-fractional child-order positions, property tombstones, and soft/permanent
-deletes with trash retention — plus the property-correctness waves: PG4
-extends-aware binding resolution (the diamond rule), PG6 apply-time value
-validation (shape/scalar/cardinality/precision/filter/existence), and PC2
-typed binding defaults (write-side fail-loud + read-side drop).
+LWW-by-arrival), title-is-content (no ``name`` writes; class rows carry
+text-only content while pages keep the rich token stream on content writes —
+create-as-main and promotion remain the lossy boundaries), the wire node
+fields (object.update maps coverAssetId/bannerAssetId/aliasedNodeId onto the
+derived node columns, present-null clears; the alias target gets the
+write-time cycle check and resolve_alias walks the chain), the class
+conversion capability (class.create on an existing node declares it a class),
+the Revision-11 render-state model (``is_class`` identity + ``present_as_main``
+render bit; classes are containers and always roots), m2m class extends with
+a maintained closure (cycles fail loud), fractional child-order positions,
+property tombstones, and soft/permanent deletes with trash retention — plus
+the property-correctness waves: PG4 extends-aware binding resolution (the
+diamond rule), PG6 apply-time value validation (shape/scalar/cardinality/
+precision/filter/existence), the M38 asset property type (the implicit
+asset-class filter), and PC2 typed binding defaults (write-side fail-loud +
+read-side drop).
 """
 
 from __future__ import annotations
@@ -475,6 +482,38 @@ class TestMigrations:
         assert raw_rows(upgraded, f"SELECT display FROM property_schema WHERE id = '{uid('ps-1')}'") == [("inline",)]
         upgraded.close()
 
+    def test_v12_to_v13_migration_adds_the_wire_node_fields(self, tmp_path: Path) -> None:
+        """The wire node fields (web schema v15→v16 parity): an on-disk v12
+        database upgrades in place — the three nullable node columns are
+        added idempotently and the migrated table maps the fields on
+        update, exactly like a fresh v13 create."""
+        path = tmp_path / "v12.db"
+        instance = LocalStore(path)
+        instance.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        instance.apply_remote(update_env(NODE, hlc=(2, 0), coverAssetId=uid("wf-cover")))
+        instance.close()
+        # Downgrade the on-disk shape to v12: drop the three columns
+        # (SQLite 3.35+ DROP COLUMN; the v11→v12 precedent).
+        with sqlite3.connect(path) as raw:
+            raw.execute("ALTER TABLE nodes DROP COLUMN cover_asset_id")
+            raw.execute("ALTER TABLE nodes DROP COLUMN banner_asset_id")
+            raw.execute("ALTER TABLE nodes DROP COLUMN aliased_node_id")
+            raw.execute("PRAGMA user_version = 12")
+        upgraded = LocalStore(path)
+        row = upgraded.node(WS_A, NODE)
+        assert row is not None
+        # The pre-upgrade value is gone with the column; the field maps again.
+        assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (None, None, None)
+        assert upgraded.apply_remote(update_env(NODE, hlc=(3, 0), aliasedNodeId=uid("wf-main"))) is True
+        assert upgraded.node(WS_A, NODE).aliased_node_id == uid("wf-main")
+        # Idempotent: a second open is a no-op that stays current.
+        upgraded.close()
+        reopened = LocalStore(path)
+        assert raw_rows(reopened, "SELECT aliased_node_id FROM nodes WHERE id = ?", (NODE,)) == [
+            (uid("wf-main"),)
+        ]
+        reopened.close()
+
 
 class TestOutbox:
     def test_enqueue_and_pending_roundtrip(self, store: LocalStore) -> None:
@@ -513,6 +552,16 @@ class TestOutbox:
         store.enqueue(update_env(NODE, hlc=(2, 0)))
         store.enqueue(update_env(NODE, hlc=(3, 0), contentAst=None, icon=None))
         assert store.pending_outbox(WS_A) == []
+
+    def test_enqueue_accepts_a_nullish_field_clear_as_the_one_field(self, store: LocalStore) -> None:
+        """A null on a NULLISH field (color, the M27 wire node fields) is a
+        real CLEAR write — the server's presence-based refine accepts the
+        envelope, so the outbox must not swallow it (the color precedent
+        extended to the wire node fields)."""
+        store.enqueue(update_env(NODE, hlc=(2, 0), color=None))
+        store.enqueue(update_env(NODE, hlc=(3, 0), aliasedNodeId=None))
+        store.enqueue(update_env(NODE, hlc=(4, 0), coverAssetId=None, bannerAssetId=None))
+        assert [env.hlc.physical for env in store.pending_outbox(WS_A)] == [2, 3, 4]
 
     def test_enqueue_accepts_object_update_with_any_writable_field(self, store: LocalStore) -> None:
         store.enqueue(update_env(NODE, hlc=(2, 0), icon="📄"))
@@ -585,6 +634,9 @@ class TestObjectCreate:
             tag_ids=(),
             icon="📄",
             color="red",
+            cover_asset_id=None,
+            banner_asset_id=None,
+            aliased_node_id=None,
             is_active=True,
             content=json.dumps([{"type": "text", "text": "My Page"}]),
             content_plain="My Page",
@@ -828,13 +880,19 @@ class TestObjectUpdate:
         assert row.present_as_main is False
         assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
 
-    def test_main_presenting_content_update_flattens_rich_tokens(self, store: LocalStore) -> None:
+    def test_main_presenting_content_update_keeps_the_rich_tokens(self, store: LocalStore) -> None:
+        """The 2026-10-07 title-flatten ruling: the object.update path no
+        longer flattens rich content to text-only for present-as-main nodes —
+        a page's own content may carry inline tokens (mentions, external
+        links). Class rows still flatten; create-as-main and promotion remain
+        the lossy boundaries (mirrors the monorepo store test)."""
         store.apply_remote(create_env(hlc=(10, 0)))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
         assert store.apply_remote(update_env(NODE, hlc=(11, 0), contentAst=rich)) is True
         row = store.node(WS_A, NODE)
         assert row is not None
-        assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
+        assert json.loads(row.content or "") == rich
+        # Display-name derivation still flattens to text for labels.
         assert row.content_plain == "Bob said hi"
 
     def test_lower_or_equal_hlc_update_dropped(self, store: LocalStore) -> None:
@@ -3205,6 +3263,335 @@ class TestPc2TypedDefaults:
         )
         assert raw_rows(store, "SELECT default_value FROM class_property WHERE property_schema_id = ?", (loose,)) == [
             (json.dumps({"anything": True}),)
+        ]
+
+
+class TestWireNodeFields:
+    """M27 unit semantics (mirrors the monorepo store test): absence
+    preserves, present-null clears, and the fields ride the row LWW exactly
+    like `color`."""
+
+    OTHER = uid("wf-other")
+    TARGET = uid("wf-target")
+
+    def test_absence_preserves_present_null_clears_and_the_fields_ride_the_row_lww(
+        self, store: LocalStore
+    ) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(10, 0)))
+        assert (
+            store.apply_remote(
+                update_env(
+                    NODE,
+                    hlc=(11, 0),
+                    coverAssetId=self.OTHER,
+                    bannerAssetId=self.OTHER,
+                    aliasedNodeId=self.TARGET,
+                )
+            )
+            is True
+        )
+        # An absent field is not a write: an icon-only update keeps the fields.
+        assert store.apply_remote(update_env(NODE, hlc=(12, 0), icon="mdiStar")) is True
+        row = store.node(WS_A, NODE)
+        assert row.icon == "mdiStar"
+        assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (
+            self.OTHER,
+            self.OTHER,
+            self.TARGET,
+        )
+        # A stale-HLC update loses the row LWW race: nothing changes.
+        assert store.apply_remote(update_env(NODE, hlc=(9, 0), coverAssetId=None)) is False
+        assert store.node(WS_A, NODE).cover_asset_id == self.OTHER
+        # The winning clear.
+        assert store.apply_remote(update_env(NODE, hlc=(13, 0), coverAssetId=None)) is True
+        assert store.node(WS_A, NODE).cover_asset_id is None
+        assert raw_rows(store, "SELECT cover_asset_id FROM nodes WHERE id = ?", (NODE,)) == [(None,)]
+
+
+class TestAliasCycles:
+    """M12 write-time alias-cycle validation + the resolve_alias chain
+    walker (the extends-DAG precedent; mirrors the monorepo store test)."""
+
+    A = uid("alias-a")
+    B = uid("alias-b")
+    C = uid("alias-c")
+    D = uid("alias-d")
+
+    def _alias(self, node_id: str, target: str | None, hlc: tuple[int, int]) -> RelayEnvelope:
+        return update_env(node_id, hlc=hlc, aliasedNodeId=target)
+
+    def test_a_plain_chain_sets_and_resolves_acyclic_repoints_stay_legal(self, store: LocalStore) -> None:
+        for node in (self.A, self.B, self.C, self.D):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.A, self.B, (2, 0)))
+        store.apply_remote(self._alias(self.B, self.C, (3, 0)))
+        assert store.node(WS_A, self.A).aliased_node_id == self.B
+        assert store.resolve_alias(WS_A, self.A) == self.C
+        assert store.resolve_alias(WS_A, self.B) == self.C
+        assert store.resolve_alias(WS_A, self.C) == self.C
+        # Re-pointing the middle of the chain is fine while it stays acyclic:
+        # B → D (D carries no alias) collapses A's chain to D as well.
+        store.apply_remote(self._alias(self.B, self.D, (4, 0)))
+        assert store.resolve_alias(WS_A, self.A) == self.D
+        assert store.resolve_alias(WS_A, self.B) == self.D
+
+    def test_self_alias_the_one_edge_cycle_fails_loud_and_is_never_applied(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(self.A, name="Page", hlc=(1, 0)))
+        with pytest.raises(CycleError, match="alias cycle"):
+            store.apply_remote(self._alias(self.A, self.A, (2, 0)))
+        assert store.node(WS_A, self.A).aliased_node_id is None
+
+    def test_an_indirect_cycle_fails_loud_and_nothing_changes(self, store: LocalStore) -> None:
+        for node in (self.A, self.B, self.C):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.A, self.B, (2, 0)))
+        store.apply_remote(self._alias(self.B, self.C, (3, 0)))
+        # C → A would close A → B → C → A: rejected, never applied.
+        with pytest.raises(CycleError, match="alias cycle"):
+            store.apply_remote(self._alias(self.C, self.A, (4, 0)))
+        assert store.node(WS_A, self.C).aliased_node_id is None
+        assert store.node(WS_A, self.A).aliased_node_id == self.B
+        assert store.node(WS_A, self.B).aliased_node_id == self.C
+        # Same for a 2-cycle proposal: B → A revisits A's chain back to B.
+        with pytest.raises(CycleError, match="alias cycle"):
+            store.apply_remote(self._alias(self.B, self.A, (5, 0)))
+        assert store.node(WS_A, self.B).aliased_node_id == self.C
+
+    def test_clearing_an_alias_lands_null_and_reopens_the_chain(self, store: LocalStore) -> None:
+        for node in (self.A, self.B):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.A, self.B, (2, 0)))
+        assert store.resolve_alias(WS_A, self.A) == self.B
+        # Clearing cannot create a cycle — it never touches the check and lands.
+        assert store.apply_remote(self._alias(self.A, None, (3, 0))) is True
+        assert store.node(WS_A, self.A).aliased_node_id is None
+        assert store.resolve_alias(WS_A, self.A) == self.A
+        # With A's alias gone, B → A is acyclic and legal.
+        store.apply_remote(self._alias(self.B, self.A, (4, 0)))
+        assert store.resolve_alias(WS_A, self.B) == self.A
+
+    def test_a_stale_hlc_alias_write_is_dropped_by_the_row_lww_before_any_check(self, store: LocalStore) -> None:
+        for node in (self.A, self.B, self.C):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.A, self.B, (2, 0)))
+        store.apply_remote(self._alias(self.B, self.C, (3, 0)))
+        # Older than both rows — dropped silently (LWW), no throw, no change.
+        assert store.apply_remote(self._alias(self.A, self.C, (1, 5))) is False
+        assert store.node(WS_A, self.A).aliased_node_id == self.B
+
+    def test_resolve_alias_is_cycle_safe_and_depth_capped(self, store: LocalStore) -> None:
+        for node in (self.A, self.B, self.C):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.A, self.B, (2, 0)))
+        store.apply_remote(self._alias(self.B, self.C, (3, 0)))
+        assert store.resolve_alias(WS_A, self.A) == self.C
+        # A cycle can only exist if it predates the write-path check (a
+        # legacy row, a hand-edited store): close C → A in place and observe
+        # the walker's ruling — every member's walk revisits its start and
+        # yields the STARTING id unchanged.
+        with sqlite3.connect(_db_path(store)) as raw:
+            raw.execute("UPDATE nodes SET aliased_node_id = ? WHERE id = ?", (self.A, self.C))
+        assert store.resolve_alias(WS_A, self.A) == self.A
+        assert store.resolve_alias(WS_A, self.B) == self.B
+        assert store.resolve_alias(WS_A, self.C) == self.C
+        # Depth cap: a hand-built long chain resolves to the node reached at
+        # the cap (best-effort terminal), never loops forever.
+        with sqlite3.connect(_db_path(store)) as raw:
+            raw.execute("UPDATE nodes SET aliased_node_id = NULL WHERE id IN (?, ?)", (self.A, self.B))
+        previous = self.A
+        for index in range(40):
+            nxt = uid(f"alias-chain-{index:02d}")
+            store.apply_remote(create_env(nxt, name="Link", hlc=(10 + index, 0)))
+            store.apply_remote(self._alias(previous, nxt, (100 + index, 0)))
+            previous = nxt
+        assert store.resolve_alias(WS_A, self.A) != self.A
+
+
+class TestAssetPropertyType:
+    """M38 unit semantics (mirrors the monorepo store test): values validate
+    as asset-node references — the implicit filter is the asset class;
+    node-typed defaults stay unsupported; the retype path drops the explicit
+    filter and preserves values + flags."""
+
+    ASSET_CLASS = "00000000-0000-0000-0001-000000000009"
+    SCHEMA = uid("asset-schema")
+    ATTACHMENTS = "00000000-0000-0000-0000-000000000011"
+    PAGE = uid("asset-page")
+    ASSET_NODE = uid("asset-node")
+    PLAIN_NODE = uid("asset-plain")
+    SOURCE_CLASS = "00000000-0000-0000-0001-000000000023"
+
+    def _world(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", self.ASSET_CLASS, hlc=(1, 0), name="Asset"))
+        store.apply_remote(create_env(self.PAGE, name="Page", hlc=(2, 0)))
+        store.apply_remote(create_env(self.ASSET_NODE, class_ids=(self.ASSET_CLASS,), hlc=(3, 0), name="File"))
+        store.apply_remote(create_env(self.PLAIN_NODE, name="Plain", hlc=(4, 0)))
+
+    def _schema_env(self, schema_id: str, hlc: tuple[int, int], **fields: Any) -> RelayEnvelope:
+        payload: dict[str, Any] = {"propertySchemaId": schema_id, "name": "Attachment", "type": "asset"}
+        payload.update(fields)
+        return make_env("propertySchema.create", payload, hlc=hlc)
+
+    def test_values_validate_as_asset_node_references_the_implicit_filter_is_the_asset_class(
+        self, store: LocalStore
+    ) -> None:
+        self._world(store)
+        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True, scope="class")) is True
+        assert (
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.SOURCE_CLASS,
+                    hlc=(6, 0),
+                    **{"propertySchemaId": self.SCHEMA, "sequence": 0},
+                )
+            )
+            is True
+        )
+        # A legacy bare-uuid carrier normalizes to {nodeId}.
+        assert (
+            store.apply_remote(property_set_env(self.PAGE, self.SCHEMA, value=self.ASSET_NODE, hlc=(7, 0)))
+            is True
+        )
+        assert raw_rows(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ?",
+            (self.PAGE, self.SCHEMA),
+        ) == [(json.dumps({"nodeId": self.ASSET_NODE}),)]
+        # A target NOT carrying the asset class fails loud (implicit filter)…
+        with pytest.raises(PropertyValueShapeError, match="allowed classes"):
+            store.apply_remote(
+                property_set_env(self.PAGE, self.SCHEMA, value={"nodeId": self.PLAIN_NODE}, hlc=(8, 0))
+            )
+        # …as does a nonexistent node…
+        with pytest.raises(PropertyValueShapeError, match="does not exist"):
+            store.apply_remote(
+                property_set_env(self.PAGE, self.SCHEMA, value={"nodeId": uid("asset-ghost")}, hlc=(9, 0))
+            )
+        # …and a non-reference shape fails the type's shape check.
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(property_set_env(self.PAGE, self.SCHEMA, value="not-a-ref", hlc=(10, 0)))
+
+    def test_node_typed_defaults_stay_unsupported(self, store: LocalStore) -> None:
+        self._world(store)
+        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True, scope="class")) is True
+        with pytest.raises(PropertyValueShapeError, match="must be null"):
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.SOURCE_CLASS,
+                    hlc=(6, 0),
+                    **{"propertySchemaId": self.SCHEMA, "defaultValue": {"nodeId": self.ASSET_NODE}},
+                )
+            )
+
+    def test_retype_object_to_asset_drops_the_explicit_filter_and_preserves_values_and_flags(
+        self, store: LocalStore
+    ) -> None:
+        self._world(store)
+        # The pre-M38 seeded shape: object-typed with an explicit filter.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {
+                        "propertySchemaId": self.ATTACHMENTS,
+                        "name": "Attachments",
+                        "type": "object",
+                        "multi": True,
+                        "scope": "class",
+                        "targetClassFilter": [self.ASSET_CLASS],
+                    },
+                    hlc=(5, 0),
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                class_env(
+                    "class.property.set",
+                    self.SOURCE_CLASS,
+                    hlc=(6, 0),
+                    **{"propertySchemaId": self.ATTACHMENTS, "sequence": 0},
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                property_set_env(self.PAGE, self.ATTACHMENTS, value={"nodeId": self.ASSET_NODE}, hlc=(7, 0))
+            )
+            is True
+        )
+        # A user-set render contract the retype must not clobber.
+        assert (
+            store.apply_remote(
+                make_env("propertySchema.update", {"propertySchemaId": self.ATTACHMENTS, "display": "inline"}, hlc=(8, 0))
+            )
+            is True
+        )
+        # The M38 migration envelope: same id, type "asset", NO explicit filter.
+        assert (
+            store.apply_remote(
+                self._schema_env(
+                    self.ATTACHMENTS,
+                    (9, 0),
+                    multi=True,
+                    scope="class",
+                    options=[],
+                    display="inline",
+                )
+            )
+            is True
+        )
+        row = raw_rows(
+            store,
+            "SELECT type, target_class_filter, display FROM property_schema WHERE id = ?",
+            (self.ATTACHMENTS,),
+        )
+        assert row == [("asset", None, "inline")]
+        # Values are shape-compatible ({nodeId} → asset nodes): untouched.
+        assert raw_rows(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ?",
+            (self.PAGE, self.ATTACHMENTS),
+        ) == [(json.dumps({"nodeId": self.ASSET_NODE}),)]
+        # And the implicit filter now guards NEW writes.
+        with pytest.raises(PropertyValueShapeError, match="allowed classes"):
+            store.apply_remote(
+                property_set_env(self.PAGE, self.ATTACHMENTS, value={"nodeId": self.PLAIN_NODE}, hlc=(10, 0))
+            )
+
+
+class TestClassCreateConversion:
+    """M47 unit semantics beyond the fixture: conversion preserves the
+    node's icon/color (absent payload fields never wipe) and the registry
+    description survives a re-declaration."""
+
+    def test_conversion_preserves_icon_color_and_description(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(NODE, name="Genre", hlc=(1, 0)))
+        # object.create carries no appearance fields: the icon/color land
+        # through object.update before the conversion.
+        assert store.apply_remote(update_env(NODE, hlc=(2, 0), icon="mdiTag", color="purple")) is True
+        # A bare payload converts: absent icon/color preserve on the NODE row
+        # (the LWW-gated upsert never writes absent fields), the registry
+        # adopts the node's title (effective-icon reads go through the node
+        # row — the fresh registry row carries no icon/color, exactly like
+        # the TS reference).
+        assert store.apply_remote(class_env("class.create", NODE, hlc=(3, 0))) is True
+        row = store.node(WS_A, NODE)
+        assert row is not None
+        assert (row.is_class, row.icon, row.color) == (True, "mdiTag", "purple")
+        assert raw_rows(store, "SELECT name, icon, color, description, active FROM class WHERE id = ?", (NODE,)) == [
+            ("Genre", None, None, None, 1)
+        ]
+        # A description written after the conversion survives a bare
+        # re-declaration (absent fields preserve, they never wipe).
+        assert store.apply_remote(class_env("class.update", NODE, hlc=(4, 0), description="kept")) is True
+        assert store.apply_remote(class_env("class.create", NODE, hlc=(5, 0))) is True
+        assert raw_rows(store, "SELECT name, description, active FROM class WHERE id = ?", (NODE,)) == [
+            ("Genre", "kept", 1)
         ]
 
 

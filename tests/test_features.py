@@ -53,7 +53,10 @@ class TestFamilySets:
         assert family_class_names("events") == ("event", "birthday", "meeting")
         assert managed_class_ids("events") == (EVENT, BIRTHDAY, MEETING)
 
-    def test_sources_family_is_the_ten_strong_family(self) -> None:
+    def test_sources_family_is_the_eleven_strong_family(self) -> None:
+        """weblink joined the source tree (owner ruling 2026-10-07): the
+        family the SOURCES toggle archives now includes it, so disabling
+        `source` hides weblinks with the rest of the family."""
         assert family_class_names("sources") == (
             "source",
             "article",
@@ -65,8 +68,10 @@ class TestFamilySets:
             "song",
             "thesis",
             "tv_series",
+            "weblink",
         )
-        assert len(managed_class_ids("sources")) == 10
+        assert len(managed_class_ids("sources")) == 11
+        assert system_class_uuid("weblink") == "00000000-0000-0000-0001-000000000034"
 
     def test_single_class_families(self) -> None:
         assert family_class_names("tasks") == ("task",)
@@ -90,6 +95,10 @@ class TestGatingWalk:
         assert gating_features_for_class("organization") == ()
         assert gating_features_for_class("asset") == ()
 
+    def test_weblink_gates_on_sources(self) -> None:
+        """The source-family child: its chrome hides when SOURCES is off."""
+        assert gating_features_for_class("weblink") == ("sources",)
+
 
 class TestF4Routing:
     def test_only_the_five_bases_route(self) -> None:
@@ -109,18 +118,26 @@ class TestF4Routing:
 
 class TestAlwaysOnAndAncestors:
     def test_always_on_list(self) -> None:
-        for name in ("year", "month", "day", "asset", "highlight", "weblink", "collection", "agent", "organization"):
+        for name in ("year", "month", "day", "asset", "highlight", "collection", "agent", "organization"):
             assert is_always_on_system_class(name)
-        for name in ("task", "event", "meeting", "source", "person", "birthday", "book"):
+        for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "weblink"):
             assert not is_always_on_system_class(name)
         assert set(ALWAYS_ON_SYSTEM_CLASSES).isdisjoint(
             name for feature in WORKSPACE_FEATURES for name in family_class_names(feature)
         )
 
+    def test_the_retired_class_meta_class_left_the_manifest(self) -> None:
+        """The seeded `class` meta class (…0001) is retired 2026-10-07:
+        never feature-managed, never reused (the seeds.ts withdrawal)."""
+        assert "class" not in ALWAYS_ON_SYSTEM_CLASSES
+        all_family_names = {name for feature in WORKSPACE_FEATURES for name in family_class_names(feature)}
+        assert "class" not in all_family_names
+
     def test_static_extends_closure(self) -> None:
         assert system_class_ancestors("meeting") == frozenset({"event"})
         assert system_class_ancestors("birthday") == frozenset({"event"})
         assert system_class_ancestors("book") == frozenset({"source"})
+        assert system_class_ancestors("weblink") == frozenset({"source"})
         assert system_class_ancestors("person") == frozenset({"agent"})
         assert system_class_ancestors("event") == frozenset()
         assert system_class_uuid("task") == TASK

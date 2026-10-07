@@ -24,7 +24,18 @@ resolution (the diamond rule: own binding → shortest extends-path → earliest
 class-assignment HLC, ties by class id; ``bound_by`` names the supplying
 ancestor), and PG6 apply-time value validation (one-shape-per-type + scalar
 typing + cardinality/precision/filter/existence fail-loud at the property.set
-write path).
+write path), the M27 wire node fields (``object.update`` maps
+``coverAssetId``/``bannerAssetId``/``aliasedNodeId`` presence-writes /
+present-null-clears onto the derived node columns — the icon/color
+convention; the alias target gets the M12 write-time cycle check and
+:meth:`resolve_alias` is the cycle-safe chain walker), the 2026-10-07
+title-flatten ruling (class rows stay text-only; every other node keeps the
+rich token stream on content writes — create-as-main and promotion remain
+the lossy boundaries), the class conversion capability (``class.create``
+on an existing node DECLARES it a class: the identity bit flips, a parented
+node is cut to a root, the render bit clears, absent registry fields
+preserve), and the M38 ``asset`` property type (node-typed values validated
+as asset-node references — the filter is implicit in the type).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -113,7 +124,14 @@ _log = logging.getLogger(__name__)
 #: without the retired binding columns (readonly/hide_when_empty pre-v3.1.0,
 #: display the v11 experiment); ``required`` survives on the row —
 #: the owner's per-class exception.
-SCHEMA_VERSION = 12
+#: v13 (owner 2026-10-07, the M27/M12 lockstep — web schema v15→v16
+#: parity): the wire node fields land as three nullable node columns
+#: (``cover_asset_id`` / ``banner_asset_id`` / ``aliased_node_id``) mapped
+#: by object.update (presence writes, present-null clears — the color
+#: convention); object.update of ``aliasedNodeId`` runs the write-time
+#: alias-cycle check (the extends-DAG precedent) and the store gains the
+#: ``resolve_alias`` chain walker.
+SCHEMA_VERSION = 13
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -143,6 +161,12 @@ _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "name": "name",
     "icon": "icon",
     "color": "color",
+    # Wire node fields (web schema v16): ride along when the snapshot was
+    # taken from a post-M27 store; older snapshots lack the columns and the
+    # mapping skips them (the cache default NULL wins).
+    "cover_asset_id": "cover_asset_id",
+    "banner_asset_id": "banner_asset_id",
+    "aliased_node_id": "aliased_node_id",
     "content": "content",
     "created_at": "created_at",
     "is_active": "is_active",
@@ -199,6 +223,11 @@ class NodeRow:
         icon: Emoji/icon string or ``None``.
         color: Preset token or custom ``#RRGGBB`` hex (colors.py grammar), or
             ``None`` (never written / cleared).
+        cover_asset_id: The asset node behind the page cover (the M27 wire
+            node field), or ``None`` — set/cleared by object.update only.
+        banner_asset_id: The asset node behind the page banner, or ``None``.
+        aliased_node_id: The main page this node is an alias of (many-to-one
+            FROM the alias), or ``None``.
         is_active: False once the node (soft-)deleted; the trash table keeps
             the deletion record.
         content: Serialized flat token array (JSON); ``None`` when the node
@@ -216,6 +245,9 @@ class NodeRow:
     tag_ids: tuple[str, ...]
     icon: str | None
     color: str | None
+    cover_asset_id: str | None
+    banner_asset_id: str | None
+    aliased_node_id: str | None
     is_active: bool
     content: str | None
     content_plain: str
@@ -302,6 +334,19 @@ _UUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 #: refs on dateQualified schemas (SCHEMA.md "Dates").
 _QUALIFIER_KEYS = ("startDate", "endDate")
 
+#: M12: the alias-chain walker's depth cap (chains are user-built and tiny;
+#: the cap bounds pathological data — on exhaustion the furthest node is the
+#: best-effort terminal).
+_ALIAS_CHAIN_DEPTH_CAP = 32
+
+#: The object.update fields whose explicit null is a real write (the CLEAR)
+#: rather than a missing value: the nullish schema fields (the color
+#: precedent + the M27 wire node fields). The outbox writable-field guard
+#: keys off this set — the server's refine is key-PRESENCE-based, so a
+#: nullish-only update is a legitimate envelope, while a null on any other
+#: field (icon/contentAst are optional, not nullish) would 422.
+_NULLISH_OBJECT_UPDATE_FIELDS = frozenset({"color", "coverAssetId", "bannerAssetId", "aliasedNodeId"})
+
 
 def _node_ref_of_value(value: Any) -> str | None:
     """The node id a value references, when it is reference-shaped: either the
@@ -350,14 +395,14 @@ def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) 
 #
 # Port of the main repo's packages/store/src/property-values.ts. Write shapes
 # by schema type: text = a scalar string OR a carrier reference {"nodeId": …}
-# (a legacy bare uuid normalizes to the reference shape); date/object = a node
-# reference; date_range = {"start": ref|null, "end": ref|null} — either side
-# open. Scalar typing: number = a finite number — a NUMERIC STRING is the
+# (a legacy bare uuid normalizes to the reference shape); date/object/asset =
+# a node reference; date_range = {"start": ref|null, "end": ref|null} — either
+# side open. Scalar typing: number = a finite number — a NUMERIC STRING is the
 # migrated legacy encoding (live data carries epoch-millis strings) and
 # normalizes to a number; boolean/url/email/select = their scalar;
 # multi_select = an array of strings. image stays UNCHECKED by design (PG14
-# owns the shape — live data carries migrated asset payloads, so any check would
-# break replay). `null` means "no value" and bypasses shape validation.
+# owns the shape — live data carries migrated asset payloads, so any check
+# would break replay). `null` means "no value" and bypasses shape validation.
 
 #: SCHEMA.md "Dates": finest granularity a date value may claim.
 _DATE_PRECISION_RANK = {"year": 1, "month": 2, "day": 3}
@@ -393,7 +438,7 @@ def _assert_value_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
         ref = _node_ref_of_value(value)
         if ref is not None:
             return {"nodeId": ref}
-    elif type_ in ("date", "object"):
+    elif type_ in ("date", "object", "asset"):
         ref = _node_ref_of_value(value)
         if ref is not None:
             return {"nodeId": ref}
@@ -458,7 +503,8 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             return value
     else:
-        # image and any future type: unchecked (see the section header).
+        # image, asset (shape-normalized above), and any future type:
+        # unchecked (see the section header).
         return value
     raise PropertyValueShapeError(
         f"{op_type}: value for {type_} schema must be {_scalar_error_detail(type_)} — got {_jsonish(value)}",
@@ -468,8 +514,8 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
 
 def _is_valid_default_for_type(type_: str, value: Any) -> bool:
     """PC2: a class-binding defaultValue must be typed per the schema type.
-    Node-typed schemas (date/date_range/object) accept only JSON null — a
-    default that links a node is meaningless. Returns False instead of
+    Node-typed schemas (date/date_range/object/asset) accept only JSON null —
+    a default that links a node is meaningless. Returns False instead of
     throwing so the read model can drop silently; the write path
     (class.property.set) fails loud. Mirrors isValidDefaultForType."""
     if value is None:
@@ -482,9 +528,9 @@ def _is_valid_default_for_type(type_: str, value: Any) -> bool:
         return isinstance(value, bool)
     if type_ == "multi_select":
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
-    # date/date_range/object accept only JSON null (handled above); unknown
-    # future types ride unchecked.
-    return type_ not in ("date", "date_range", "object")
+    # date/date_range/object/asset accept only JSON null (handled above);
+    # unknown future types ride unchecked.
+    return type_ not in ("date", "date_range", "object", "asset")
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -596,15 +642,21 @@ class LocalStore:
 
         The producer-side guard mirrors the server-side payload validation: an
         ``object.update`` carrying no writable field (empty payload beyond
-        ``objectId``, or all-``None`` fields) would be rejected with 422 and
-        quarantined, so it is skipped here and logged. Payloads of every known
-        op type are also validated against the strict wire schemas
-        (``core.protocol.payloads``): a retired/renamed key (e.g. the
-        title-is-content ``name`` field) or a malformed value fails loud here
-        instead of riding the outbox to a certain 422.
+        ``objectId``, or only nulls on non-nullish fields) would be rejected
+        with 422 and quarantined, so it is skipped here and logged. A null on
+        a NULLISH field (``color`` and the M27 wire node fields — an explicit
+        clear the server's presence-based refine accepts) IS writable.
+        Payloads of every known op type are also validated against the strict
+        wire schemas (``core.protocol.payloads``): a retired/renamed key
+        (e.g. the title-is-content ``name`` field) or a malformed value fails
+        loud here instead of riding the outbox to a certain 422.
         """
         if env.op_type == "object.update":
-            writable = [key for key, value in env.payload.items() if key != "objectId" and value is not None]
+            writable = [
+                key
+                for key, value in env.payload.items()
+                if key != "objectId" and (value is not None or key in _NULLISH_OBJECT_UPDATE_FIELDS)
+            ]
             if not writable:
                 _log.warning("Skipping enqueue of %s: object.update carries no writable field", env.id)
                 return
@@ -777,10 +829,12 @@ class LocalStore:
     def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
         # Column order is the contract: is_class/present_as_main sit at 3/4
         # (the LWW appliers read them positionally) and the row-LWW triple at
-        # 12/13/14.
+        # 12/13/14; the wire node fields ride at 15/16/17 (appended, so every
+        # existing position is stable).
         row: tuple[Any, ...] | None = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, icon, color,"
-            " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id"
+            " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id,"
+            " cover_asset_id, banner_asset_id, aliased_node_id"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -831,6 +885,31 @@ class LocalStore:
         if parent is None:
             raise NotFoundError(f"{op_type}: parent {parent_id} does not exist", op_type)
         return parent
+
+    def _assert_alias_acyclic(self, workspace_id: str, node_id: str, target_id: str, op_type: str) -> None:
+        """M12 write-time alias-cycle validation (the extends-DAG precedent):
+        ``object.update {aliasedNodeId: T}`` on node N must not close an alias
+        cycle. The would-be chain is N → T → T's target → … — walk it from T;
+        a revisit of any visited node (including N itself — the 1-edge
+        self-alias) means the write would create a cycle, so it fails loud
+        and is NEVER applied. Clearing (null) cannot create a cycle and
+        skips the check. Chains without a cycle terminate (finite graph);
+        the visited set makes the walk exact."""
+        visited = {node_id}
+        current = target_id
+        while True:
+            if current in visited:
+                raise CycleError(
+                    f"{op_type}: aliasing {node_id} → {target_id} would close an alias cycle at {current}",
+                    op_type,
+                )
+            visited.add(current)
+            row = self._conn.execute(
+                "SELECT aliased_node_id FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, current)
+            ).fetchone()
+            if row is None or row[0] is None:
+                return
+            current = str(row[0])
 
     # ------------------------------------------------------------------ object.*
 
@@ -939,15 +1018,13 @@ class LocalStore:
         values: list[Any] = []
         # Promotion/demotion (Revision 11) is the presentAsMain toggle: the bit
         # joins the row-level LWW set; a 0→1 flip (promotion) stringifies the
-        # rich token stream to text-only in the same op (content flatten
-        # invariant), while a 1→0 demotion leaves the (already flattened)
-        # content untouched — demotion never un-flattens. On a class row the
-        # bit is inert (classes render ClassView regardless); applying it
+        # rich token stream to text-only in the same op (the lossy boundary
+        # the UI warns about), while a 1→0 demotion leaves the content
+        # untouched — demotion never un-flattens. On a class row the bit is
+        # inert (classes render ClassView regardless); applying it
         # harmlessly keeps the op uniform.
         present_as_main = payload.get("presentAsMain")
-        resulting_present_as_main = bool(row[4])
         if present_as_main is not None:
-            resulting_present_as_main = bool(present_as_main)
             sets.append("present_as_main = ?")
             values.append(1 if present_as_main else 0)
             if present_as_main and not bool(row[4]):
@@ -967,10 +1044,38 @@ class LocalStore:
         if "color" in payload:
             sets.append("color = ?")
             values.append(payload["color"])
+        # Wire node fields (the icon/color precedent): presence writes,
+        # present-null clears (SQL NULL) — the payload schema's nullable
+        # fields make absence and clear distinguishable, exactly like
+        # ``color``. They ride the row-level LWW with the rest of the
+        # update. Cover/banner map without validating (asset existence is a
+        # read/client-layer concern); the alias target DOES validate —
+        # see _assert_alias_acyclic (the extends-DAG precedent: structural
+        # invariants are write-time impossible).
+        if "coverAssetId" in payload:
+            sets.append("cover_asset_id = ?")
+            cover_asset_id = payload["coverAssetId"]
+            values.append(str(cover_asset_id) if cover_asset_id is not None else None)
+        if "bannerAssetId" in payload:
+            sets.append("banner_asset_id = ?")
+            banner_asset_id = payload["bannerAssetId"]
+            values.append(str(banner_asset_id) if banner_asset_id is not None else None)
+        if "aliasedNodeId" in payload:
+            aliased_node_id = payload["aliasedNodeId"]
+            if aliased_node_id is not None:
+                self._assert_alias_acyclic(env.workspace_id, object_id, str(aliased_node_id), op_type)
+            sets.append("aliased_node_id = ?")
+            values.append(str(aliased_node_id) if aliased_node_id is not None else None)
         if payload.get("contentAst") is not None:
-            # Document-chrome content (class nodes and main-presenting nodes)
-            # is text-only; inline blocks keep the rich tokens they were sent.
-            flatten = bool(row[3]) or resulting_present_as_main
+            # Class content stays text-only; every other node keeps the rich
+            # token stream it was sent. A page's own content may carry inline
+            # tokens (mentions, external links) — the header title edits it
+            # with the full block editor — while display-name derivation
+            # still flattens to text for labels (SCHEMA.md title-is-content).
+            # Create-as-main and the promotion stringify above remain the
+            # lossy boundaries (packages/store/src/appliers.ts parity, the
+            # 2026-10-07 title-flatten ruling).
+            flatten = bool(row[3])
             tokens: Any = payload["contentAst"] if not flatten else stringify_content_ast(payload["contentAst"])
             sets.append("content = ?")
             values.append(json.dumps(tokens, ensure_ascii=False))
@@ -1414,23 +1519,66 @@ class LocalStore:
         class_id = str(payload["classId"])
         ts = _envelope_ts(env)
         # Registry ``name`` is a denormalized cache of the class node's title
-        # text (the authority is node.content): the excerpt of the create's
-        # (text-only) contentAst.
-        title_text = plaintext_excerpt(payload.get("contentAst") or [])
+        # text (NOT NULL — the empty string is the absent sentinel; the
+        # authority is node.content). A conversion (class.create on an
+        # existing node) carries no contentAst: absent fields PRESERVE the
+        # stored registry values on re-declaration (COALESCE around a
+        # NULLIF sentinel), they never wipe. The fresh INSERT's empty-name
+        # case is backfilled from the node's existing title below
+        # (title-is-content: the node row is the authority).
+        title_text = plaintext_excerpt(payload["contentAst"]) if payload.get("contentAst") is not None else None
         with self._conn:
             self._conn.execute(
                 """INSERT INTO class (id, workspace_id, name, icon, color, description, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)
+                   VALUES (?, ?, COALESCE(?, ''), ?, ?, NULL, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
-                     name = excluded.name, icon = excluded.icon, color = excluded.color,
-                     description = excluded.description, active = 1, updated_at = excluded.updated_at""",
+                     name = COALESCE(NULLIF(excluded.name, ''), class.name),
+                     icon = COALESCE(excluded.icon, class.icon),
+                     color = COALESCE(excluded.color, class.color),
+                     description = class.description, active = 1, updated_at = excluded.updated_at""",
                 (class_id, env.workspace_id, title_text, payload.get("icon"), payload.get("color"), ts, ts),
             )
+            if title_text is None:
+                # Title-less declaration (the conversion path — a bare
+                # classId payload): adopt the node's current title into the
+                # fresh registry cache (parse_content_ast never raises —
+                # unparseable content reads as a single text token).
+                node_row = self._conn.execute(
+                    "SELECT content FROM nodes WHERE workspace_id = ? AND id = ?", (env.workspace_id, class_id)
+                ).fetchone()
+                derived = plaintext_excerpt(parse_content_ast(node_row[0] if node_row is not None else None))
+                self._conn.execute("UPDATE class SET name = ? WHERE id = ? AND name = ''", (derived, class_id))
         self._upsert_class_node(
             env,
             class_id,
             _class_node_fields(payload),
         )
+        # Conversion (owner ruling 2026-10-07 retiring the seeded `class`
+        # meta class): class.create on an EXISTING node DECLARES that node a
+        # class — the node row was INSERT OR IGNOREed above, which never
+        # flips the identity bit. The flip is the whole capability:
+        # is_class = 1, classes-are-roots (the parent edge + its
+        # child-order row drop), the render bit cleared. The node's
+        # title/icon/color stay LWW-gated above (an absent payload field
+        # preserves them — conversion carries no content unless sent).
+        # Membership and the node's own children are untouched (classes are
+        # containers). Applied unconditionally: declaration is structural,
+        # not a row-field race (the extends-DAG precedent, object.delete's
+        # bit flips).
+        with self._conn:
+            converted = self._conn.execute(
+                "UPDATE nodes SET is_class = 1, present_as_main = 0, parent_id = NULL"
+                " WHERE workspace_id = ? AND id = ? AND is_class = 0",
+                (env.workspace_id, class_id),
+            )
+            if converted.rowcount > 0:
+                self._conn.execute("DELETE FROM node_child_order WHERE child_id = ?", (class_id,))
+            # Hierarchy self-row: the `class` query condition matches via
+            # the closure, so every class needs (id, id) even before any
+            # setExtends runs (the TS applyClassCreate parity).
+            self._conn.execute(
+                "INSERT OR IGNORE INTO class_hierarchy (class_id, ancestor_id) VALUES (?, ?)", (class_id, class_id)
+            )
         return True
 
     def _apply_class_update(self, env: RelayEnvelope) -> bool:
@@ -1662,7 +1810,7 @@ class LocalStore:
             schema_type = self._property_schema_type(schema_id)
             default_value = payload["defaultValue"]
             if schema_type is not None and not _is_valid_default_for_type(schema_type, default_value):
-                if schema_type in ("date", "date_range", "object"):
+                if schema_type in ("date", "date_range", "object", "asset"):
                     detail = "must be null — node-typed defaults are not supported"
                 else:
                     detail = f"must be typed {schema_type}"
@@ -1912,36 +2060,43 @@ class LocalStore:
         (extends-aware: a carried class satisfies the filter when it equals an
         entry or descends from one through class_hierarchy — the bibliography
         model filters authors by ``agent`` while person/organization EXTEND
-        agent), and the datePrecision ceiling for date/date_range refs."""
+        agent), and the datePrecision ceiling for date/date_range refs. M38:
+        an asset-typed schema's filter is IMPLICIT — the type IS the filter
+        (the asset class); an explicit targetClassFilter on an asset schema
+        is redundant and ignored."""
         target = self._conn.execute(
             "SELECT class_ids FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, ref)
         ).fetchone()
         if target is None:
             raise PropertyValueShapeError(f"{op_type}: value references node {ref}, which does not exist", op_type)
-        filter_raw = schema.get("target_class_filter")
-        if filter_raw is not None:
-            try:
-                filter_list = json.loads(filter_raw)
-            except (TypeError, ValueError):
-                filter_list = None
-            if isinstance(filter_list, list) and len(filter_list) > 0:
+        if schema["type"] == "asset":
+            filter_list: Any = [system_class_uuid("asset")]
+        else:
+            filter_list = None
+            filter_raw = schema.get("target_class_filter")
+            if filter_raw is not None:
                 try:
-                    carried_raw = json.loads(target[0]) if target[0] else []
+                    filter_list = json.loads(filter_raw)
                 except (TypeError, ValueError):
-                    carried_raw = []
-                carried = [str(class_id) for class_id in carried_raw if isinstance(class_id, str)]
-                allowed = set(carried)
-                if carried:
-                    placeholders = ", ".join("?" for _ in carried)
-                    for (ancestor,) in self._conn.execute(
-                        f"SELECT ancestor_id FROM class_hierarchy WHERE class_id IN ({placeholders})", carried
-                    ):
-                        allowed.add(str(ancestor))
-                if not any(isinstance(class_id, str) and class_id in allowed for class_id in filter_list):
-                    raise PropertyValueShapeError(
-                        f"{op_type}: value target {ref} does not carry any of the schema's allowed classes",
-                        op_type,
-                    )
+                    filter_list = None
+        if isinstance(filter_list, list) and len(filter_list) > 0:
+            try:
+                carried_raw = json.loads(target[0]) if target[0] else []
+            except (TypeError, ValueError):
+                carried_raw = []
+            carried = [str(class_id) for class_id in carried_raw if isinstance(class_id, str)]
+            allowed = set(carried)
+            if carried:
+                placeholders = ", ".join("?" for _ in carried)
+                for (ancestor,) in self._conn.execute(
+                    f"SELECT ancestor_id FROM class_hierarchy WHERE class_id IN ({placeholders})", carried
+                ):
+                    allowed.add(str(ancestor))
+            if not any(isinstance(class_id, str) and class_id in allowed for class_id in filter_list):
+                raise PropertyValueShapeError(
+                    f"{op_type}: value target {ref} does not carry any of the schema's allowed classes",
+                    op_type,
+                )
         if schema["type"] in ("date", "date_range"):
             parsed = parse_date_node_id(ref)
             if parsed is not None:
@@ -1967,7 +2122,7 @@ class LocalStore:
         typed = _assert_scalar_shape_for_type(schema["type"], shaped, op_type)
         if typed is None:
             return typed
-        if schema["type"] in ("date", "object"):
+        if schema["type"] in ("date", "object", "asset"):
             ref = _node_ref_of_value(typed)
             if ref is not None:
                 self._assert_ref_target_for_schema(workspace_id, schema, ref, op_type)
@@ -2531,7 +2686,8 @@ class LocalStore:
         """
         sql = (
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain FROM nodes WHERE workspace_id = ?"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id"
+            " FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
         if parent_id is not None:
@@ -2547,7 +2703,8 @@ class LocalStore:
         """Direct children in child-order position order (the outliner read)."""
         rows = self._conn.execute(
             """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.present_as_main, n.name, n.class_ids, n.tag_ids,
-                      n.icon, n.color, n.is_active, n.content, n.content_plain
+                      n.icon, n.color, n.is_active, n.content, n.content_plain,
+                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
                WHERE n.workspace_id = ? AND o.parent_id = ?
@@ -2561,7 +2718,8 @@ class LocalStore:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain FROM nodes WHERE workspace_id = ? AND id = ?",
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id"
+            " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
         return self._to_node_row(row) if row is not None else None
@@ -2592,7 +2750,34 @@ class LocalStore:
             is_active=bool(row[10]),
             content=row[11],
             content_plain=str(row[12] or ""),
+            cover_asset_id=row[13],
+            banner_asset_id=row[14],
+            aliased_node_id=row[15],
         )
+
+    @_synchronized
+    def resolve_alias(self, workspace_id: str, node_id: str) -> str:
+        """The terminal of a node-alias chain: follow ``aliased_node_id``
+        links to the final main node (M12 — the wire-field read helper
+        behind the alias semantics; the read-path repointing that consumes
+        it is a follow-on slice). Cycle-safe by construction: a revisit
+        yields the STARTING id unchanged (the SCHEMA.md navigation ruling —
+        a cyclic alias is no alias), and a generous depth cap bounds
+        pathological chains to the furthest node reached. Unset/unstored
+        rows are their own terminal."""
+        visited: set[str] = set()
+        current = node_id
+        for _ in range(_ALIAS_CHAIN_DEPTH_CAP):
+            if current in visited:
+                return node_id  # cycle — the id unchanged
+            visited.add(current)
+            row = self._conn.execute(
+                "SELECT aliased_node_id FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, current)
+            ).fetchone()
+            if row is None or row[0] is None:
+                return current
+            current = str(row[0])
+        return current  # depth cap — best-effort terminal
 
     # ------------------------------------------------- effective properties
 
@@ -3067,6 +3252,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     tag_ids TEXT NOT NULL DEFAULT '[]',
     icon TEXT,
     color TEXT,
+    -- Wire node fields (the icon/color precedent, owner 2026-10-07 — the
+    -- M27 lockstep, web schema v15→v16 parity): platform-fixed node
+    -- fundamentals set via object.update (never object.create) — the asset
+    -- node behind the page cover/banner chrome and the main page a node
+    -- alias points at (many-to-one FROM the alias). NULL = unset;
+    -- present-null on the wire CLEARS. The alias target additionally gets
+    -- the write-time cycle check (see _assert_alias_acyclic).
+    cover_asset_id TEXT,
+    banner_asset_id TEXT,
+    aliased_node_id TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     content TEXT,
     content_plain TEXT NOT NULL DEFAULT '',
@@ -3613,6 +3808,24 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 _CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL
 
 
+def _migrate_v13(conn: sqlite3.Connection) -> None:
+    """v13 — the wire node fields (owner 2026-10-07, the M27 lockstep; web
+    schema v15→v16 parity): the cover/banner asset refs and the node-alias
+    target land as three nullable node columns mapped by object.update.
+    Purely additive — the single column guard keeps the ALTERs idempotent
+    for fresh v13 creates (CREATE TABLE IF NOT EXISTS never alters), the
+    v10 migration precedent."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    if "cover_asset_id" not in columns:
+        conn.executescript(
+            """
+            ALTER TABLE nodes ADD COLUMN cover_asset_id TEXT;
+            ALTER TABLE nodes ADD COLUMN banner_asset_id TEXT;
+            ALTER TABLE nodes ADD COLUMN aliased_node_id TEXT;
+            """
+        )
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -3627,4 +3840,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (10, _migrate_v10),
     (11, _migrate_v11),
     (12, _migrate_v12),
+    (13, _migrate_v13),
 )

@@ -49,6 +49,14 @@ Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 keep an optional ``name`` parameter that wraps into a single text token
 (``[{"type": "text", "text": name}]``) when no explicit ``content_ast`` is
 given; when both are given, ``content_ast`` wins and ``name`` is dropped.
+
+Wire-node-fields + asset-type batch (owner 2026-10-07, the M27/M12/M38
+lockstep): ``object.update`` gains the optional nullable ``coverAssetId``
+/ ``bannerAssetId`` / ``aliasedNodeId`` node fields (presence writes,
+present-null clears — the ``color`` convention; ``object.create`` carries
+none), and the property-schema type enum gains ``asset`` — a node-typed
+value whose target must carry the asset class (the filter is implicit in
+the type).
 """
 
 from __future__ import annotations
@@ -89,6 +97,12 @@ _PROPERTY_TYPE = Literal[
     "multi_select",
     "object",
     "image",
+    # M38 (owner 2026-10-07): an asset reference — a node-typed value
+    # ({nodeId}) whose target MUST carry the asset class; the filter is
+    # IMPLICIT in the type (an explicit targetClassFilter is redundant and
+    # ignored on asset schemas). The attachments property (…0011) is the
+    # first asset-typed schema (retyped from object).
+    "asset",
 ]
 _SCOPE = Literal["global", "class", "object"]
 _DATE_PRECISION = Literal["year", "month", "day"]
@@ -136,6 +150,21 @@ class ObjectUpdatePayload(_Strict):
     # Preset token (`sky`) or custom `#RRGGBB` hex (colors.py grammar);
     # null CLEARS the node's color.
     color: ColorValue = Field(default=None)
+    # Wire node fields (the icon/color precedent, owner 2026-10-07):
+    # platform-fixed node fundamentals that core chrome or navigation
+    # reads/writes — an asset node for the page cover, an asset node for the
+    # page banner, and the main page a node alias points at (many-to-one FROM
+    # the alias: a node aliases at most one node). Set via object.update only
+    # (object.create carries none); `null` CLEARS. Presence writes, null
+    # clears — the applier distinguishes absence (no write) from present-null
+    # (SQL NULL), exactly like `color`. Reference integrity (asset existence,
+    # alias-chain cycle validation) is a client/read-layer concern — the
+    # applier maps the fields; the alias target DOES get a write-time
+    # cycle check (the extends-DAG precedent). See SCHEMA.md "Node structure"
+    # and "Node aliases" (op-types.ts parity).
+    cover_asset_id: UUID | None = Field(default=None, alias="coverAssetId")
+    banner_asset_id: UUID | None = Field(default=None, alias="bannerAssetId")
+    aliased_node_id: UUID | None = Field(default=None, alias="aliasedNodeId")
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
 
@@ -508,11 +537,17 @@ def build_object_update(
     content_delta_b64: str | None = None,
     icon: str | None = None,
     color: str | None | object = _UNSET,
+    cover_asset_id: str | None | object = _UNSET,
+    banner_asset_id: str | None | object = _UNSET,
+    aliased_node_id: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Build an ``object.update`` payload (at least one field required).
 
     ``color=None`` sends an explicit null that CLEARS the node's color
-    (the UI's "No color"); omitting ``color`` leaves it untouched.
+    (the UI's "No color"); omitting ``color`` leaves it untouched. The wire
+    node fields (``cover_asset_id`` / ``banner_asset_id`` /
+    ``aliased_node_id``) follow the same convention: ``None`` sends an
+    explicit null that CLEARS the column, omitting leaves it untouched.
     """
     payload: dict[str, Any] = {"objectId": object_id}
     if present_as_main is not None:
@@ -525,6 +560,12 @@ def build_object_update(
         payload["icon"] = icon
     if color is not _UNSET:
         payload["color"] = color
+    if cover_asset_id is not _UNSET:
+        payload["coverAssetId"] = cover_asset_id
+    if banner_asset_id is not _UNSET:
+        payload["bannerAssetId"] = banner_asset_id
+    if aliased_node_id is not _UNSET:
+        payload["aliasedNodeId"] = aliased_node_id
     return _validated("object.update", payload)
 
 

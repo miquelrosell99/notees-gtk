@@ -6,6 +6,68 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-07
+
+- **feat(protocol+store): the M27/M12/M47/M38 alignment — wire node fields,
+  the title-flatten ruling, class conversion, alias cycle validation, the
+  asset property type, seed convergence; the three new fixtures re-vendored
+  (lockstep).** The GTK side of the monorepo's 2026-10-07 batches, ported
+  faithfully from `packages/protocol/src/op-types.ts`,
+  `packages/store/src/{appliers,property-values,schema,store}.ts`, and
+  `packages/domain/src/{seeds,features}.ts`:
+  - **Wire node fields (M27).** `object.update` gains the optional nullable
+    `coverAssetId` / `bannerAssetId` / `aliasedNodeId` node fields (strict
+    payload schema, uuid format-checked, `object.create` rejects them
+    outright) mapped presence-write / present-null-clear onto three new
+    derived node columns — store schema **v13** (web schema v15→v16 parity;
+    guarded additive migration, the v10 precedent; fresh databases run the
+    whole chain). `NodeRow` surfaces the fields; server snapshots carrying
+    the columns restore through them.
+  - **Title applier.** The `object.update` content path no longer flattens
+    rich tokens to text-only for present-as-main nodes — class rows stay
+    text-only; create-as-main and promotion remain the lossy boundaries;
+    display-name derivation still flattens. The registered lockstep debt
+    from the web batch is paid.
+  - **Class conversion (M47).** `class.create` on an EXISTING node DECLARES
+    it a class: `is_class` flips, a parented node is cut to a root (parent
+    edge + child-order row drop), the render bit clears, the registry adopts
+    the node's existing title (COALESCE/NULLIF preserve on re-declaration —
+    absent icon/color/name never wipe), and the hierarchy self-row lands at
+    create (the TS `applyClassCreate` parity).
+  - **Alias write-time validation (M12).** `object.update {aliasedNodeId: T}`
+    walks the would-be chain; a revisit (self-alias included) raises
+    `CycleError` and the write is never applied; clearing skips the check;
+    a stale-HLC write drops by row LWW before the check. `resolve_alias` is
+    the read helper — chain to terminal, cycle-safe (a revisit yields the
+    starting id unchanged), depth cap 32.
+  - **The asset property type (M38).** The propertySchema type enum gains
+    `asset`: values validate as node references, the target MUST carry the
+    asset class (the filter is implicit in the type — an explicit
+    targetClassFilter is ignored on asset schemas); node-typed defaults
+    stay unsupported.
+  - **Seeds.** The seeded `class` meta class (…0001) is retired — out of
+    the always-on manifest, its UUID never reused; `weblink` (…0034) extends
+    `source` — it left the always-on list and now rides the SOURCES family
+    set and gating; the `asset` class id joins the static map (the implicit
+    filter resolves through it).
+  - **Outbox guard.** The enqueue writable-field check is now nullish-aware:
+    a null on a NULLISH field (color + the three wire node fields) is a real
+    CLEAR the server's presence-based refine accepts, so it must not be
+    swallowed; nulls on optional fields (icon/contentAst) still skip (they
+    would 422).
+  - **Fixtures.** `tests/fixtures/wire/` re-vendored from the main repo —
+  `class-convert.json`, `object-wire-fields.json`, `property-asset-type.json`
+  copied verbatim (`cp -a`), the corpus now 24 files, `diff -r` clean and
+  sha256-identical file-by-file; the three join the round-trip list in
+  `test_fixtures.py`, and new replay classes in `test_store_fixtures.py`
+  assert the same derived state the monorepo store tests assert.
+  Verified: `uv run pytest` 720 passed / 3 skipped, `uv run ruff check`
+  clean, `uv run mypy src` clean — and the live end-to-end module against a
+  fresh `pnpm --filter @notees/server build` of the monorepo HEAD
+  (`NOTEES_V2_ROOT=<checkout> uv run pytest tests/test_live_server_e2e.py`:
+  2 passed). Flutter convergence and the migration-script runs stay gated
+  on the main repo's lockstep tracking.
+
 ## 2026-10-06
 
 - **chore(sync): re-vendored the wire fixture corpus from the main repo —

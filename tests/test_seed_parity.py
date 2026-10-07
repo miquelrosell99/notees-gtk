@@ -62,6 +62,17 @@ WITHDRAWN_PROPERTY_IDS = (
     "00000000-0000-0000-0000-000000000025",
 )
 
+#: WITHDRAWN 2026-10-07 (owner ruling): the seeded `class` META class …0001
+#: is retired — nodes bound to it become REAL classes (the class.create
+#: conversion capability) and the seed no longer emits it. Never reuse
+#: (the seeds.ts withdrawal comment, the locator …0018 precedent).
+RETIRED_CLASS_META_ID = "00000000-0000-0000-0001-000000000001"
+
+#: The weblink class joined the source tree (owner ruling 2026-10-07):
+#: …0034 extends source, so the SOURCES family toggle archives it.
+WEBLINK = "00000000-0000-0000-0001-000000000034"
+ASSET = "00000000-0000-0000-0001-000000000009"
+
 
 def seed_env(op_type: str, payload: dict[str, object], physical: int) -> RelayEnvelope:
     """One envelope in the shape ``buildSeedEnvelopes`` emits (client "seed")."""
@@ -209,3 +220,82 @@ class TestFinalAuthorsSpec:
         with sqlite3.connect(_db_path(store)) as raw:
             active = {str(row_id) for (row_id,) in raw.execute("SELECT id FROM property_schema")}
         assert active.isdisjoint(WITHDRAWN_PROPERTY_IDS)
+
+
+class TestRetiredClassMetaClass:
+    """M47 seed convergence (owner ruling 2026-10-07): the seeded `class`
+    META class …0001 is retired — its instances become real classes (the
+    class.create conversion capability, exercised by the class-convert
+    fixture) and nothing seeds or hosts on it anymore. The id is a dead
+    slot, never reused (the seeds.ts withdrawal)."""
+
+    def test_the_retired_meta_class_id_is_never_seeded(self, store: LocalStore) -> None:
+        assert (
+            store.apply_remote(
+                seed_env(
+                    "class.create",
+                    {"classId": SOURCE, "contentAst": [{"type": "text", "text": "source"}]},
+                    1,
+                )
+            )
+            is True
+        )
+        with sqlite3.connect(_db_path(store)) as raw:
+            seeded = {str(row_id) for (row_id,) in raw.execute("SELECT id FROM nodes WHERE is_class = 1")}
+        assert RETIRED_CLASS_META_ID not in seeded
+
+    def test_fixed_uuids_never_collide_with_the_retired_slot(self) -> None:
+        class_ids = [SOURCE, AGENT, SONG, TV_SERIES, CONFERENCE, WEBLINK, ASSET]
+        assert RETIRED_CLASS_META_ID not in class_ids
+        assert len(set(class_ids)) == len(class_ids)
+        for class_id in class_ids:
+            assert class_id.startswith(SYSTEM_CLASS_BLOCK_PREFIX)
+
+
+class TestWeblinkExtendsSource:
+    """The 2026-10-07 seed convergence: the web link IS a source — weblink
+    (…0034) extends source, inherits the family's bibliographic bindings,
+    and the SOURCES toggle archives it (it left the always-on manifest)."""
+
+    def test_weblink_fixed_id_extends_source_and_gates_on_sources(self) -> None:
+        from notees_gtk.core.protocol.features import (  # noqa: PLC0415
+            gating_features_for_class,
+            is_always_on_system_class,
+            system_class_ancestors,
+        )
+
+        assert system_class_ancestors("weblink") == frozenset({"source"})
+        assert "weblink" not in system_class_ancestors("source")
+        assert gating_features_for_class("weblink") == ("sources",)
+        assert not is_always_on_system_class("weblink")
+
+    def test_weblink_replays_as_a_source_family_class(self, store: LocalStore) -> None:
+        """The seed-op shape the changed manifest emits: weblink is created
+        and extends source like any source-family child (the class-convert
+        capability made the registry path a declaration, so the replay
+        converges on replicas that never saw the old upsert half-state)."""
+        _seed_source_family(store)
+        assert (
+            store.apply_remote(
+                seed_env(
+                    "class.create",
+                    {"classId": WEBLINK, "contentAst": [{"type": "text", "text": "weblink"}], "icon": "mdiLinkVariant"},
+                    2,
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(seed_env("class.setExtends", {"classId": WEBLINK, "parentClassIds": [SOURCE]}, 10))
+            is True
+        )
+        row = store.node(WS, WEBLINK)
+        assert row is not None
+        assert row.is_class is True and row.parent_id is None
+        assert row.content_plain == "weblink"
+        with sqlite3.connect(_db_path(store)) as raw:
+            closure = raw.execute(
+                "SELECT ancestor_id FROM class_hierarchy WHERE class_id = ? AND ancestor_id = ?",
+                (WEBLINK, SOURCE),
+            ).fetchall()
+        assert closure == [(SOURCE,)]

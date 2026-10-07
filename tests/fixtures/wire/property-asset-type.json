@@ -1,0 +1,67 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000540",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011000,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:11.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000541",
+        "name": "Attachment",
+        "type": "asset",
+        "multi": true,
+        "scope": "class"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000541",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011100,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:11.100Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000542",
+        "name": "Cover file",
+        "type": "asset",
+        "multi": false,
+        "scope": "object"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000542",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011200,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:11.200Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000542",
+        "name": "Cover file (renamed)"
+      }
+    }
+  ]
+}

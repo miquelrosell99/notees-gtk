@@ -62,8 +62,12 @@ WorkspaceFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
 WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = ("tasks", "events", "meetings", "sources", "persons")
 
 #: The family-relevant system-class UUIDs (seeds.ts subset — the applier's
-#: flip list and F4 routing resolve through these fixed ids).
+#: flip list and F4 routing resolve through these fixed ids), plus the two
+#: ids the property/applier semantics resolve through: ``asset`` (the
+#: implicit filter of an asset-typed property schema, M38) and ``weblink``
+#: (the source-family child, the 2026-10-07 convergence).
 _SYSTEM_CLASS_UUIDS: dict[str, str] = {
+    "asset": "00000000-0000-0000-0001-000000000009",
     "task": "00000000-0000-0000-0001-000000000012",
     "source": "00000000-0000-0000-0001-000000000023",
     "book": "00000000-0000-0000-0001-000000000024",
@@ -81,6 +85,7 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "meeting": "00000000-0000-0000-0001-000000000039",
     "event": "00000000-0000-0000-0001-000000000040",
     "birthday": "00000000-0000-0000-0001-000000000041",
+    "weblink": "00000000-0000-0000-0001-000000000034",
 }
 
 #: The task class icon (seeds.ts ``SYSTEM_CLASS_ICONS`` subset — the
@@ -105,6 +110,11 @@ _SYSTEM_CLASS_EXTENDS: dict[str, tuple[str, ...]] = {
     "organization": ("agent",),
     "meeting": ("event",),
     "birthday": ("event",),
+    # The web link IS a source (owner ruling, 2026-10-07 convergence): a
+    # bookmarked page is a cited web source — weblink inherits the source
+    # family's bibliographic bindings, and disabling `source` hides
+    # weblinks with the rest of the family.
+    "weblink": ("source",),
 }
 
 
@@ -157,11 +167,13 @@ def feature_for_base_class(name: str) -> WorkspaceFeature | None:
 #: Always-on system classes (F1) — never feature-managed: the base system
 #: (journals year/month/day, asset, query, code, card, template, comment,
 #: table, cloze, whiteboard, the admonition set) plus the classes of the
-#: DROPPED pre-reshape features (highlight, weblink, collection, agent,
-#: organization). The five family bases and their extends-children are NOT
-#: here — they are the toggle set.
+#: DROPPED pre-reshape features (highlight, collection, agent, organization).
+#: The five family bases and their extends-children are NOT here — they are
+#: the toggle set, weblink included since it became a source-family child
+#: (2026-10-07). The retired `class` meta class (…0001, withdrawn
+#: 2026-10-07) left the manifest with its retirement — it is nobody's
+#: anchor anymore.
 ALWAYS_ON_SYSTEM_CLASSES: tuple[str, ...] = (
-    "class",
     "year",
     "month",
     "day",
@@ -185,7 +197,6 @@ ALWAYS_ON_SYSTEM_CLASSES: tuple[str, ...] = (
     "organization",
     "collection",
     "highlight",
-    "weblink",
 )
 
 

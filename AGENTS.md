@@ -83,7 +83,10 @@ AGENTS.md
   outright by the strict schemas; the stored log is rewritten in place by
   one-time migrations, never read compatibly.
 - **Title-is-content.** No `name` field exists on the wire; a node's title IS
-  its text content, and pages/classes carry text-only content.
+  its text content. A page's own content MAY carry inline rich tokens
+  (mentions, external links — the header title is a full editor row); class
+  content stays text-only, and create-as-main plus promotion remain the
+  lossy flatten boundaries. Display-name derivation flattens to text.
 - **The operation log is the only authority.** Every SQLite database this
   client writes (mirror, outbox bookkeeping) is derived state.
 - **Fleet-agnostic artifacts.** Never hardcode machine names, IPs, or tailnet
