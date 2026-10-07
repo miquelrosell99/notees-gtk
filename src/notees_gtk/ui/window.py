@@ -14,6 +14,7 @@ when worthwhile, syncs once, then re-syncs every 30 seconds.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 import gi
@@ -26,8 +27,10 @@ from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, AuthenticationError, NoteesClient
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.sync.engine import SyncEngine
+from notees_gtk.data.errors import CycleError
 from notees_gtk.data.store import LocalStore, NodeRow
 from notees_gtk.ui import config_store
+from notees_gtk.ui.alias_ops import alias_repoint_candidates, alias_update_envelope
 from notees_gtk.ui.ast_render import ast_to_plaintext, ast_to_view
 from notees_gtk.ui.editor import EditorView
 from notees_gtk.ui.login import LoginView
@@ -240,8 +243,96 @@ class NoteesWindow(Adw.ApplicationWindow):
         if row is None:
             return
         title = node_display_name(row)
-        self._page_view.show_page(title, ast_to_view(row.content, resolve_name=self._resolve_name))
+        self._page_view.show_page(
+            title,
+            ast_to_view(row.content, resolve_name=self._resolve_name),
+            aliases=self._alias_entries(row),
+            aliased_main=self._aliased_main_entry(row),
+            repoint_candidates=self._repoint_candidates(node_id) if row.aliased_node_id is not None else (),
+            on_open_node=self._open_node,
+            on_repoint=partial(self._on_alias_repoint, node_id),
+        )
         self._editor.open_node(node_id, ast_to_plaintext(row.content))
+
+    def _alias_entries(self, row: NodeRow) -> list[tuple[str, str]]:
+        """(id, label) for every live node whose alias-terminal is this one
+        (the store's reverse read, chains included)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return []
+        entries: list[tuple[str, str]] = []
+        for alias_id in store.alias_nodes_of(self._workspace_id, row.id):
+            alias_row = store.node(self._workspace_id, alias_id)
+            if alias_row is not None:
+                entries.append((alias_id, node_display_name(alias_row)))
+        return entries
+
+    def _aliased_main_entry(self, row: NodeRow) -> tuple[str, str] | None:
+        """(id, label) of the alias's main, or ``None`` for an ordinary node."""
+        if row.aliased_node_id is None:
+            return None
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return None
+        main_row = store.node(self._workspace_id, row.aliased_node_id)
+        label = node_display_name(main_row) if main_row is not None else row.aliased_node_id
+        return (row.aliased_node_id, label)
+
+    def _repoint_candidates(self, node_id: str) -> list[tuple[str, str]]:
+        """The Change picker's (id, label) rows: every live node that may
+        receive this alias's field (the pure filter), label-sorted."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return []
+        entries = [(r.id, node_display_name(r)) for r in alias_repoint_candidates(store.nodes(self._workspace_id), node_id)]
+        entries.sort(key=lambda entry: (entry[1].lower(), entry[0]))
+        return entries
+
+    def _open_node(self, node_id: str) -> None:
+        """Navigate to ``node_id`` — the alias chrome's Open/Navigate seam.
+
+        Selects the node in the sidebar (expanding ancestors as needed; the
+        selection signal drives the show) and shows it here too, which covers
+        the already-selected case where no selection signal fires.
+        """
+        self._sidebar.select_node(node_id)
+        self._show_node(node_id)
+
+    def _on_alias_repoint(self, node_id: str, target_id: str | None) -> None:
+        """Write the alias's OWN ``aliasedNodeId`` (re-point or present-null
+        clear) through ``object.update``, then push the outbox."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        envelope = alias_update_envelope(
+            workspace_id=self._workspace_id,
+            actor_id=config_store.load_actor_id() or _ACTOR_FALLBACK,
+            device_id=config_store.ensure_device_id(),
+            node_id=node_id,
+            target_id=target_id,
+            clock=self._clock,
+        )
+        try:
+            store.enqueue(envelope)
+            # Optimistic mirror apply, the editor-save precedent: the
+            # toggle-free view refresh after the sync already renders the new
+            # target; op-id dedupe makes the server echo harmless.
+            store.apply_remote(envelope)
+        except CycleError as exc:
+            self.show_toast(str(exc))
+            return
+        self.show_toast("Alias updated — syncing…")
+        engine = self._engine
+        if engine is not None:
+            run_in_worker(
+                engine.sync, on_done=lambda _result: self._after_alias_write(node_id), on_error=self._on_sync_error
+            )
+        else:
+            self._show_node(node_id)
+
+    def _after_alias_write(self, node_id: str) -> None:
+        self._refresh_sidebar()
+        self._show_node(node_id)
 
     def _resolve_name(self, target_id: str) -> str | None:
         """Store-backed node-link resolution: first line of the target's content."""

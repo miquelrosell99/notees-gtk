@@ -8,6 +8,47 @@ history.
 
 ## 2026-10-07
 
+- **feat(ui,store): the alias chrome — the Aliases section on the aliased
+  node's view + the Aliased-node row on the alias's own view (the
+  `aliasedNodeId` field's GTK UI).** The GTK side of the monorepo's alias
+  read-path slice, the minimal honest set on the wire field ported from
+  `apps/web/src/ui/components/{AliasesButton,AliasedNodeRow}.tsx`:
+  - **The store reverse read.** `LocalStore.alias_nodes_of` — the
+    `Store.aliasNodesOf` port: the recursive reverse-walk over
+    `aliased_node_id`, self excluded, LIVE rows only, id order, scoped to
+    the workspace (the GTK store is multi-workspace on one connection — the
+    one deliberate addition over the TS SQL). `TestAliasNodesOf` pins the
+    semantics the monorepo suite pins (direct + chain, self-excluded,
+    trashed skipped, empty-when-none) plus the workspace scoping.
+  - **The Aliases section** (`ui/aliases.py::build_aliases_section`) on the
+    aliased node's view: one row per live alias (chains included, labels
+    via `node_display_name`), each with an Open button that navigates to
+    the ALIAS node's own view — the one deliberate bypass of the
+    navigation redirect, as on the web. Rendered only when aliases exist;
+    the main-side ADD backward write is not part of this chrome.
+  - **The Aliased-node row** (`ui/aliases.py::build_aliased_node_row`) on
+    the alias's own view: names the main (Open navigates to it), Change…
+    re-points the carrier's OWN `aliasedNodeId` through a searchable
+    popover picker (the pure `alias_repoint_candidates` filter — the alias
+    itself and every already-aliased node excluded, the web picker's
+    `canAdd` rule), Clear writes the present-null. Both ride
+    `object.update` envelopes (`ui/alias_ops.py::alias_update_envelope`,
+    the editor-save authoring shape) through enqueue + the optimistic
+    mirror apply, then the sync round; a `CycleError` surfaces as a toast,
+    never a crash.
+  - **Navigation.** `NodeTreeSidebar.select_node` selects a node, expanding
+    collapsed ancestors (cycle-guarded like `_visible_rows`); the window's
+    `_open_node` seam covers the already-selected case where no selection
+    signal fires.
+  - **The pure/impure split.** All decision logic is GTK-free
+    (`ui/alias_ops.py`, headless-tested by `tests/test_alias_ops.py` — the
+    envelope payload shape for re-point vs clear, the candidate filter);
+    the widget module only turns records into widgets. No wire change — the
+    fixture corpus stays byte-identical (`diff -r` clean).
+  Verified: `uv run pytest` 734 passed / 3 skipped, `uv run ruff check`
+  clean, `uv run mypy src` clean — and the live end-to-end module against
+  the monorepo's built server (`NOTEES_V2_ROOT=<checkout> uv run pytest
+  tests/test_live_server_e2e.py`: 2 passed).
 - **feat(seed): the #14 follow-up five — definition/idea/place/project/trip
   seeds ported to the static map; the events family gains the trip cascade;
   the seed-parity suite pins the manifest so drift fails the gate.** The GTK

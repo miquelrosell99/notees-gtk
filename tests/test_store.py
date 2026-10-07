@@ -3413,6 +3413,65 @@ class TestAliasCycles:
         assert store.resolve_alias(WS_A, self.A) != self.A
 
 
+class TestAliasNodesOf:
+    """The reverse alias read (the monorepo ``aliasNodesOf`` port): every
+    live node whose alias-terminal is the main — direct + chain, self
+    excluded, trashed rows skipped, id order."""
+
+    MAIN = uid("ano-main")
+    ALIAS = uid("ano-alias")
+    CHAIN = uid("ano-chain")
+    OTHER = uid("ano-other")
+
+    def _alias(self, node_id: str, target: str | None, hlc: tuple[int, int]) -> RelayEnvelope:
+        return update_env(node_id, hlc=hlc, aliasedNodeId=target)
+
+    def test_lists_every_node_whose_terminal_is_the_main_chains_included_empty_when_none(
+        self, store: LocalStore
+    ) -> None:
+        for node in (self.MAIN, self.ALIAS, self.CHAIN, self.OTHER):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        assert store.alias_nodes_of(WS_A, self.MAIN) == []
+        # A plain alias and a chain member both land in the main's set.
+        store.apply_remote(self._alias(self.ALIAS, self.MAIN, (2, 0)))
+        store.apply_remote(self._alias(self.CHAIN, self.ALIAS, (3, 0)))
+        assert store.alias_nodes_of(WS_A, self.MAIN) == sorted([self.ALIAS, self.CHAIN])
+        # CHAIN points at ALIAS directly, so it lists under ALIAS's own set…
+        assert store.alias_nodes_of(WS_A, self.ALIAS) == [self.CHAIN]
+        # …while nothing points at CHAIN or OTHER.
+        assert store.alias_nodes_of(WS_A, self.CHAIN) == []
+        assert store.alias_nodes_of(WS_A, self.OTHER) == []
+
+    def test_never_includes_the_main_itself_and_skips_trashed_aliases(self, store: LocalStore) -> None:
+        for node in (self.MAIN, self.ALIAS, self.OTHER):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+        store.apply_remote(self._alias(self.ALIAS, self.MAIN, (2, 0)))
+        # A self-alias is rejected at the write path, so the main can only
+        # enter its own set through a hand-built cycle — the read excludes
+        # the seed id outright.
+        assert store.alias_nodes_of(WS_A, self.MAIN) == [self.ALIAS]
+        # Trash the alias (soft-delete keeps the row, flips is_active).
+        store.apply_remote(make_env("object.delete", {"objectId": self.ALIAS}, hlc=(3, 0)))
+        assert store.alias_nodes_of(WS_A, self.MAIN) == []
+        # The trash never lists as a terminal either.
+        assert store.alias_nodes_of(WS_A, self.ALIAS) == []
+        assert store.alias_nodes_of(WS_A, self.OTHER) == []
+
+    def test_the_walk_is_workspace_scoped(self, store: LocalStore) -> None:
+        for node in (self.MAIN, self.ALIAS):
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0)))
+            store.apply_remote(create_env(node, name="Page", hlc=(1, 0), workspace_id=WS_B))
+        store.apply_remote(self._alias(self.ALIAS, self.MAIN, (2, 0)))
+        store.apply_remote(
+            make_env("object.update", {"objectId": self.ALIAS, "aliasedNodeId": self.MAIN}, hlc=(2, 0), workspace_id=WS_B)
+        )
+        # Same ids in both workspaces, aliased in each: the recursive member
+        # must not cross the workspace boundary on either side.
+        assert store.alias_nodes_of(WS_A, self.MAIN) == [self.ALIAS]
+        assert store.alias_nodes_of(WS_B, self.MAIN) == [self.ALIAS]
+        assert store.alias_nodes_of(WS_A, self.CHAIN) == []
+
+
 class TestAssetPropertyType:
     """M38 unit semantics (mirrors the monorepo store test): values validate
     as asset-node references — the implicit filter is the asset class;

@@ -2779,6 +2779,25 @@ class LocalStore:
             current = str(row[0])
         return current  # depth cap — best-effort terminal
 
+    @_synchronized
+    def alias_nodes_of(self, workspace_id: str, node_id: str) -> list[str]:
+        """Every node whose alias-terminal is ``node_id`` — the reverse read
+        of :meth:`resolve_alias` (the monorepo ``Store.aliasNodesOf`` port):
+        the recursive reverse-walk over ``aliased_node_id``, ``node_id``
+        itself excluded, LIVE rows only, id order. Drives the page chrome's
+        Aliases section."""
+        rows = self._conn.execute(
+            """WITH RECURSIVE alias_set(id) AS (
+                 SELECT ?
+                 UNION
+                 SELECT n.id FROM nodes n JOIN alias_set a ON n.aliased_node_id = a.id
+                 WHERE n.workspace_id = ? AND n.is_active = 1
+               )
+               SELECT id FROM alias_set WHERE id != ? ORDER BY id""",
+            (node_id, workspace_id, node_id),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
     # ------------------------------------------------- effective properties
 
     def _visible_property_value_rows(self, node_id: str) -> list[dict[str, Any]]:
