@@ -15,7 +15,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gtk
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Adw, GdkPixbuf, GLib, Gtk
 
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, NoteesClient, TwoFactorRequired
@@ -27,6 +28,27 @@ __all__ = ["LoginView"]
 #: Callback invoked after a successful login with the persisted config, the
 #: authenticated client, and the server's public user record.
 LoggedInCallback = Callable[[ClientConfig, NoteesClient, dict[str, Any]], None]
+
+_SYMBOL_SIZE_PX = 64
+
+
+def _brand_symbol_pixbuf() -> GdkPixbuf.Pixbuf | None:
+    """Load the Margin Green symbol for the active colour scheme, or ``None``.
+
+    The SVGs ship as package assets (``ui/assets/``, vendored from the brand
+    submodule); ``full-color.svg`` carries the light-scheme inks (iron + green),
+    ``full-color-dark.svg`` the dark-scheme roles. A host without the SVG
+    pixbuf loader yields ``None`` and the form simply renders without the mark.
+    """
+    from importlib.resources import files
+
+    dark = Adw.StyleManager.get_default().get_dark()
+    name = "full-color-dark.svg" if dark else "full-color.svg"
+    path = files("notees_gtk.ui").joinpath("assets", name)
+    try:
+        return GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), _SYMBOL_SIZE_PX, _SYMBOL_SIZE_PX, True)
+    except GLib.Error:
+        return None
 
 
 class LoginView(Gtk.Box):
@@ -45,6 +67,14 @@ class LoginView(Gtk.Box):
 
         form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, valign=Gtk.Align.CENTER)
         clamp.set_child(form)
+
+        # The brand lockup above the form: the Margin Green symbol in the
+        # scheme-correct render (full-color on light, the f4f3f1/6da789
+        # variant on dark), vendored from the brand/ submodule into the
+        # package assets. Missing SVG loader -> the form renders without it.
+        symbol = _brand_symbol_pixbuf()
+        if symbol is not None:
+            form.append(Gtk.Image.new_from_pixbuf(symbol))
 
         group = Adw.PreferencesGroup(title="Sign in to Notees", description="Connect to your self-hosted server")
         form.append(group)

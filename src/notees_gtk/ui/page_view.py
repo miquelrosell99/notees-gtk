@@ -33,12 +33,17 @@ from notees_gtk.ui.ast_render import (
     TextRun,
     TypedLinkRun,
 )
+from notees_gtk.ui.brand import ContentColors, content_colors
 
 __all__ = ["PageViewWidget", "run_markup", "runs_to_markup"]
 
 
-def run_markup(run: object) -> str:
-    """Convert one inline view record to Pango markup."""
+def run_markup(run: object, colors: ContentColors) -> str:
+    """Convert one inline view record to Pango markup.
+
+    ``colors`` carries the Margin Green roles (``ui.brand``) resolved for the
+    current colour scheme — Pango spans cannot read GTK CSS variables.
+    """
     if isinstance(run, TextRun):
         text = f"{GLib.markup_escape_text(run.text, -1)}"
         if "code" in run.marks:
@@ -53,13 +58,16 @@ def run_markup(run: object) -> str:
             text = f"<b>{text}</b>"
         return text
     if isinstance(run, MentionRun):
-        return f'<span foreground="#3584E4" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
+        return f'<span foreground="{colors.link}" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
     if isinstance(run, ClassChipRun):
-        return f'<span background="#D3D3D3" color="black">{GLib.markup_escape_text(run.text, -1)}</span>'
+        return (
+            f'<span background="{colors.chip_background}" color="{colors.chip_foreground}">'
+            f"{GLib.markup_escape_text(run.text, -1)}</span>"
+        )
     if isinstance(run, TypedLinkRun):
         return f"<u>{GLib.markup_escape_text(run.text, -1)}</u>"
     if isinstance(run, ExternalLinkRun):
-        return f'<span foreground="#1B5FBF" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
+        return f'<span foreground="{colors.link}" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
     if isinstance(run, MathRun):
         return f"<tt>{GLib.markup_escape_text(run.expression, -1)}</tt>"
     if isinstance(run, HardBreakRun):
@@ -67,9 +75,9 @@ def run_markup(run: object) -> str:
     return ""
 
 
-def runs_to_markup(runs: Iterable[object]) -> str:
+def runs_to_markup(runs: Iterable[object], colors: ContentColors) -> str:
     """Convert a line's inline view records to one Pango markup string."""
-    return "".join(run_markup(run) for run in runs)
+    return "".join(run_markup(run, colors) for run in runs)
 
 
 class PageViewWidget(Gtk.Box):
@@ -87,6 +95,11 @@ class PageViewWidget(Gtk.Box):
             margin_start=24,
             margin_end=24,
         )
+        # The reading surface: theme.css sets the Newsreader stack on this
+        # class (the brand's reading-text typeface, with a system serif
+        # fallback) and lets it inherit into every content label.
+        self._content.add_css_class("page-content")
+        self._colors: ContentColors = content_colors(dark=False)
         clamp = Adw.Clamp(maximum_size=860)
         clamp.set_child(self._content)
         scrolled.set_child(clamp)
@@ -110,6 +123,10 @@ class PageViewWidget(Gtk.Box):
         """
         while child := self._content.get_first_child():
             self._content.remove(child)
+
+        # Margin Green content roles resolved for the active colour scheme
+        # (tokens.css light/dark); re-resolved on every render.
+        self._colors = content_colors(dark=Adw.StyleManager.get_default().get_dark())
 
         if title:
             heading = Gtk.Label(label=title, xalign=0, wrap=True)
@@ -135,7 +152,7 @@ class PageViewWidget(Gtk.Box):
             if isinstance(item, QuoteView):
                 self._flush_line(line)
                 label = Gtk.Label(xalign=0, wrap=True, use_markup=True, selectable=True)
-                label.set_markup(f"“{runs_to_markup(item.children)}”")
+                label.set_markup(f"“{runs_to_markup(item.children, self._colors)}”")
                 label.add_css_class("dim-label")
                 self._content.append(label)
             elif isinstance(item, PlaceholderView):
@@ -152,7 +169,7 @@ class PageViewWidget(Gtk.Box):
         if not line:
             return
         label = Gtk.Label(xalign=0, wrap=True, use_markup=True, selectable=True)
-        label.set_markup(runs_to_markup(line))
+        label.set_markup(runs_to_markup(line, self._colors))
         self._content.append(label)
         line.clear()
 

@@ -33,4 +33,12 @@ build() {
 package() {
   cd "$pkgname"
   python -m installer --destdir="$pkgdir" dist/*.whl
+
+  # Margin Green app icon (vendored from the brand/ submodule, v1.0.0);
+  # resolves through the hicolor theme as dev.notees.Gtk (the window's
+  # set_icon_name). glib2's pacman hook refreshes the icon cache.
+  install -Dm644 data/icons/hicolor/scalable/apps/dev.notees.Gtk.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.notees.Gtk.svg"
+  install -Dm644 data/icons/hicolor/512x512/apps/dev.notees.Gtk.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/dev.notees.Gtk.png"
 }

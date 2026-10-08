@@ -2,8 +2,8 @@
 
 This package intentionally keeps its ``__init__`` free of imports: modules
 under ``ui/`` (except :mod:`notees_gtk.ui.ast_render`,
-:mod:`notees_gtk.ui.alias_ops`, and :mod:`notees_gtk.ui.config_store`, which
-are pure) require PyGObject and a GTK display, so importing them here would
-break headless test runs. Import the concrete widgets from their modules
-(``notees_gtk.ui.window``, …).
+:mod:`notees_gtk.ui.alias_ops`, :mod:`notees_gtk.ui.brand`, and
+:mod:`notees_gtk.ui.config_store`, which are pure) require PyGObject and a GTK
+display, so importing them here would break headless test runs. Import the
+concrete widgets from their modules (``notees_gtk.ui.window``, …).
 """
