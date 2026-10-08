@@ -6,6 +6,53 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-08
+
+- **feat(ui): align the GTK client to the Margin Green brand — icon, theme
+  tokens, colours.** The Notees identity (MARGIN — the page is the canvas,
+  the margin is where thought accumulates) lands as the `brand/` submodule
+  (`notees-brand`, pinned `v1.0.0`: tokens, logo masters, guidelines).
+  Brand alignment only — no wire/sync/model change.
+  - **App icon.** `data/icons/hicolor/scalable/apps/dev.notees.Gtk.svg` +
+    `data/icons/hicolor/512x512/apps/dev.notees.Gtk.png`, vendored from
+    `brand/assets/logo/app-icon-512.{svg,png}` (the repo shipped no icon
+    before this slice). `PKGBUILD` installs them into the hicolor theme
+    (the glib2 pacman hook refreshes the cache) and the window resolves
+    them via `set_icon_name("dev.notees.Gtk")` — a no-op on hosts whose
+    theme lacks the icon, exactly as before.
+  - **Accent chrome.** New `ui/theme.css`, installed by `NoteesApp` through
+    a `Gtk.CssProvider` and shipped inside the wheel as a package asset,
+    maps libadwaita's public `--accent-*` variables to Advance Green
+    `#2e5e46` — suggested-action buttons, selections, switches, focus rings
+    — in BOTH colour schemes at once (the variables are libadwaita ≥ 1.4
+    public CSS API; a static override is the only dark-safe way).
+  - **Content colours.** New pure module `ui/brand.py` mirrors
+    `brand/assets/tokens/tokens.css`; the hardcoded Pango hexes in
+    `ui/page_view.py` (mention `#3584E4`, external link `#1B5FBF`, class
+    chip `#D3D3D3` on black) become the brand roles resolved per scheme:
+    link `#3b7357`/`#6da789` (the tokens.css `--bi-link` role, the Advance
+    Green family), chip surface-alt `#edeae2` on iron ink `#1c1a16` /
+    `#312a22` on `#f4f3f1`. The user highlight mark stays yellow — a
+    content semantic, not chrome.
+  - **Wordmark.** The login form carries the Margin Green symbol above the
+    "Sign in to Notees" group: `ui/assets/full-color{,-dark}.svg` (the
+    scheme-correct renderable masters — the `master-*.svg` files are
+    semantic pipeline sources without fills) at 64 px, skipped gracefully
+    when the host lacks the SVG pixbuf loader.
+  - **Grounds & type.** Window/surface chrome stays Adwaita: libadwaita
+    variables are static across schemes and Adwaita's dark palette already
+    carries the `#161412` night ground, so paper `#f7f4ec` owns the content
+    tokens instead of fighting the toolkit. The reading surface
+    (`.page-content`) takes Newsreader with a system-serif fallback; the
+    client bundles no fonts (as before this slice). Recommendation per
+    `brand/guidelines/fonts.md`: install Instrument Sans (chrome), Newsreader
+    (reading) and JetBrains Mono (data) system-wide — all OFL via Google
+    Fonts; GTK font-name wiring beyond the Newsreader fallback is left to
+    user/system preference.
+  - **Verified.** `uv run pytest` (734 passed + 3 brand-token tests, 3
+    skipped), `uv run ruff check`, `uv run mypy src` — all green; a wheel
+    build confirmed `theme.css` and both symbol SVGs ship in the package.
+
 ## 2026-10-07
 
 - **feat(ui,store): the alias chrome — the Aliases section on the aliased

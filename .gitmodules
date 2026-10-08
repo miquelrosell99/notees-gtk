@@ -1,0 +1,3 @@
+[submodule "brand"]
+	path = brand
+	url = git@github.com:miquelrosell99/notees-brand.git

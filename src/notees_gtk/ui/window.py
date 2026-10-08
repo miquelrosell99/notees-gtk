@@ -51,6 +51,11 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def __init__(self, *, application: Adw.Application, config: ClientConfig) -> None:
         super().__init__(application=application, title="Notees", default_width=1040, default_height=720)
+        # The Margin Green app icon, resolved by name from the icon theme:
+        # packaging installs data/icons/hicolor/**/dev.notees.Gtk.{svg,png}
+        # (vendored from the brand/ submodule); the lookup is a no-op where
+        # the icon is not installed yet, as before this slice.
+        self.set_icon_name("dev.notees.Gtk")
         self._config = config
         self._client: NoteesClient | None = None
         self._store: LocalStore | None = None

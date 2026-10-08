@@ -1,0 +1,21 @@
+/* Notees chrome theme — Margin Green (brand/ submodule, pinned v1.0.0;
+   brand/assets/tokens/tokens.css is the authoritative source). */
+
+/* The accent variables are libadwaita's public CSS API (libadwaita ≥ 1.4):
+   they re-skin suggested-action buttons, selections, switches and focus
+   rings in BOTH colour schemes at once, so the dark ground keeps a working
+   accent. Advance Green #2e5e46 — annotations, links, active states. */
+:root {
+  --accent-color: #2e5e46;
+  --accent-bg-color: #2e5e46;
+  --accent-fg-color: #ffffff;
+}
+
+/* Reading surface — Newsreader carries the words you read (OFL via Google
+   Fonts; brand/guidelines/fonts.md). Falls back to the system serif when
+   Newsreader is not installed; the GTK client bundles no fonts. Chrome keeps
+   the system UI font — install Instrument Sans, Newsreader and JetBrains
+   Mono system-wide for the full identity (see CHANGELOG, 2026-10-08). */
+.page-content {
+  font-family: "Newsreader", Georgia, "Times New Roman", serif;
+}
