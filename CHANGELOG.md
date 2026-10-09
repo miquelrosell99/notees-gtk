@@ -8,6 +8,27 @@ history.
 
 ## 2026-10-09
 
+- **fix(login): the sign-in contract matches the real server — login works
+  end-to-end.** The v4.1.1 login attempt surfaced the next drift: the client's
+  `AuthResult` parsed an imagined OAuth-ish shape (`access_token` /
+  `token_type`) while the server answers `{token, expiresAt, user, kdf}`, so
+  validation failed on every login; and the workspace listing called
+  `/api/workspaces/` (trailing slash — the Fastify route does not redirect)
+  unwrapping a fictional `PaginatedResponse.items`. The whole auth/workspace
+  surface now mirrors the server: `AuthResult(token, expires_at, user, kdf)`
+  (camelCase aliases, additive-tolerant reads), `GET /api/workspaces` →
+  `{workspaces: [{id, name, …}]}`, and the speculative 2FA flow is gone (the
+  server has no 2FA endpoint — the TOTP row and `TwoFactorRequired` gate never
+  matched reality). The envelope actor is the GTK system actor
+  (`config_store.GTK_ACTOR_ID`, the a6 slot of the fixed system-actor block —
+  a1 is the web frontend, a2..a5 the server-side migrations) instead of a
+  nonexistent `user.uuid` that degraded to `"anonymous"`. The login subtitle
+  reads "Connect to a Notees sync server" (owner wording ruling, all
+  clients). Verification: `uv run pytest` 772 passed (auth fixtures rewritten
+  to the real shapes, the 2FA specs deleted, a new **live** test runs the
+  exact user path — `POST /api/setup` → `client.login` → `list_workspaces`
+  against the real TypeScript server build — 3 passed), `ruff` + `mypy`
+  clean.
 - **fix(login): the brand lockup renders at its real size, and the login body
   is strict `{email, password}` again — the two bugs that broke the sign-in
   screen.** (1) The mark: the vendored `full-color(-dark).svg` viewBox carries

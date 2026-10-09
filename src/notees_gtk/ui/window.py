@@ -43,7 +43,7 @@ __all__ = ["NoteesWindow"]
 #: Interval-sync period in seconds.
 SYNC_INTERVAL_SECONDS = 30
 
-_ACTOR_FALLBACK = "anonymous"
+
 
 
 class NoteesWindow(Adw.ApplicationWindow):
@@ -125,7 +125,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         sidebar_page = Adw.NavigationPage(title="Notees", child=sidebar_view)
 
         self._page_view = PageViewWidget()
-        actor_id = config_store.load_actor_id() or _ACTOR_FALLBACK
+        actor_id = config_store.load_actor_id() or config_store.GTK_ACTOR_ID
         self._editor = EditorView(
             self._store,
             actor_id,
@@ -159,7 +159,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         run_in_worker(client.list_workspaces, on_done=self._on_workspaces_loaded, on_error=self._on_sync_error)
 
     def _on_workspaces_loaded(self, workspaces: list[Any]) -> None:
-        self._workspace_names = {str(ws.uuid): str(ws.name or ws.uuid) for ws in workspaces}
+        self._workspace_names = {ws.id: str(ws.name or ws.id) for ws in workspaces}
         self._sidebar.set_workspaces(workspaces)
         workspace_id = self._sidebar.selected_workspace()
         if workspace_id is not None:
@@ -175,7 +175,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         old_engine = self._engine
         if old_engine is not None:
             old_engine.stop_realtime()
-        actor_id = config_store.load_actor_id() or _ACTOR_FALLBACK
+        actor_id = config_store.load_actor_id() or config_store.GTK_ACTOR_ID
         engine = SyncEngine(client, store, actor_id=actor_id, workspace_id=workspace_id, clock=self._clock)
         engine.start_realtime()
         self._engine = engine
@@ -311,7 +311,7 @@ class NoteesWindow(Adw.ApplicationWindow):
             return
         envelope = alias_update_envelope(
             workspace_id=self._workspace_id,
-            actor_id=config_store.load_actor_id() or _ACTOR_FALLBACK,
+            actor_id=config_store.load_actor_id() or config_store.GTK_ACTOR_ID,
             device_id=config_store.ensure_device_id(),
             node_id=node_id,
             target_id=target_id,

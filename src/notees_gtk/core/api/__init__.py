@@ -8,7 +8,6 @@ from notees_gtk.core.api.client import (
     RelayStats,
     SnapshotMeta,
     SnapshotUploadResult,
-    TwoFactorRequired,
     WorkspaceRef,
 )
 from notees_gtk.core.api.errors import (
@@ -50,7 +49,6 @@ __all__ = [
     "ServerError",
     "SnapshotMeta",
     "SnapshotUploadResult",
-    "TwoFactorRequired",
     "WorkspaceRef",
     "build_ws_url",
     "classify_response",

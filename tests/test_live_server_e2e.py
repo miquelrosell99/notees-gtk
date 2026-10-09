@@ -519,3 +519,30 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     assert [entry["value"] for entry in props_server] == ["high"]
     defaults_server = device_a.client._get_json(f"/api/objects/{PAGE_DEFAULTS}")["object"]["properties"]
     assert defaults_server == []
+def test_live_login_and_workspace_listing(server_url: str) -> None:
+    """The user-facing login path against the real server.
+
+    Regression cover for the sign-in contract: the client once sent a
+    speculative ``remember_me`` key (the server\'s strict schema 422\'d it)
+    and parsed an imagined OAuth-ish response (``AuthResult`` validation
+    error). The real contract: ``POST /api/setup`` seeds the first account,
+    ``POST /api/auth/login`` with exactly ``{email, password}`` answers
+    ``{token, expiresAt, user, kdf}``, and ``GET /api/workspaces`` (no
+    trailing slash) lists the memberships.
+    """
+    response = httpx.post(
+        f"{server_url}/api/setup",
+        json={"email": "live@example.com", "password": "correct-horse-9"},
+    )
+    assert response.status_code == 201, response.text
+
+    client = NoteesClient(server_url)
+    result = client.login("live@example.com", "correct-horse-9")
+
+    assert result.token.startswith("nt_")
+    assert result.expires_at > 0
+    assert result.user["email"] == "live@example.com"
+
+    workspaces = client.list_workspaces()
+    assert len(workspaces) == 1
+    assert workspaces[0].id

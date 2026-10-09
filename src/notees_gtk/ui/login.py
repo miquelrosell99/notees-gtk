@@ -1,7 +1,6 @@
 """Login page for the Notees GTK client.
 
-Server URL (default ``http://localhost:8001``), email, password, and an
-optional TOTP field for 2FA-gated accounts. The blocking
+Server URL (default ``http://localhost:8001``), email, and password. The blocking
 :meth:`NoteesClient.login` call runs on a worker thread (see
 :mod:`notees_gtk.ui.worker`); failures surface as ``Adw.Toast`` overlays.
 """
@@ -19,9 +18,10 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, GdkPixbuf, GLib, Gtk
 
 from notees_gtk.config import ClientConfig
-from notees_gtk.core.api import ApiError, NoteesClient, TwoFactorRequired
+from notees_gtk.core.api import ApiError, NoteesClient
 from notees_gtk.ui import config_store
 from notees_gtk.ui.brand import ink_bbox
+from notees_gtk.ui.config_store import GTK_ACTOR_ID
 from notees_gtk.ui.worker import run_in_worker
 
 __all__ = ["LoginView"]
@@ -99,7 +99,7 @@ class LoginView(Gtk.Box):
         if symbol is not None:
             form.append(Gtk.Image.new_from_pixbuf(symbol))
 
-        group = Adw.PreferencesGroup(title="Sign in to Notees", description="Connect to your self-hosted server")
+        group = Adw.PreferencesGroup(title="Sign in to Notees", description="Connect to a Notees sync server")
         form.append(group)
 
         self._server_row = Adw.EntryRow(title="Server URL", text=config_store.DEFAULT_SERVER_URL)
@@ -110,9 +110,6 @@ class LoginView(Gtk.Box):
 
         self._password_row = Adw.PasswordEntryRow(title="Password")
         group.add(self._password_row)
-
-        self._totp_row = Adw.EntryRow(title="TOTP code (if 2FA is enabled)")
-        group.add(self._totp_row)
 
         self._login_button = Gtk.Button(label="Log In", halign=Gtk.Align.CENTER, width_request=160)
         self._login_button.add_css_class("pill")
@@ -132,7 +129,6 @@ class LoginView(Gtk.Box):
         server_url = self._server_row.get_text().strip() or config_store.DEFAULT_SERVER_URL
         email = self._email_row.get_text().strip()
         password = self._password_row.get_text()
-        totp = self._totp_row.get_text().strip() or None
         if not email or not password:
             self.show_toast("Email and password are required")
             return
@@ -141,8 +137,8 @@ class LoginView(Gtk.Box):
         client = NoteesClient(server_url)
 
         def work() -> tuple[dict[str, Any], str]:
-            result = client.login(email, password, totp=totp)
-            return result.user, result.access_token
+            result = client.login(email, password)
+            return result.user, result.token
 
         run_in_worker(
             work,
@@ -154,15 +150,13 @@ class LoginView(Gtk.Box):
         self._set_busy(False)
         config = ClientConfig(server_url=server_url, data_dir=config_store.data_dir(), token=token)
         config_store.save_config(config)
-        # Envelopes are stamped with the user's public uuid (frontend: actorId = user.uuid).
-        config_store.save_actor_id(str(user.get("uuid") or "anonymous"))
+        # Envelopes ride the GTK system actor (config_store.GTK_ACTOR_ID).
+        config_store.save_actor_id(GTK_ACTOR_ID)
         self._on_logged_in(config, client, user)
 
     def _on_login_error(self, exc: Exception) -> None:
         self._set_busy(False)
-        if isinstance(exc, TwoFactorRequired):
-            self.show_toast("Two-factor authentication required — enter the TOTP code and try again")
-        elif isinstance(exc, ApiError):
+        if isinstance(exc, ApiError):
             self.show_toast(exc.detail)
         else:
             self.show_toast(str(exc))

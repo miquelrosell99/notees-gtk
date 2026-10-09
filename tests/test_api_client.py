@@ -31,7 +31,6 @@ from notees_gtk.core.api import (
     ServerError,
     SnapshotMeta,
     SnapshotUploadResult,
-    TwoFactorRequired,
     WorkspaceRef,
     classify_response,
 )
@@ -50,12 +49,11 @@ WORKSPACE_ID = "0192a000-0000-7000-8000-000000000001"
 ACTOR_ID = "0192a000-0000-7000-8000-000000000002"
 
 LOGIN_OK: dict[str, Any] = {
-    "access_token": "at-1",
-    "refresh_token": "rt-1",
-    "token_type": "bearer",
-    "user": {"id": "u1", "email": "ada@example.com", "role": "user"},
+    "token": "nt-1",
+    "expiresAt": 1735689600000,
+    "user": {"id": "u1", "email": "ada@example.com", "displayName": "Ada"},
+    "kdf": {"salt": "s", "ops": 1},
 }
-TWO_FA_GATE: dict[str, Any] = {"requires_2fa": True, "preauth_token": "pre-1", "purpose": "verify"}
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -98,18 +96,18 @@ class TestBaseUrl:
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(str(request.url))
-            return httpx.Response(200, json={"items": [], "total": 0, "page": 1, "page_size": 50})
+            return httpx.Response(200, json={"workspaces": []})
 
         client = NoteesClient(f"{BASE_URL}/", transport=httpx.MockTransport(handler))
         client.list_workspaces()
-        assert seen == [f"{BASE_URL}/api/workspaces/"]
+        assert seen == [f"{BASE_URL}/api/workspaces"]
 
     def test_token_sets_bearer_header_upfront(self) -> None:
         seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request.headers.get("Authorization", ""))
-            return httpx.Response(200, json={"items": [], "total": 0, "page": 1, "page_size": 50})
+            return httpx.Response(200, json={"workspaces": []})
 
         client = NoteesClient(BASE_URL, token="tok", transport=httpx.MockTransport(handler))
         client.list_workspaces()
@@ -160,7 +158,7 @@ class TestApiKeyAuth:
 
         client, _ = _make_client(_router({("POST", "/api/auth/login"): handler}), api_key="k")
         client.login("ada@example.com", "hunter2")
-        assert client._client.headers["Authorization"] == "Bearer at-1"
+        assert client._client.headers["Authorization"] == "Bearer nt-1"
         assert client._client.headers["X-API-Key"] == "k"
 
 
@@ -176,17 +174,16 @@ class TestLogin:
             return httpx.Response(200, json=LOGIN_OK)
 
         def workspaces_handler(request: httpx.Request) -> httpx.Response:
-            assert request.headers["Authorization"] == "Bearer at-1"
-            return httpx.Response(200, json={"items": [], "total": 0, "page": 1, "page_size": 50})
+            assert request.headers["Authorization"] == "Bearer nt-1"
+            return httpx.Response(200, json={"workspaces": []})
 
         client, requests = _make_client(
-            _router({("POST", "/api/auth/login"): login_handler, ("GET", "/api/workspaces/"): workspaces_handler})
+            _router({("POST", "/api/auth/login"): login_handler, ("GET", "/api/workspaces"): workspaces_handler})
         )
         result = client.login("ada@example.com", "hunter2")
 
         assert isinstance(result, AuthResult)
-        assert result.access_token == "at-1"
-        assert result.token_type == "bearer"
+        assert result.token == "nt-1"
         assert result.user == LOGIN_OK["user"]
 
         client.list_workspaces()
@@ -214,89 +211,34 @@ class TestLogin:
         assert exc_info.value.status == 401
         assert exc_info.value.detail == "Invalid email or password"
 
-    def test_two_factor_gate_raises_without_totp(self) -> None:
-        calls: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            calls.append(request.url.path)
-            return httpx.Response(200, json=TWO_FA_GATE)
-
-        client, _ = _make_client(_router({("POST", "/api/auth/login"): handler}))
-        with pytest.raises(TwoFactorRequired) as exc_info:
-            client.login("ada@example.com", "hunter2")
-
-        assert exc_info.value.preauth_token == "pre-1"
-        assert exc_info.value.purpose == "verify"
-        assert calls == ["/api/auth/login"]
-
-    def test_two_factor_verify_completes_login_when_totp_supplied(self) -> None:
-        def verify_handler(request: httpx.Request) -> httpx.Response:
-            assert _json_body(request) == {"preauth_token": "pre-1", "code": "123456"}
-            return httpx.Response(200, json=LOGIN_OK)
-
-        client, requests = _make_client(
-            _router(
-                {
-                    ("POST", "/api/auth/login"): lambda request: httpx.Response(200, json=TWO_FA_GATE),
-                    ("POST", "/api/auth/2fa/verify"): verify_handler,
-                }
-            )
-        )
-        result = client.login("ada@example.com", "hunter2", totp="123456")
-
-        assert isinstance(result, AuthResult)
-        assert result.access_token == "at-1"
-        assert [req.url.path for req in requests] == ["/api/auth/login", "/api/auth/2fa/verify"]
-
-        # The bearer issued by the verify call is used for subsequent requests.
-        def workspaces_handler(request: httpx.Request) -> httpx.Response:
-            assert request.headers["Authorization"] == "Bearer at-1"
-            return httpx.Response(200, json={"items": [], "total": 0, "page": 1, "page_size": 50})
-
-        client2, _ = _make_client(
-            _router(
-                {
-                    ("POST", "/api/auth/login"): lambda request: httpx.Response(200, json=TWO_FA_GATE),
-                    ("POST", "/api/auth/2fa/verify"): lambda request: httpx.Response(200, json=LOGIN_OK),
-                    ("GET", "/api/workspaces/"): workspaces_handler,
-                }
-            )
-        )
-        client2.login("ada@example.com", "hunter2", totp="123456")
-        client2.list_workspaces()
-
-
 class TestWorkspaces:
-    def test_trailing_slash_and_items_unwrap(self) -> None:
+    def test_plain_path_and_workspaces_unwrap(self) -> None:
+        """The route is exactly /api/workspaces (no trailing slash) — the Fastify
+        route does not redirect, and the envelope is {workspaces: [...]}."""
+
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/workspaces/"
+            assert request.url.path == "/api/workspaces"
             return httpx.Response(
                 200,
                 json={
-                    "items": [
-                        {"uuid": "w1", "name": "Personal", "is_active": True},
-                        {"uuid": "w2", "name": "Archive", "is_active": False},
-                    ],
-                    "total": 2,
-                    "page": 1,
-                    "page_size": 50,
+                    "workspaces": [
+                        {"id": "w1", "name": "Personal", "role": "owner", "createdAt": 1, "envelopeCount": 10, "latestSeq": 42},
+                        {"id": "w2", "name": None, "role": "member", "createdAt": 2, "envelopeCount": 0, "latestSeq": 0},
+                    ]
                 },
             )
 
-        client, requests = _make_client(_router({("GET", "/api/workspaces/"): handler}))
+        client, requests = _make_client(_router({("GET", "/api/workspaces"): handler}))
         workspaces = client.list_workspaces()
 
-        assert workspaces == [
-            WorkspaceRef(uuid="w1", name="Personal", is_active=True),
-            WorkspaceRef(uuid="w2", name="Archive", is_active=False),
-        ]
+        assert workspaces == [WorkspaceRef(id="w1", name="Personal"), WorkspaceRef(id="w2", name=None)]
         assert len(requests) == 1
 
-    def test_empty_items(self) -> None:
+    def test_empty_workspaces(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"items": [], "total": 0, "page": 1, "page_size": 50})
+            return httpx.Response(200, json={"workspaces": []})
 
-        client, _ = _make_client(_router({("GET", "/api/workspaces/"): handler}))
+        client, _ = _make_client(_router({("GET", "/api/workspaces"): handler}))
         assert client.list_workspaces() == []
 
 

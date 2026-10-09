@@ -76,7 +76,7 @@ class NodeTreeSidebar(Gtk.Box):
         self._workspaces = list(workspaces)
         names = Gtk.StringList()
         for workspace in self._workspaces:
-            names.append(workspace.name or workspace.uuid)
+            names.append(workspace.name or workspace.id)
         self._updating_dropdown = True
         self._dropdown.set_model(names)
         self._dropdown.set_selected(0 if self._workspaces else Gtk.INVALID_LIST_POSITION)
@@ -86,7 +86,7 @@ class NodeTreeSidebar(Gtk.Box):
         """Return the selected workspace uuid, or ``None`` when no model."""
         index = int(self._dropdown.get_selected())
         if 0 <= index < len(self._workspaces):
-            return self._workspaces[index].uuid
+            return self._workspaces[index].id
         return None
 
     def set_nodes(self, rows: Sequence[NodeRow]) -> None:
