@@ -173,9 +173,11 @@ class TestColorGrammar:
 class TestWireNodeFields:
     """M27: ``object.update`` carries the optional nullable ``coverAssetId``
     / ``bannerAssetId`` / ``aliasedNodeId`` node fields — presence writes,
-    present-null clears (the zod ``uuid.nullish()`` parity). ``object.create``
-    carries none of them (the strict schema rejects the keys outright, no
-    wire compat)."""
+    present-null clears (the zod ``uuid.nullish()`` parity). The 2026-10-09
+    batch adds ``description`` — the page subtitle, a plain string max 512
+    chars with the same nullish semantics (zod ``z.string().max(512).nullish()``
+    parity). ``object.create`` carries none of them (the strict schema
+    rejects the keys outright, no wire compat)."""
 
     @pytest.mark.parametrize(
         "key", ["coverAssetId", "bannerAssetId", "aliasedNodeId"]
@@ -200,6 +202,21 @@ class TestWireNodeFields:
         with pytest.raises(ValidationError):
             validate_payload("object.create", {"objectId": UUID_1, key: UUID_2})
 
+    def test_description_accepts_text_and_its_null_clear(self) -> None:
+        validate_payload("object.update", {"objectId": UUID_1, "description": "Subtitle text"})
+        # A null-only update still satisfies the at-least-one-field refine
+        # (key presence, the zod ``Object.keys(p).length > 1`` parity).
+        validate_payload("object.update", {"objectId": UUID_1, "description": None})
+
+    def test_description_is_max_512_chars(self) -> None:
+        validate_payload("object.update", {"objectId": UUID_1, "description": "x" * 512})
+        with pytest.raises(ValidationError):
+            validate_payload("object.update", {"objectId": UUID_1, "description": "x" * 513})
+
+    def test_object_create_rejects_description(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("object.create", {"objectId": UUID_1, "description": "Subtitle text"})
+
     def test_builder_sends_clears_only_when_asked(self) -> None:
         """``None`` emits an explicit null (the clear); omitting the
         parameter leaves the key off the wire entirely (absence = no write)."""
@@ -212,6 +229,12 @@ class TestWireNodeFields:
         payload = build_object_update(UUID_1, icon="📄")
         for key in ("coverAssetId", "bannerAssetId", "aliasedNodeId"):
             assert key not in payload
+        assert build_object_update(UUID_1, description=None) == {"objectId": UUID_1, "description": None}
+        assert build_object_update(UUID_1, description="Subtitle text") == {
+            "objectId": UUID_1,
+            "description": "Subtitle text",
+        }
+        assert "description" not in build_object_update(UUID_1, icon="📄")
 
 
 class TestAssetPropertyType:
