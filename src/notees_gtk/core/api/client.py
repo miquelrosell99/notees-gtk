@@ -2,8 +2,8 @@
 
 Covers the endpoints the sync engine drives: v2 relay endpoints under
 ``/api/relay/v2`` (WIRE.md: batch submit, catch-up, snapshot probe/download/
-upload, stats) plus the legacy workspace listing and the login/2FA path (kept
-for servers that still issue bearer sessions; the v2 relay authenticates with
+upload, stats) plus the workspace listing and the login path (kept for
+servers that still issue bearer sessions; the v2 relay authenticates with
 a single-user API key, ``X-API-Key``). All relay request/response bodies are
 camelCase JSON; envelopes travel inside them per the protocol models.
 """
@@ -34,7 +34,6 @@ __all__ = [
     "RelayStats",
     "SnapshotMeta",
     "SnapshotUploadResult",
-    "TwoFactorRequired",
     "WorkspaceRef",
 ]
 
@@ -44,33 +43,35 @@ MAX_BATCH_SIZE = 1000
 #: Base path of the v2 relay API (WIRE.md).
 RELAY_V2_BASE = "/api/relay/v2"
 
-#: 2FA-gated login: the password step returns this pre-auth token + purpose instead of tokens.
-_TWO_FA_GATE_FIELDS = ("preauth_token", "purpose")
-
 
 class AuthResult(BaseModel):
-    """Successful authentication: bearer token plus the server user record."""
+    """Successful authentication: bearer token plus the server user record.
 
-    access_token: str
-    token_type: str
+    Mirrors the server's login response — ``token``, ``expiresAt`` (epoch
+    millis), ``user``, and the password-derived ``kdf`` record (kept on the
+    model; consumers that don't need it ignore it). Reads stay additive-tolerant
+    (the server may extend the response); missing ``token``/``expiresAt`` fail
+    validation, which is what catches a drifted contract.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    token: str
+    expires_at: int
     user: dict[str, Any]
-
-
-class TwoFactorRequired(Exception):  # noqa: N818 — name fixed by the task brief (control-flow signal, not an error)
-    """Login requires a second factor; exchange the pre-auth token with a TOTP code."""
-
-    def __init__(self, preauth_token: str, purpose: str) -> None:
-        self.preauth_token = preauth_token
-        self.purpose = purpose
-        super().__init__(f"Two-factor authentication required (purpose={purpose!r})")
+    kdf: dict[str, Any] | None = None
 
 
 class WorkspaceRef(BaseModel):
-    """Workspace summary entry from ``GET /api/workspaces/`` (``PaginatedResponse.items``)."""
+    """Workspace membership entry from ``GET /api/workspaces``.
 
-    uuid: str
-    name: str
-    is_active: bool
+    The server sends ``id``, ``name`` (null when unnamed), ``role``,
+    ``createdAt``, and the relay ``envelopeCount`` / ``latestSeq`` stats; the
+    ref carries what the chrome addresses workspaces by.
+    """
+
+    id: str
+    name: str | None = None
 
 
 class SnapshotMeta(BaseModel):
@@ -150,14 +151,8 @@ class NoteesClient:
 
     # ------------------------------------------------------------------- auth
 
-    def login(self, email: str, password: str, *, totp: str | None = None) -> AuthResult:
+    def login(self, email: str, password: str) -> AuthResult:
         """Log in and store the issued bearer token for subsequent requests.
-
-        When the account has 2FA enabled the password step answers with a
-        pre-auth token instead of session tokens: raises
-        :class:`TwoFactorRequired` unless ``totp`` is given, in which case the
-        code is exchanged at ``/api/auth/2fa/verify`` and the resulting tokens
-        are used as for a plain login.
 
         The v2 relay does not need this: an API key passed to the constructor
         (or persisted via ``config_store.save_api_key``) authenticates every
@@ -165,31 +160,25 @@ class NoteesClient:
 
         The login body is exactly ``{email, password}``: the server schema is
         strict (extra keys are rejected with 422), and session lifetime is
-        server-owned — 30-day sessions with sliding renewal, no remember-me
-        flag (the Flutter client documents the same contract).
+        server-owned — 30-day sessions with sliding renewal, with no
+        remember-me or 2FA fields (the Flutter client documents the same
+        contract).
 
         Args:
             email: Account email.
             password: Account password.
-            totp: TOTP (or backup) code for the 2FA second step.
 
         Returns:
             The validated authentication result.
 
         Raises:
-            TwoFactorRequired: 2FA is enabled and no ``totp`` code was supplied.
-            ApiError: The login (or verify) request failed.
+            ApiError: The login request failed.
         """
         data = self._post_json("/api/auth/login", {"email": email, "password": password})
-        if all(field in data for field in _TWO_FA_GATE_FIELDS):
-            if totp is None:
-                raise TwoFactorRequired(preauth_token=data["preauth_token"], purpose=data["purpose"])
-            data = self._post_json("/api/auth/2fa/verify", {"preauth_token": data["preauth_token"], "code": totp})
         result = AuthResult.model_validate(data)
-        self._token = result.access_token
-        self._client.headers["Authorization"] = f"Bearer {result.access_token}"
+        self._token = result.token
+        self._client.headers["Authorization"] = f"Bearer {result.token}"
         return result
-
     def ws_token(self) -> str | None:
         """Return the credential for the WebSocket ``?token=`` parameter.
 
@@ -203,13 +192,12 @@ class NoteesClient:
     def list_workspaces(self) -> list[WorkspaceRef]:
         """List the current user's workspaces.
 
-        The trailing slash is load-bearing: without it the server SPA fallback
-        answers 404 before Starlette's redirect can run. Workspaces arrive
-        wrapped in a ``PaginatedResponse`` and are unwrapped from ``items``.
+        ``GET /api/workspaces`` answers ``{ "workspaces": [...] }`` — one entry
+        per membership with ``id``, ``name`` (null when unnamed), ``role``,
+        ``createdAt``, and the relay ``envelopeCount`` / ``latestSeq`` stats.
         """
-        data = self._get_json("/api/workspaces/")
-        return [WorkspaceRef.model_validate(item) for item in data["items"]]
-
+        data = self._get_json("/api/workspaces")
+        return [WorkspaceRef.model_validate(item) for item in data["workspaces"]]
     # ------------------------------------------------------------------- relay
 
     def submit_batch(self, envelopes: list[RelayEnvelope]) -> list[str]:

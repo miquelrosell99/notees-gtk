@@ -18,6 +18,7 @@ from notees_gtk.core.protocol.ids import new_uuid7
 __all__ = [
     "APP_DIR_NAME",
     "DEFAULT_SERVER_URL",
+    "GTK_ACTOR_ID",
     "config_dir",
     "data_dir",
     "default_config",
@@ -35,6 +36,11 @@ APP_DIR_NAME = "notees-gtk"
 
 #: Default server offered by the login form.
 DEFAULT_SERVER_URL = "http://localhost:8001"
+
+#: Envelope actor id for this client — the fixed system-actor block
+#: (``01920000-0000-7000-8000-…``): a1 is the web frontend's default actor,
+#: a2..a5 are server-side migration actors; a6 is the GTK client.
+GTK_ACTOR_ID = "01920000-0000-7000-8000-0000000000a6"
 
 _CONFIG_FILE_NAME = "config.json"
 _DEVICE_FILE_NAME = "device_id"
@@ -108,7 +114,7 @@ def save_config(config: ClientConfig) -> None:
 
 
 def save_actor_id(actor_id: str) -> None:
-    """Persist the public user uuid used as the envelope ``actor_id``."""
+    """Persist the envelope ``actor_id`` this install stamps envelopes with."""
     raw = _read_raw()
     raw["actor_id"] = actor_id
     _write_raw(raw)
