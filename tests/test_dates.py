@@ -14,6 +14,7 @@ from notees_gtk.core.protocol.dates import (
     chain_node_ids,
     date_node_id,
     day_node_id,
+    is_valid_time_of_day,
     month_node_id,
     parse_date_node_id,
     parse_iso_date,
@@ -68,3 +69,18 @@ class TestParseDateNodeId:
         assert parse_date_node_id("not-a-uuid") is None
         # Outside the 1900..2200 window.
         assert parse_date_node_id("00000000-0000-0000-00bb-089900000000") is None
+
+
+class TestTimeOfDayVocabulary:
+    """The datetime value vocabulary (unified-datetime, 2026-10-09 —
+    ``packages/domain/src/dates.ts`` ``isValidTimeOfDay`` parity): 24h
+    ``HH:MM`` at minute precision, no timezone. Defensive acceptance — any
+    input, true only for a well-formed wall-clock time."""
+
+    @pytest.mark.parametrize("valid", ["00:00", "09:15", "14:30", "23:59"])
+    def test_accepts_24h_hh_mm_at_minute_precision(self, valid: str) -> None:
+        assert is_valid_time_of_day(valid)
+
+    @pytest.mark.parametrize("invalid", ["24:00", "12:60", "2:30", "14:3", "14:30:00", "14-30", "", None, 930])
+    def test_rejects_everything_else(self, invalid: object) -> None:
+        assert not is_valid_time_of_day(invalid)
