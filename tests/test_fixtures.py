@@ -78,6 +78,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/object-wire-fields.json",
     "wire/property-asset-type.json",
     "wire/property-date-qualifier.json",
+    "wire/property-datetime.json",
     "wire/property-set-lww.json",
     "wire/property-value-elements.json",
     "wire/typed-link-mark.json",

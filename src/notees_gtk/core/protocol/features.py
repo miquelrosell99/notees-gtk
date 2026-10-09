@@ -352,7 +352,11 @@ class TaskFamilySeedEntry:
 
     property: str
     name: str
-    type: Literal["select", "date"]
+    # The unified date property type (owner 2026-10-09): the task family's
+    # three date bindings (Scheduled/Deadline/Closed) are DATETIME-typed per
+    # the amended time-of-day law (SCHEMA.md "Datetime") — values may carry a
+    # wall-clock ``time`` beside the day-node anchor; full-day stays default.
+    type: Literal["select", "datetime"]
     sequence: int
     options: tuple[TaskSeedOption, ...] = ()
     # Owner review (property-LEVEL): the value-display position rides
@@ -387,8 +391,8 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         ),
         display="bullet",
     ),
-    TaskFamilySeedEntry("taskScheduled", "Scheduled", "date", 2),
-    TaskFamilySeedEntry("taskDeadline", "Deadline", "date", 3),
+    TaskFamilySeedEntry("taskScheduled", "Scheduled", "datetime", 2),
+    TaskFamilySeedEntry("taskDeadline", "Deadline", "datetime", 3),
     TaskFamilySeedEntry(
         "taskPriority",
         "Priority",
@@ -401,7 +405,7 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
             TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["urgent"], "Urgent"),
         ),
     ),
-    TaskFamilySeedEntry("taskClosedDate", "Closed", "date", 5),
+    TaskFamilySeedEntry("taskClosedDate", "Closed", "datetime", 5),
     # Migrated recurrence rides as a plain select (no engine executes it);
     # authored optionless until the recurrence spec lands.
     TaskFamilySeedEntry("taskRecurrence", "Recurrence", "select", 6),

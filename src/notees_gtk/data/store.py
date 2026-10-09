@@ -79,7 +79,7 @@ from notees_gtk.core.protocol.content import (
     plaintext_excerpt,
     stringify_content_ast,
 )
-from notees_gtk.core.protocol.dates import day_node_id, parse_date_node_id
+from notees_gtk.core.protocol.dates import day_node_id, is_valid_time_of_day, parse_date_node_id
 from notees_gtk.core.protocol.features import (
     SYSTEM_CLASS_ICONS_TASK,
     TASK_FAMILY_SEED,
@@ -345,7 +345,7 @@ def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
 _UUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 #: PC6: the reserved qualifier keys that canonicalize as date-node
-#: refs on dateQualified schemas (SCHEMA.md "Dates").
+#: refs on dateQualified schemas (SCHEMA.md "Datetime").
 _QUALIFIER_KEYS = ("startDate", "endDate")
 
 #: M12: the alias-chain walker's depth cap (chains are user-built and tiny;
@@ -378,7 +378,7 @@ def _node_ref_of_value(value: Any) -> str | None:
 
 
 def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) -> Any:
-    """PC6 normalize-on-write (SCHEMA.md "Dates"): for a dateQualified
+    """PC6 normalize-on-write (SCHEMA.md "Datetime"): for a dateQualified
     schema, the reserved qualifier keys canonicalize to date-node refs
     ``{"nodeId": <day chain node>}``. A well-formed ``YYYY-MM-DD`` string is
     the legacy encoding (the pre-PC6 panel wrote input[type=date] values) and
@@ -412,17 +412,29 @@ def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) 
 #
 # Port of the main repo's packages/store/src/property-values.ts. Write shapes
 # by schema type: text = a scalar string OR a carrier reference {"nodeId": …}
-# (a legacy bare uuid normalizes to the reference shape); date/object/asset =
-# a node reference; date_range = {"start": ref|null, "end": ref|null} — either
-# side open. Scalar typing: number = a finite number — a NUMERIC STRING is the
-# migrated legacy encoding (live data carries epoch-millis strings) and
-# normalizes to a number; boolean/url/email/select = their scalar;
-# multi_select = an array of strings. image stays UNCHECKED by design (PG14
-# owns the shape — live data carries migrated asset payloads, so any check
-# would break replay). `null` means "no value" and bypasses shape validation.
+# (a legacy bare uuid normalizes to the reference shape); datetime = the
+# unified date value union (SCHEMA.md "Datetime") — a POINT
+# {"nodeId": …, "time"?: "HH:MM"} (a bare-uuid string, the legacy date
+# encoding, normalizes to the reference shape) OR a RANGE
+# {"start": slot|null, "end": slot|null} — either side open (a legacy
+# date_range value rides untouched); each present slot is
+# {"nodeId": …, "time"?: "HH:MM"} (legacy bare-uuid sides normalized). A
+# value carrying BOTH nodeId and start/end keys is rejected outright; a
+# "time" must match HH:MM (24h, minute precision) and ride a DAY-precision
+# date-node ref. object/asset = a node reference. Scalar typing: number =
+# a finite number — a NUMERIC STRING is the migrated legacy encoding (live
+# data carries epoch-millis strings) and normalizes to a number; boolean/url/
+# email/select = their scalar; multi_select = an array of strings. image
+# stays UNCHECKED by design (PG14 owns the shape — live data carries migrated
+# asset payloads, so any check would break replay). `null` means "no value"
+# and bypasses shape validation.
 
-#: SCHEMA.md "Dates": finest granularity a date value may claim.
+#: SCHEMA.md "Datetime": finest granularity a date value may claim.
 _DATE_PRECISION_RANK = {"year": 1, "month": 2, "day": 3}
+
+#: The datetime-slot sentinel: a range side ABSENT from the payload (distinct
+#: from an explicit JSON null — an open side). property-values.ts `undefined`.
+_MISSING: Any = object()
 
 
 def _jsonish(value: Any) -> str:
@@ -436,14 +448,44 @@ def _jsonish(value: Any) -> str:
 def _shape_error_detail(type_: str) -> str:
     if type_ == "text":
         return 'a string or a node reference { "nodeId": … }'
-    if type_ == "date_range":
-        return '{ "start": ref|null, "end": ref|null } of node references'
+    if type_ == "datetime":
+        return (
+            'a datetime point { "nodeId": …, "time"?: "HH:MM" } or range '
+            '{ "start": slot|null, "end": slot|null } — "time" requires a day-precision date anchor'
+        )
     return 'a node reference { "nodeId": … }'
+
+
+def _datetime_slot(value: Any) -> dict[str, Any] | None | Any:
+    """One anchored datetime endpoint (property-values.ts `slot`): the chain
+    node plus an optional wall-clock time. Returns the normalized slot dict
+    (``{"nodeId": …}`` / ``{"nodeId": …, "time": …}``), ``None`` for an open
+    side, or :data:`_MISSING` when the side is absent or malformed. A legacy
+    bare-uuid string side normalizes to ``{"nodeId"}``. ``time`` must be a
+    well-formed ``HH:MM`` and ride a DAY-precision date-node anchor — a
+    year/month ref (or a non-date id) has no wall-clock time."""
+    if value is _MISSING:
+        return _MISSING
+    if value is None:
+        return None
+    ref = _node_ref_of_value(value)
+    if ref is None:
+        return _MISSING
+    out: dict[str, Any] = {"nodeId": ref}
+    if isinstance(value, Mapping) and "time" in value:
+        time = value["time"]
+        if not is_valid_time_of_day(time):
+            return _MISSING
+        parsed = parse_date_node_id(ref)
+        if parsed is None or parsed["precision"] != "day":
+            return _MISSING
+        out["time"] = time
+    return out
 
 
 def _assert_value_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
     """The PB2 one-shape-per-type gate (SCHEMA.md "Node-backed text
-    properties" / "Dates"), invoked by the PG6 validator. Returns the
+    properties" / "Datetime"), invoked by the PG6 validator. Returns the
     normalized value to store (a legacy bare-uuid reference becomes
     ``{"nodeId": …}``); ``None`` bypasses. Raises
     :class:`~notees_gtk.data.errors.PropertyValueShapeError` on mismatch."""
@@ -455,29 +497,35 @@ def _assert_value_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
         ref = _node_ref_of_value(value)
         if ref is not None:
             return {"nodeId": ref}
-    elif type_ in ("date", "object", "asset"):
+    elif type_ in ("object", "asset"):
         ref = _node_ref_of_value(value)
         if ref is not None:
             return {"nodeId": ref}
-    elif type_ == "date_range":
-        if isinstance(value, Mapping):
-            sides: dict[str, Any] = {}
-            well_formed = True
-            for key in ("start", "end"):
-                if key not in value:
-                    well_formed = False
-                    break
-                side_value = value[key]
-                if side_value is None:
-                    sides[key] = None
-                    continue
-                ref = _node_ref_of_value(side_value)
-                if ref is None:
-                    well_formed = False
-                    break
-                sides[key] = {"nodeId": ref}
-            if well_formed:
-                return {"start": sides["start"], "end": sides["end"]}
+    elif type_ == "datetime":
+        # The unified date union (SCHEMA.md "Datetime"): a point
+        # { "nodeId": …, "time"?: "HH:MM" } or a range { "start", "end" } of
+        # slots ({ "nodeId": …, "time"?: "HH:MM" }), either side open. Legacy
+        # `date` values (bare {nodeId} points, bare-uuid strings) and legacy
+        # `date_range` values (bare-ref ranges) are legal members — no stored
+        # value ever needs rewriting.
+        if isinstance(value, str):
+            # Legacy bare-uuid point (the archived date encoding) normalizes.
+            if _UUID_LIKE_RE.match(value):
+                return {"nodeId": value}
+        elif isinstance(value, Mapping):
+            point_key = "nodeId" in value
+            range_key = "start" in value or "end" in value
+            # A value carrying BOTH shapes is rejected outright (fail loud).
+            if not (point_key and range_key):
+                if point_key:
+                    out = _datetime_slot(value)
+                    if out is not _MISSING and out is not None:
+                        return out
+                elif range_key:
+                    start = _datetime_slot(value.get("start", _MISSING))
+                    end = _datetime_slot(value.get("end", _MISSING))
+                    if start is not _MISSING and end is not _MISSING:
+                        return {"start": start, "end": end}
     else:
         return value  # number/boolean/url/email/select/multi_select/image ride to scalar typing
     raise PropertyValueShapeError(
@@ -531,7 +579,7 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
 
 def _is_valid_default_for_type(type_: str, value: Any) -> bool:
     """PC2: a class-binding defaultValue must be typed per the schema type.
-    Node-typed schemas (date/date_range/object/asset) accept only JSON null —
+    Node-typed schemas (datetime/object/asset) accept only JSON null —
     a default that links a node is meaningless. Returns False instead of
     throwing so the read model can drop silently; the write path
     (class.property.set) fails loud. Mirrors isValidDefaultForType."""
@@ -545,9 +593,9 @@ def _is_valid_default_for_type(type_: str, value: Any) -> bool:
         return isinstance(value, bool)
     if type_ == "multi_select":
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
-    # date/date_range/object/asset accept only JSON null (handled above);
+    # datetime/object/asset accept only JSON null (handled above);
     # unknown future types ride unchecked.
-    return type_ not in ("date", "date_range", "object", "asset")
+    return type_ not in ("datetime", "object", "asset")
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -1835,7 +1883,7 @@ class LocalStore:
             schema_type = self._property_schema_type(schema_id)
             default_value = payload["defaultValue"]
             if schema_type is not None and not _is_valid_default_for_type(schema_type, default_value):
-                if schema_type in ("date", "date_range", "object", "asset"):
+                if schema_type in ("datetime", "object", "asset"):
                     detail = "must be null — node-typed defaults are not supported"
                 else:
                     detail = f"must be typed {schema_type}"
@@ -2085,7 +2133,7 @@ class LocalStore:
         (extends-aware: a carried class satisfies the filter when it equals an
         entry or descends from one through class_hierarchy — the bibliography
         model filters authors by ``agent`` while person/organization EXTEND
-        agent), and the datePrecision ceiling for date/date_range refs. M38:
+        agent), and the datePrecision ceiling for datetime refs. M38:
         an asset-typed schema's filter is IMPLICIT — the type IS the filter
         (the asset class); an explicit targetClassFilter on an asset schema
         is redundant and ignored."""
@@ -2122,7 +2170,7 @@ class LocalStore:
                     f"{op_type}: value target {ref} does not carry any of the schema's allowed classes",
                     op_type,
                 )
-        if schema["type"] in ("date", "date_range"):
+        if schema["type"] == "datetime":
             parsed = parse_date_node_id(ref)
             if parsed is not None:
                 ceiling = _DATE_PRECISION_RANK.get(
@@ -2147,12 +2195,19 @@ class LocalStore:
         typed = _assert_scalar_shape_for_type(schema["type"], shaped, op_type)
         if typed is None:
             return typed
-        if schema["type"] in ("date", "object", "asset"):
+        if schema["type"] in ("object", "asset"):
             ref = _node_ref_of_value(typed)
             if ref is not None:
                 self._assert_ref_target_for_schema(workspace_id, schema, ref, op_type)
-        elif schema["type"] == "date_range":
-            for side in (typed.get("start"), typed.get("end")):
+        elif schema["type"] == "datetime":
+            # The unified union: a point runs the existence/filter/precision
+            # checks on its ref; a range runs them on EACH non-null slot (the
+            # date_range parity — either end missing fails, open sides skip).
+            # A timed value on a coarser-than-day ceiling fails here too: its
+            # day-precision ref claims finer granularity than the schema's.
+            record = typed if isinstance(typed, Mapping) else {}
+            sides = (record.get("start"), record.get("end")) if ("start" in record or "end" in record) else (typed,)
+            for side in sides:
                 ref = _node_ref_of_value(side)
                 if ref is not None:
                     self._assert_ref_target_for_schema(workspace_id, schema, ref, op_type)
@@ -3401,7 +3456,7 @@ CREATE TABLE IF NOT EXISTS property_schema (
     scope TEXT NOT NULL DEFAULT 'global',
     options TEXT NOT NULL DEFAULT '[]',
     target_class_filter TEXT,
-    -- SCHEMA.md "Dates": finest granularity a date value may claim
+    -- SCHEMA.md "Datetime": finest granularity a date value may claim
     -- (year|month|day; NULL = day default) and, for node-typed schemas,
     -- whether values may carry date qualifiers (metadata startDate/endDate,
     -- PC6 — the applier normalizes qualifier strings to date-node

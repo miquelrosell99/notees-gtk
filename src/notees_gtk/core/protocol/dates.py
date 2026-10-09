@@ -2,7 +2,7 @@
 ``app/domain/entities/constants.py`` (``generate_day_uuid`` and siblings),
 mirroring ``packages/domain/src/dates.ts``.
 
-A date is a node, not a string (SCHEMA.md "Dates"): every ISO date maps to a
+A date is a node, not a string (SCHEMA.md "Datetime"): every ISO date maps to a
 year / month / day node chain with ids content-addressed from the date, so
 chain creation is an idempotent no-op on re-create and migrated data locks
 step with the server. Layout (FIXED — never regenerate):
@@ -10,6 +10,12 @@ step with the server. Layout (FIXED — never regenerate):
 - day    ``00000000-0000-0000-00dd-YYYYMMDD0000``
 - month  ``00000000-0000-0000-00aa-YYYYMM000000``
 - year   ``00000000-0000-0000-00bb-YYYY00000000``
+
+Amendment 2026-10-09 (the unified-datetime change): time-of-day rides the
+property VALUE beside the day-node anchor — a datetime slot is
+``{nodeId, time?: "HH:MM"}`` (full-day = no ``time``, the default). The id
+layout itself is unchanged and stays FIXED; only the value vocabulary around
+it grew (:func:`is_valid_time_of_day`).
 
 PC6 consumes :func:`day_node_id`: the property applier normalizes a
 well-formed ``YYYY-MM-DD`` qualifier string to the deterministic day-node
@@ -24,9 +30,11 @@ from datetime import date
 __all__ = [
     "DATE_UUID_MAX_YEAR",
     "DATE_UUID_MIN_YEAR",
+    "TIME_OF_DAY_PATTERN",
     "chain_node_ids",
     "date_node_id",
     "day_node_id",
+    "is_valid_time_of_day",
     "month_node_id",
     "parse_date_node_id",
     "parse_iso_date",
@@ -43,12 +51,25 @@ YEAR_PREFIX = "00000000-0000-0000-00bb-"
 
 _ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
+#: Datetime property values (unified-datetime, 2026-10-09 — SCHEMA.md
+#: "Datetime"): 24h wall-clock ``HH:MM``, minute precision, no timezone (the
+#: no-timezone law stands — times are local wall-clock, never an offset or a
+#: zone). ``packages/domain/src/dates.ts`` ``TIME_OF_DAY_PATTERN`` parity.
+TIME_OF_DAY_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def is_valid_time_of_day(value: object) -> bool:
+    """Defensive acceptance: any input, true only for a well-formed ``HH:MM``
+    (``packages/domain/src/dates.ts`` ``isValidTimeOfDay`` parity)."""
+    return isinstance(value, str) and TIME_OF_DAY_PATTERN.match(value) is not None
+
 
 def parse_iso_date(iso_date: str) -> date:
     """Strict ``YYYY-MM-DD`` parse with real-calendar validation (leap years
     included). Datetime strings are rejected: date-node ids address whole
-    days; time-of-day has nowhere to go. Fail loud — a malformed date must
-    never silently produce a node id."""
+    days; time-of-day rides the property value (``time: "HH:MM"`` on the
+    slot), never an ISO string. Fail loud — a malformed date must never
+    silently produce a node id."""
     match = _ISO_DATE_RE.match(iso_date.strip())
     if match is None:
         raise ValueError(f"invalid ISO date: {iso_date!r} (expected YYYY-MM-DD)")

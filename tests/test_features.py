@@ -194,6 +194,18 @@ class TestTaskFamilySeed:
             "00000000-0000-0000-0004-000000000011",
         ]
 
+    def test_the_date_bindings_are_datetime_typed(self) -> None:
+        """The unified-datetime seed convergence (owner 2026-10-09): the
+        task family's three date bindings (Scheduled/Deadline/Closed) are
+        DATETIME-typed per the amended time-of-day law (SCHEMA.md
+        "Datetime") — the seeds.ts ``TASK_FAMILY_SEED`` retype parity."""
+        by_property = {entry.property: entry for entry in TASK_FAMILY_SEED}
+        for name in ("taskScheduled", "taskDeadline", "taskClosedDate"):
+            assert by_property[name].type == "datetime"
+        assert by_property["taskStatus"].type == "select"
+        assert by_property["taskPriority"].type == "select"
+        assert by_property["taskRecurrence"].type == "select"
+
     def test_status_options_carry_the_designed_icons_and_colors(self) -> None:
         """The status options (seeds.ts ``TASK_STATUS_OPTIONS`` lockstep):
         the six status

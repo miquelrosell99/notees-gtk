@@ -565,7 +565,7 @@ class TestWorkspaceFeatureSetFixture:
                 "SELECT is_active FROM nodes WHERE id = ? AND is_class = 1",
                 (self.TASK_CLASS,),
             ) == [(0,)]
-            assert raw(instance, "SELECT COUNT(*) FROM property_schema WHERE type IN ('select', 'date')") == [(6,)]
+            assert raw(instance, "SELECT COUNT(*) FROM property_schema WHERE type IN ('select', 'datetime')") == [(6,)]
             assert raw(instance, "SELECT COUNT(*) FROM class_property WHERE class_id = ?", (self.TASK_CLASS,)) == [(6,)]
 
         # The flips are pure active-bit projections: both orders converge
@@ -869,6 +869,83 @@ class TestPropertyDateQualifierFixture:
         assert store.node(WS, self.DAY_2019).parent_id == "00000000-0000-0000-00aa-201901000000"
         assert store.node(WS, self.DAY_2020) is not None
         assert store.node(WS, self.DAY_2022) is not None
+
+
+class TestPropertyDatetimeFixture:
+    """Replay of property-datetime.json (the unified-datetime batch,
+    2026-10-09): a day-precision 'When' schema and a year-precision 'Year'
+    schema land; the 2024-07-26 / 2024-08-02 chains are created with
+    deterministic ids (the ensureDateChain shape); the value union exercises
+    end to end on one node — a full-day point (the default), a timed point,
+    an open range, a range with a timed end slot, and a year-precision point
+    on the YEAR node (mirrors the monorepo store test's datetime suite)."""
+
+    NODE = "0192a000-0000-7000-8000-000000000812"
+    WHEN = "0192a000-0000-7000-8000-000000000810"
+    YEAR = "0192a000-0000-7000-8000-000000000811"
+    DAY_0726 = "00000000-0000-0000-00dd-202407260000"
+    DAY_0802 = "00000000-0000-0000-00dd-202408020000"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("property-datetime.json")]
+
+    def test_the_schemas_land_datetime_typed_at_their_precisions(self, store: LocalStore) -> None:
+        for envelope in self._load():
+            assert store.apply_remote(envelope) is True
+        assert raw(
+            store,
+            "SELECT id, type, name, date_precision, multi, scope FROM property_schema ORDER BY id",
+        ) == [
+            (self.WHEN, "datetime", "When", None, 0, "global"),
+            (self.YEAR, "datetime", "Year", "year", 0, "global"),
+        ]
+
+    def test_the_value_union_replays_end_to_end_with_lww_winners(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        # Prefix through the first When write: the full-day point lands.
+        for envelope in envelopes[:9]:
+            assert store.apply_remote(envelope) is True
+        assert raw(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = 0",
+            (self.NODE, self.WHEN),
+        ) == [(json.dumps({"nodeId": self.DAY_0726}),)]
+        # The timed point overwrites at idx 0 (row LWW, ascending HLCs).
+        assert store.apply_remote(envelopes[9]) is True
+        assert self._when_value(store) == json.dumps({"nodeId": self.DAY_0726, "time": "14:30"})
+        # The open range {start, end: null}…
+        assert store.apply_remote(envelopes[10]) is True
+        assert self._when_value(store) == json.dumps({"start": {"nodeId": self.DAY_0726}, "end": None})
+        # …and the range with a timed end slot.
+        assert store.apply_remote(envelopes[11]) is True
+        assert self._when_value(store) == json.dumps(
+            {"start": {"nodeId": self.DAY_0726}, "end": {"nodeId": self.DAY_0802, "time": "09:15"}}
+        )
+        # The year-precision point rides the YEAR node on its own schema.
+        assert store.apply_remote(envelopes[12]) is True
+        assert raw(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = 0",
+            (self.NODE, self.YEAR),
+        ) == [(json.dumps({"nodeId": "00000000-0000-0000-00bb-202400000000"}),)]
+
+    def _when_value(self, store: LocalStore) -> str | None:
+        rows = raw(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = 0",
+            (self.NODE, self.WHEN),
+        )
+        return rows[0][0] if rows else None
+
+    def test_the_date_chain_landed_with_parents(self, store: LocalStore) -> None:
+        for envelope in self._load():
+            store.apply_remote(envelope)
+        year = store.node(WS, "00000000-0000-0000-00bb-202400000000")
+        month = store.node(WS, "00000000-0000-0000-00aa-202407000000")
+        day = store.node(WS, self.DAY_0726)
+        assert year is not None and year.parent_id is None
+        assert month is not None and month.parent_id == year.id
+        assert day is not None and day.parent_id == month.id
 
 
 class TestCycleFixture:

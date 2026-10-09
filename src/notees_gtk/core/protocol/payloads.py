@@ -95,8 +95,13 @@ _PROPERTY_TYPE = Literal[
     "text",
     "number",
     "boolean",
-    "date",
-    "date_range",
+    # The unified date property type (owner 2026-10-09, SCHEMA.md
+    # "Datetime"): the retired `date`/`date_range` types rewrite to
+    # `datetime` in live logs (the monorepo's migrate-unified-datetime.mts,
+    # Path B); strict schemas reject the retired values outright. A value is
+    # a point {nodeId, time?} or a range {start: slot|null, end: slot|null}
+    # (slot = {nodeId, time?}) anchored to the year/month/day node chain.
+    "datetime",
     "url",
     "email",
     "select",

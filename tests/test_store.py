@@ -2962,10 +2962,10 @@ class TestPg6ApplyTimeValidation:
             (self.SELECT, {"name": "state", "type": "select", "options": [{"id": "opt-1", "label": "One"}]}),
             (self.MULTI_SELECT, {"name": "tags", "type": "multi_select"}),
             (self.IMAGE, {"name": "cover", "type": "image"}),
-            (self.DATE, {"name": "when", "type": "date"}),
-            (self.DATE_YEAR, {"name": "yearOf", "type": "date", "datePrecision": "year"}),
+            (self.DATE, {"name": "when", "type": "datetime"}),
+            (self.DATE_YEAR, {"name": "yearOf", "type": "datetime", "datePrecision": "year"}),
             (self.OBJECT_FILTERED, {"name": "ref", "type": "object", "targetClassFilter": [self.CLASS_A]}),
-            (self.RANGE, {"name": "span", "type": "date_range"}),
+            (self.RANGE, {"name": "span", "type": "datetime"}),
         ]
         for i, (schema_id, body) in enumerate(schemas):
             store.apply_remote(
@@ -3065,7 +3065,7 @@ class TestPg6ApplyTimeValidation:
             store.apply_remote(property_set_env(NODE, self.DATE, value={"nodeId": self.GHOST}, hlc=(40, 0)))
         with pytest.raises(PropertyValueShapeError, match="does not exist"):
             store.apply_remote(property_set_env(NODE, self.OBJECT_FILTERED, value={"nodeId": self.GHOST}, hlc=(41, 0)))
-        # date_range: either end missing fails (an open other end is fine).
+        # datetime range: either end missing fails (an open other end is fine).
         store.apply_remote(
             property_set_env(NODE, self.RANGE, value={"start": {"nodeId": self.DAY_NODE}, "end": None}, hlc=(42, 0))
         )
@@ -3097,12 +3097,183 @@ class TestPg6ApplyTimeValidation:
         assert self._value(store, self.UNKNOWN, idx=7) == json.dumps({"anything": True})
 
 
+class TestDatetimeValueUnion:
+    """The unified datetime value union (SCHEMA.md "Datetime", owner
+    2026-10-09): a point {nodeId, time?} or a range {start, end} of slots
+    {nodeId, time?} anchored to the year/month/day node chain — either side
+    open, both-open legal, legacy bare-uuid encodings normalizing. `time` is
+    24h HH:MM minute precision and requires day precision on BOTH the slot's
+    ref and the schema ceiling; a value carrying both nodeId and start/end is
+    rejected outright. Mirrors the monorepo store's dates.test.ts datetime
+    value union suite."""
+
+    PUBLISHED = uid("dt-published")
+    SPAN = uid("dt-span")
+    YEARLY = uid("dt-yearly")
+
+    CHAIN_A = {
+        "year": "00000000-0000-0000-00bb-202600000000",
+        "month": "00000000-0000-0000-00aa-202609000000",
+        "day": "00000000-0000-0000-00dd-202609270000",
+    }
+    CHAIN_B = {
+        "year": "00000000-0000-0000-00bb-202600000000",
+        "month": "00000000-0000-0000-00aa-202610000000",
+        "day": "00000000-0000-0000-00dd-202610040000",
+    }
+    CHAIN_C_DAY = "00000000-0000-0000-00dd-202801150000"  # never materialized — the ghost slot
+
+    def _seeded(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": self.PUBLISHED, "name": "published", "type": "datetime"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create", {"propertySchemaId": self.SPAN, "name": "span", "type": "datetime"}, hlc=(3, 0)
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": self.YEARLY, "name": "yearly", "type": "datetime", "datePrecision": "year"},
+                hlc=(4, 0),
+            )
+        )
+        # The chains the assertions link to (the ensureDateChain shape).
+        store.apply_remote(create_env(self.CHAIN_A["year"], hlc=(5, 0)))
+        store.apply_remote(create_env(self.CHAIN_A["month"], parent_id=self.CHAIN_A["year"], hlc=(6, 0)))
+        store.apply_remote(create_env(self.CHAIN_A["day"], parent_id=self.CHAIN_A["month"], hlc=(7, 0)))
+        store.apply_remote(create_env(self.CHAIN_B["month"], parent_id=self.CHAIN_B["year"], hlc=(8, 0)))
+        store.apply_remote(create_env(self.CHAIN_B["day"], parent_id=self.CHAIN_B["month"], hlc=(9, 0)))
+
+    def _value(self, store: LocalStore, schema_id: str) -> str | None:
+        rows = raw_rows(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = 0",
+            (NODE, schema_id),
+        )
+        return rows[0][0] if rows else None
+
+    def test_a_timed_point_and_a_timed_range_end_round_trip_verbatim(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(
+            property_set_env(
+                NODE, self.PUBLISHED, value={"nodeId": self.CHAIN_A["day"], "time": "14:30"}, hlc=(40, 0)
+            )
+        )
+        assert self._value(store, self.PUBLISHED) == json.dumps({"nodeId": self.CHAIN_A["day"], "time": "14:30"})
+        store.apply_remote(
+            property_set_env(
+                NODE,
+                self.SPAN,
+                value={"start": {"nodeId": self.CHAIN_A["day"]}, "end": {"nodeId": self.CHAIN_B["day"], "time": "09:15"}},
+                hlc=(41, 0),
+            )
+        )
+        assert self._value(store, self.SPAN) == json.dumps(
+            {"start": {"nodeId": self.CHAIN_A["day"]}, "end": {"nodeId": self.CHAIN_B["day"], "time": "09:15"}}
+        )
+
+    def test_a_both_open_range_is_a_legal_value(self, store: LocalStore) -> None:
+        self._seeded(store)
+        store.apply_remote(property_set_env(NODE, self.SPAN, value={"start": None, "end": None}, hlc=(40, 0)))
+        assert self._value(store, self.SPAN) == json.dumps({"start": None, "end": None})
+
+    def test_a_value_carrying_both_nodeid_and_start_end_is_rejected_outright(self, store: LocalStore) -> None:
+        self._seeded(store)
+        for bad in [
+            {"nodeId": self.CHAIN_A["day"], "start": {"nodeId": self.CHAIN_A["day"]}, "end": None},
+            {"nodeId": self.CHAIN_A["day"], "end": None},
+        ]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(property_set_env(NODE, self.PUBLISHED, value=bad, hlc=(40, 0)))
+
+    def test_a_malformed_time_is_rejected_on_points_and_range_slots_alike(self, store: LocalStore) -> None:
+        self._seeded(store)
+        for time in ["25:00", "9:30", "10:60", "14:30:00", 430, None]:
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(
+                    property_set_env(NODE, self.PUBLISHED, value={"nodeId": self.CHAIN_A["day"], "time": time}, hlc=(40, 0))
+                )
+            with pytest.raises(PropertyValueShapeError):
+                store.apply_remote(
+                    property_set_env(
+                        NODE,
+                        self.SPAN,
+                        value={"start": None, "end": {"nodeId": self.CHAIN_B["day"], "time": time}},
+                        hlc=(41, 0),
+                    )
+                )
+
+    def test_time_requires_day_precision_on_the_slots_ref(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # A month/year anchor has no wall-clock time.
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                property_set_env(
+                    NODE, self.PUBLISHED, value={"nodeId": self.CHAIN_A["month"], "time": "10:00"}, hlc=(40, 0)
+                )
+            )
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                property_set_env(
+                    NODE,
+                    self.SPAN,
+                    value={"start": {"nodeId": self.CHAIN_A["year"], "time": "10:00"}, "end": None},
+                    hlc=(41, 0),
+                )
+            )
+
+    def test_time_requires_day_precision_on_the_schema_ceiling_too(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # A full-day YEAR ref is fine at year precision…
+        store.apply_remote(property_set_env(NODE, self.YEARLY, value={"nodeId": self.CHAIN_A["year"]}, hlc=(40, 0)))
+        assert self._value(store, self.YEARLY) == json.dumps({"nodeId": self.CHAIN_A["year"]})
+        # …but a timed DAY ref claims finer granularity than the ceiling.
+        with pytest.raises(PropertyValueShapeError, match="finer granularity"):
+            store.apply_remote(
+                property_set_env(
+                    NODE, self.YEARLY, value={"nodeId": self.CHAIN_A["day"], "time": "08:00"}, hlc=(41, 0)
+                )
+            )
+
+    def test_each_non_null_range_slot_ref_gets_the_existence_check(self, store: LocalStore) -> None:
+        self._seeded(store)
+        # CHAIN_C (2028-01-15) is never materialized — a valid day-node id
+        # with no node row (the date_range parity: either end missing fails,
+        # open sides skip).
+        with pytest.raises(PropertyValueShapeError, match="does not exist"):
+            store.apply_remote(
+                property_set_env(
+                    NODE, self.SPAN, value={"start": {"nodeId": self.CHAIN_C_DAY}, "end": None}, hlc=(40, 0)
+                )
+            )
+        with pytest.raises(PropertyValueShapeError, match="does not exist"):
+            store.apply_remote(
+                property_set_env(
+                    NODE,
+                    self.SPAN,
+                    value={"start": None, "end": {"nodeId": self.CHAIN_C_DAY, "time": "12:00"}},
+                    hlc=(41, 0),
+                )
+            )
+        # Open sides store fine (no ref to check).
+        store.apply_remote(property_set_env(NODE, self.SPAN, value={"start": None, "end": None}, hlc=(42, 0)))
+        assert self._value(store, self.SPAN) == json.dumps({"start": None, "end": None})
+
+
 class TestPb2OneShapePerType:
     """PB2: the one-shape-per-type gate — text = string-or-reference,
-    date/object = node reference (legacy bare uuid normalizes), date_range =
-    {start,end} of references. The gate lives in the PG6 validator the
-    property.set applier consults; unknown schema ids store unchecked.
-    Mirrors the monorepo store's property-values.test.ts PB2 suite."""
+    datetime = the unified point/range union (a legacy bare uuid normalizes
+    to a point), object/asset = node reference. The gate lives in the PG6
+    validator the property.set applier consults; unknown schema ids store
+    unchecked. Mirrors the monorepo store's property-values.test.ts PB2
+    suite."""
 
     DATE_NODE = uid("pb2-date-node")
 
@@ -3111,9 +3282,9 @@ class TestPb2OneShapePerType:
         store.apply_remote(create_env(self.DATE_NODE, name="2026", hlc=(2, 0)))
         for schema_id, body, hlc in [
             (uid("pb2-text"), {"name": "notes", "type": "text"}, (3, 0)),
-            (uid("pb2-date"), {"name": "when", "type": "date"}, (4, 0)),
+            (uid("pb2-date"), {"name": "when", "type": "datetime"}, (4, 0)),
             (uid("pb2-object"), {"name": "who", "type": "object"}, (5, 0)),
-            (uid("pb2-range"), {"name": "span", "type": "date_range"}, (6, 0)),
+            (uid("pb2-range"), {"name": "span", "type": "datetime"}, (6, 0)),
         ]:
             store.apply_remote(make_env("propertySchema.create", {"propertySchemaId": schema_id, **body}, hlc=hlc))
         return store
@@ -3139,7 +3310,7 @@ class TestPb2OneShapePerType:
             with pytest.raises(PropertyValueShapeError):
                 store.apply_remote(property_set_env(NODE, text, value=bad, hlc=(40, 0)))
 
-    def test_date_object_accept_refs_normalize_bare_uuid_reject_scalars(self, store: LocalStore) -> None:
+    def test_datetime_object_accept_refs_normalize_bare_uuid_reject_scalars(self, store: LocalStore) -> None:
         self._seeded(store)
         date = uid("pb2-date")
         obj = uid("pb2-object")
@@ -3154,7 +3325,7 @@ class TestPb2OneShapePerType:
         with pytest.raises(PropertyValueShapeError):
             store.apply_remote(property_set_env(NODE, obj, value="not-a-reference", hlc=(43, 0)))
 
-    def test_date_range_accepts_either_side_open_and_rejects_bad_sides(self, store: LocalStore) -> None:
+    def test_datetime_accepts_either_side_open_and_rejects_bad_sides(self, store: LocalStore) -> None:
         self._seeded(store)
         rng = uid("pb2-range")
         store.apply_remote(property_set_env(NODE, rng, value={"start": self.DATE_NODE, "end": None}, hlc=(40, 0)))

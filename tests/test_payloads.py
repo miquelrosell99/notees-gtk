@@ -256,6 +256,42 @@ class TestAssetPropertyType:
             )
 
 
+class TestUnifiedDatetimePropertyType:
+    """The unified datetime property type (owner 2026-10-09, SCHEMA.md
+    "Datetime"): the ``propertySchema.create`` type enum retires
+    ``date``/``date_range`` and adds ``datetime`` — strict, the retired
+    values are rejected outright (the zod enum parity)."""
+
+    def test_property_schema_create_accepts_datetime(self) -> None:
+        validate_payload(
+            "propertySchema.create",
+            {"propertySchemaId": UUID_1, "name": "When", "type": "datetime"},
+        )
+        # datePrecision/dateQualified ride the datetime schema (the TS parity).
+        validate_payload(
+            "propertySchema.create",
+            {
+                "propertySchemaId": UUID_1,
+                "name": "When",
+                "type": "datetime",
+                "datePrecision": "year",
+                "dateQualified": True,
+            },
+        )
+
+    @pytest.mark.parametrize("retired", ["date", "date_range"])
+    def test_property_schema_create_rejects_the_retired_types(self, retired: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(
+                "propertySchema.create",
+                {"propertySchemaId": UUID_1, "name": "x", "type": retired},
+            )
+
+    def test_property_schema_update_keeps_patchable_date_fields(self) -> None:
+        validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "datePrecision": "month"})
+        validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "datePrecision": None})
+
+
 class TestRenderStateModelStrictness:
     """Revision 11: object.create/update dropped the ``nodeType`` enumeration
     and gained the optional ``presentAsMain`` render bit — the retired key is
