@@ -34,6 +34,11 @@ package() {
   cd "$pkgname"
   python -m installer --destdir="$pkgdir" dist/*.whl
 
+  # Desktop entry — the launcher's apps-menu source. Icon name matches the
+  # window's set_icon_name so the running window associates with this entry.
+  install -Dm644 data/dev.notees.Gtk.desktop \
+    "$pkgdir/usr/share/applications/dev.notees.Gtk.desktop"
+
   # Margin Green app icon (vendored from the brand/ submodule, v1.0.0);
   # resolves through the hicolor theme as dev.notees.Gtk (the window's
   # set_icon_name). glib2's pacman hook refreshes the icon cache.

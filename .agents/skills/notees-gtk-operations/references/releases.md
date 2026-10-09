@@ -45,6 +45,10 @@ Runs on every push to `main` AND on `v*` tags.
   `python -m installer --destdir="$pkgdir" dist/*.whl`.
 - Runtime deps: `python python-httpx python-pydantic python-gobject gtk4
   libadwaita` (PyGObject + GTK4/libadwaita provide the `ui` extra on Arch).
+- Desktop integration: `data/dev.notees.Gtk.desktop` (Name=Notees,
+  Icon=`dev.notees.Gtk` — the window's `set_icon_name`) installs to
+  `/usr/share/applications/` alongside the hicolor icons; without it the
+  app is missing from launcher apps menus.
 - The AUR package tracks this PKGBUILD; update it when the PKGBUILD changes
   materially (deps, build steps).
 

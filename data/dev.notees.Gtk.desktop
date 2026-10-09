@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Notees
+Comment=Self-hosted, offline-first notes, journals, and tasks
+Exec=/usr/bin/notees-gtk
+Icon=dev.notees.Gtk
+Terminal=false
+Categories=Office;Utility;
+Keywords=notes;journal;tasks;
+StartupWMClass=dev.notees.Gtk
