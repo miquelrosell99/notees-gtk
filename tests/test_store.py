@@ -514,6 +514,35 @@ class TestMigrations:
         ]
         reopened.close()
 
+    def test_v13_to_v14_migration_adds_the_description_column(self, tmp_path: Path) -> None:
+        """The page-subtitle wire node field (web schema v17→v18 parity): an
+        on-disk v13 database upgrades in place — the nullable description
+        column is added idempotently and the migrated table maps the field on
+        update (set and clear), exactly like a fresh v14 create."""
+        path = tmp_path / "v13.db"
+        instance = LocalStore(path)
+        instance.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        instance.close()
+        # Downgrade the on-disk shape to v13: drop the column (SQLite 3.35+
+        # DROP COLUMN; the v11→v12 precedent).
+        with sqlite3.connect(path) as raw:
+            raw.execute("ALTER TABLE nodes DROP COLUMN description")
+            raw.execute("PRAGMA user_version = 13")
+        upgraded = LocalStore(path)
+        row = upgraded.node(WS_A, NODE)
+        assert row is not None
+        assert row.description is None
+        assert upgraded.apply_remote(update_env(NODE, hlc=(2, 0), description="New subtitle")) is True
+        assert upgraded.node(WS_A, NODE).description == "New subtitle"
+        # The clear (present-null) maps too, exactly like color.
+        assert upgraded.apply_remote(update_env(NODE, hlc=(3, 0), description=None)) is True
+        assert upgraded.node(WS_A, NODE).description is None
+        # Idempotent: a second open is a no-op that stays current.
+        upgraded.close()
+        reopened = LocalStore(path)
+        assert raw_rows(reopened, "PRAGMA user_version") == [(SCHEMA_VERSION,)]
+        reopened.close()
+
 
 class TestOutbox:
     def test_enqueue_and_pending_roundtrip(self, store: LocalStore) -> None:
@@ -554,14 +583,15 @@ class TestOutbox:
         assert store.pending_outbox(WS_A) == []
 
     def test_enqueue_accepts_a_nullish_field_clear_as_the_one_field(self, store: LocalStore) -> None:
-        """A null on a NULLISH field (color, the M27 wire node fields) is a
-        real CLEAR write — the server's presence-based refine accepts the
-        envelope, so the outbox must not swallow it (the color precedent
-        extended to the wire node fields)."""
+        """A null on a NULLISH field (color, the M27 wire node fields,
+        ``description``) is a real CLEAR write — the server's presence-based
+        refine accepts the envelope, so the outbox must not swallow it (the
+        color precedent extended to the wire node fields)."""
         store.enqueue(update_env(NODE, hlc=(2, 0), color=None))
         store.enqueue(update_env(NODE, hlc=(3, 0), aliasedNodeId=None))
         store.enqueue(update_env(NODE, hlc=(4, 0), coverAssetId=None, bannerAssetId=None))
-        assert [env.hlc.physical for env in store.pending_outbox(WS_A)] == [2, 3, 4]
+        store.enqueue(update_env(NODE, hlc=(5, 0), description=None))
+        assert [env.hlc.physical for env in store.pending_outbox(WS_A)] == [2, 3, 4, 5]
 
     def test_enqueue_accepts_object_update_with_any_writable_field(self, store: LocalStore) -> None:
         store.enqueue(update_env(NODE, hlc=(2, 0), icon="📄"))
@@ -637,6 +667,7 @@ class TestObjectCreate:
             cover_asset_id=None,
             banner_asset_id=None,
             aliased_node_id=None,
+            description=None,
             is_active=True,
             content=json.dumps([{"type": "text", "text": "My Page"}]),
             content_plain="My Page",

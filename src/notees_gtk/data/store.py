@@ -28,7 +28,9 @@ write path), the M27 wire node fields (``object.update`` maps
 ``coverAssetId``/``bannerAssetId``/``aliasedNodeId`` presence-writes /
 present-null-clears onto the derived node columns — the icon/color
 convention; the alias target gets the M12 write-time cycle check and
-:meth:`resolve_alias` is the cycle-safe chain walker), the 2026-10-07
+:meth:`resolve_alias` is the cycle-safe chain walker) plus the 2026-10-09
+page-subtitle field (``description`` — plain text, max 512 chars, the same
+nullish convention, web schema v18 parity), the 2026-10-07
 title-flatten ruling (class rows stay text-only; every other node keeps the
 rich token stream on content writes — create-as-main and promotion remain
 the lossy boundaries), the class conversion capability (``class.create``
@@ -131,7 +133,12 @@ _log = logging.getLogger(__name__)
 #: convention); object.update of ``aliasedNodeId`` runs the write-time
 #: alias-cycle check (the extends-DAG precedent) and the store gains the
 #: ``resolve_alias`` chain walker.
-SCHEMA_VERSION = 13
+#: v14 (owner 2026-10-09, web schema v17→v18 parity): the page-subtitle
+#: wire node field — ``description``, the Capacities header precedent,
+#: plain text max 512 chars — lands as a nullable node column mapped by
+#: object.update (presence writes, present-null clears — the color
+#: convention); object.create carries none.
+SCHEMA_VERSION = 14
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -163,10 +170,12 @@ _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "color": "color",
     # Wire node fields (web schema v16): ride along when the snapshot was
     # taken from a post-M27 store; older snapshots lack the columns and the
-    # mapping skips them (the cache default NULL wins).
+    # mapping skips them (the cache default NULL wins). ``description``
+    # (web schema v18, the page subtitle) rides the same way.
     "cover_asset_id": "cover_asset_id",
     "banner_asset_id": "banner_asset_id",
     "aliased_node_id": "aliased_node_id",
+    "description": "description",
     "content": "content",
     "created_at": "created_at",
     "is_active": "is_active",
@@ -228,6 +237,10 @@ class NodeRow:
         banner_asset_id: The asset node behind the page banner, or ``None``.
         aliased_node_id: The main page this node is an alias of (many-to-one
             FROM the alias), or ``None``.
+        description: The page subtitle in the core page chrome (the wire node
+            field, web schema v18 parity) — plain text, max 512 chars, or
+            ``None`` (never written / cleared); set/cleared by object.update
+            only.
         is_active: False once the node (soft-)deleted; the trash table keeps
             the deletion record.
         content: Serialized flat token array (JSON); ``None`` when the node
@@ -248,6 +261,7 @@ class NodeRow:
     cover_asset_id: str | None
     banner_asset_id: str | None
     aliased_node_id: str | None
+    description: str | None
     is_active: bool
     content: str | None
     content_plain: str
@@ -341,11 +355,14 @@ _ALIAS_CHAIN_DEPTH_CAP = 32
 
 #: The object.update fields whose explicit null is a real write (the CLEAR)
 #: rather than a missing value: the nullish schema fields (the color
-#: precedent + the M27 wire node fields). The outbox writable-field guard
-#: keys off this set — the server's refine is key-PRESENCE-based, so a
-#: nullish-only update is a legitimate envelope, while a null on any other
-#: field (icon/contentAst are optional, not nullish) would 422.
-_NULLISH_OBJECT_UPDATE_FIELDS = frozenset({"color", "coverAssetId", "bannerAssetId", "aliasedNodeId"})
+#: precedent + the M27 wire node fields + ``description``, the page
+#: subtitle). The outbox writable-field guard keys off this set — the
+#: server's refine is key-PRESENCE-based, so a nullish-only update is a
+#: legitimate envelope, while a null on any other field (icon/contentAst
+#: are optional, not nullish) would 422.
+_NULLISH_OBJECT_UPDATE_FIELDS = frozenset(
+    {"color", "coverAssetId", "bannerAssetId", "aliasedNodeId", "description"}
+)
 
 
 def _node_ref_of_value(value: Any) -> str | None:
@@ -644,8 +661,9 @@ class LocalStore:
         ``object.update`` carrying no writable field (empty payload beyond
         ``objectId``, or only nulls on non-nullish fields) would be rejected
         with 422 and quarantined, so it is skipped here and logged. A null on
-        a NULLISH field (``color`` and the M27 wire node fields — an explicit
-        clear the server's presence-based refine accepts) IS writable.
+        a NULLISH field (``color``, the M27 wire node fields, and
+        ``description`` — an explicit clear the server's presence-based
+        refine accepts) IS writable.
         Payloads of every known op type are also validated against the strict
         wire schemas (``core.protocol.payloads``): a retired/renamed key
         (e.g. the title-is-content ``name`` field) or a malformed value fails
@@ -829,12 +847,12 @@ class LocalStore:
     def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
         # Column order is the contract: is_class/present_as_main sit at 3/4
         # (the LWW appliers read them positionally) and the row-LWW triple at
-        # 12/13/14; the wire node fields ride at 15/16/17 (appended, so every
-        # existing position is stable).
+        # 12/13/14; the wire node fields ride at 15/16/17 and the page
+        # subtitle at 18 (appended, so every existing position is stable).
         row: tuple[Any, ...] | None = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, icon, color,"
             " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id,"
-            " cover_asset_id, banner_asset_id, aliased_node_id"
+            " cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -1066,6 +1084,13 @@ class LocalStore:
                 self._assert_alias_acyclic(env.workspace_id, object_id, str(aliased_node_id), op_type)
             sets.append("aliased_node_id = ?")
             values.append(str(aliased_node_id) if aliased_node_id is not None else None)
+        # The page subtitle (web schema v18 parity): same nullish
+        # convention — presence writes, present-null clears (SQL NULL),
+        # absence preserves; plain text, max 512 chars enforced by the
+        # payload schema above the applier.
+        if "description" in payload:
+            sets.append("description = ?")
+            values.append(payload["description"])
         if payload.get("contentAst") is not None:
             # Class content stays text-only; every other node keeps the rich
             # token stream it was sent. A page's own content may carry inline
@@ -2686,7 +2711,7 @@ class LocalStore:
         """
         sql = (
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
@@ -2704,7 +2729,7 @@ class LocalStore:
         rows = self._conn.execute(
             """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.present_as_main, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain,
-                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id
+                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
                WHERE n.workspace_id = ? AND o.parent_id = ?
@@ -2718,7 +2743,7 @@ class LocalStore:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -2753,6 +2778,7 @@ class LocalStore:
             cover_asset_id=row[13],
             banner_asset_id=row[14],
             aliased_node_id=row[15],
+            description=row[16],
         )
 
     @_synchronized
@@ -3281,6 +3307,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     cover_asset_id TEXT,
     banner_asset_id TEXT,
     aliased_node_id TEXT,
+    -- Page subtitle in the core page chrome (owner 2026-10-09, web schema
+    -- v17→v18 parity — the Capacities header precedent): plain text,
+    -- max 512 chars, object.update-only. NULL = unset; present-null CLEARS.
+    description TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     content TEXT,
     content_plain TEXT NOT NULL DEFAULT '',
@@ -3845,6 +3875,17 @@ def _migrate_v13(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    """v14 — the page-subtitle wire node field (owner 2026-10-09; web
+    schema v17→v18 parity): ``description`` lands as a nullable node column
+    mapped by object.update. Purely additive — the column guard keeps the
+    ALTER idempotent for fresh v14 creates (CREATE TABLE IF NOT EXISTS never
+    alters), the v10/v13 precedent."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    if "description" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN description TEXT")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -3860,4 +3901,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (11, _migrate_v11),
     (12, _migrate_v12),
     (13, _migrate_v13),
+    (14, _migrate_v14),
 )

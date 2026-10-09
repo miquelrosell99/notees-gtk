@@ -361,10 +361,10 @@ class TestClassUnassignFixture:
 
 
 class TestObjectWireFieldsFixture:
-    """Replay of object-wire-fields.json (M27): the three wire node fields
-    land set-then-clear through object.update — presence writes, present-null
-    clears — and an absent field is never a write (mirrors the monorepo
-    store test's fixture replay)."""
+    """Replay of object-wire-fields.json (M27 + the 2026-10-09 page-subtitle
+    batch): the wire node fields land set-then-clear through object.update —
+    presence writes, present-null clears — and an absent field is never a
+    write (mirrors the monorepo store test's fixture replay)."""
 
     PAGE = "0192a000-0000-7000-8000-00000000052a"
     ASSET = "0192a000-0000-7000-8000-00000000052b"
@@ -381,6 +381,7 @@ class TestObjectWireFieldsFixture:
         row = store.node(WS, self.PAGE)
         assert row is not None
         assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (None, None, None)
+        assert row.description is None
         assert store.apply_remote(updates[0]) is True  # coverAssetId = ASSET
         assert store.node(WS, self.PAGE).cover_asset_id == self.ASSET
         assert store.apply_remote(updates[1]) is True  # bannerAssetId = ASSET, aliasedNodeId = MAIN
@@ -395,14 +396,18 @@ class TestObjectWireFieldsFixture:
         assert store.apply_remote(updates[4]) is True  # bannerAssetId = null
         row = store.node(WS, self.PAGE)
         assert (row.cover_asset_id, row.banner_asset_id, row.aliased_node_id) == (None, None, None)
+        assert store.apply_remote(updates[5]) is True  # description = "Subtitle text"
+        assert store.node(WS, self.PAGE).description == "Subtitle text"
+        assert store.apply_remote(updates[6]) is True  # description = null (clear)
+        assert store.node(WS, self.PAGE).description is None
 
     def test_the_fields_are_columns_on_the_derived_node_table(self, store: LocalStore) -> None:
         """The wire fields project as derived node columns (store schema
-        v13, web v16 parity) — the NodeRow read surfaces them."""
+        v14, web v18 parity) — the NodeRow read surfaces them."""
         for envelope in self._load():
             store.apply_remote(envelope)
         columns = {row[1] for row in raw(store, "PRAGMA table_info(nodes)")}
-        assert {"cover_asset_id", "banner_asset_id", "aliased_node_id"} <= columns
+        assert {"cover_asset_id", "banner_asset_id", "aliased_node_id", "description"} <= columns
 
 
 class TestClassConvertFixture:

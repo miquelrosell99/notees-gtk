@@ -192,6 +192,48 @@
         "objectId": "0192a000-0000-7000-8000-00000000052a",
         "bannerAssetId": null
       }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000528",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008800,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.800Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "description": "Subtitle text"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000529",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008900,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000052a"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:08.900Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000052a",
+        "description": null
+      }
     }
   ]
 }

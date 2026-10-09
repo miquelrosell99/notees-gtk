@@ -57,6 +57,12 @@ present-null clears — the ``color`` convention; ``object.create`` carries
 none), and the property-schema type enum gains ``asset`` — a node-typed
 value whose target must carry the asset class (the filter is implicit in
 the type).
+
+Page-subtitle batch (owner 2026-10-09, web schema v17→v18 parity): the
+wire node fields gain ``description`` — the page subtitle in the core page
+chrome (the Capacities header precedent), plain text max 512 chars,
+``object.update``-only with the same presence-writes / present-null-clears
+semantics.
 """
 
 from __future__ import annotations
@@ -165,6 +171,11 @@ class ObjectUpdatePayload(_Strict):
     cover_asset_id: UUID | None = Field(default=None, alias="coverAssetId")
     banner_asset_id: UUID | None = Field(default=None, alias="bannerAssetId")
     aliased_node_id: UUID | None = Field(default=None, alias="aliasedNodeId")
+    # Page subtitle in the core page chrome (the Capacities header precedent —
+    # the same wire-node-field convention, owner 2026-10-09): platform-fixed,
+    # cardinality-1, plain text, max 512 chars; never a class-bound property.
+    # Presence writes, present-null clears, absence preserves.
+    description: str | None = Field(default=None, max_length=512)
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
 
@@ -540,14 +551,16 @@ def build_object_update(
     cover_asset_id: str | None | object = _UNSET,
     banner_asset_id: str | None | object = _UNSET,
     aliased_node_id: str | None | object = _UNSET,
+    description: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Build an ``object.update`` payload (at least one field required).
 
     ``color=None`` sends an explicit null that CLEARS the node's color
     (the UI's "No color"); omitting ``color`` leaves it untouched. The wire
     node fields (``cover_asset_id`` / ``banner_asset_id`` /
-    ``aliased_node_id``) follow the same convention: ``None`` sends an
-    explicit null that CLEARS the column, omitting leaves it untouched.
+    ``aliased_node_id`` / ``description``) follow the same convention:
+    ``None`` sends an explicit null that CLEARS the column, omitting leaves
+    it untouched.
     """
     payload: dict[str, Any] = {"objectId": object_id}
     if present_as_main is not None:
@@ -566,6 +579,8 @@ def build_object_update(
         payload["bannerAssetId"] = banner_asset_id
     if aliased_node_id is not _UNSET:
         payload["aliasedNodeId"] = aliased_node_id
+    if description is not _UNSET:
+        payload["description"] = description
     return _validated("object.update", payload)
 
 
