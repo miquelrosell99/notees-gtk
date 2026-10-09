@@ -21,6 +21,7 @@ from gi.repository import Adw, GdkPixbuf, GLib, Gtk
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, NoteesClient, TwoFactorRequired
 from notees_gtk.ui import config_store
+from notees_gtk.ui.brand import ink_bbox
 from notees_gtk.ui.worker import run_in_worker
 
 __all__ = ["LoginView"]
@@ -29,16 +30,24 @@ __all__ = ["LoginView"]
 #: authenticated client, and the server's public user record.
 LoggedInCallback = Callable[[ClientConfig, NoteesClient, dict[str, Any]], None]
 
-_SYMBOL_SIZE_PX = 64
+#: Render width for the oversampled load — headroom for a clean crop + downscale.
+_OVERSAMPLE_WIDTH_PX = 512
+#: The lockup's render width on the login form (the wordmark stays readable).
+_MARK_WIDTH_PX = 96
 
 
 def _brand_symbol_pixbuf() -> GdkPixbuf.Pixbuf | None:
-    """Load the Margin Green symbol for the active colour scheme, or ``None``.
+    """Load the Margin Green lockup cropped to its ink, or ``None``.
 
     The SVGs ship as package assets (``ui/assets/``, vendored from the brand
     submodule); ``full-color.svg`` carries the light-scheme inks (iron + green),
-    ``full-color-dark.svg`` the dark-scheme roles. A host without the SVG
-    pixbuf loader yields ``None`` and the form simply renders without the mark.
+    ``full-color-dark.svg`` the dark-scheme roles. The SVGs' viewBox includes
+    brand clear-space padding around the ink, so a raw at-scale render shrinks
+    the mark to a fraction of the budget — the login form showed an illegible
+    ~14px squiggle inside its 64px box. Render oversampled, crop to the opaque
+    bounding box (:func:`notees_gtk.ui.brand.ink_bbox`), and downscale to the
+    mark width. A host without the SVG pixbuf loader yields ``None`` and the
+    form simply renders without the mark.
     """
     from importlib.resources import files
 
@@ -46,9 +55,23 @@ def _brand_symbol_pixbuf() -> GdkPixbuf.Pixbuf | None:
     name = "full-color-dark.svg" if dark else "full-color.svg"
     path = files("notees_gtk.ui").joinpath("assets", name)
     try:
-        return GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), _SYMBOL_SIZE_PX, _SYMBOL_SIZE_PX, True)
+        rendered = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), _OVERSAMPLE_WIDTH_PX, _OVERSAMPLE_WIDTH_PX, True)
     except GLib.Error:
         return None
+    bbox = ink_bbox(
+        rendered.get_pixels(),
+        rendered.get_width(),
+        rendered.get_height(),
+        rendered.get_rowstride(),
+        rendered.get_n_channels(),
+        has_alpha=rendered.get_has_alpha(),
+    )
+    if bbox is None:
+        return None
+    x, y, w, h = bbox
+    cropped = rendered.new_subpixbuf(x, y, w, h)
+    mark_height = max(1, round(h * (_MARK_WIDTH_PX / w)))
+    return cropped.scale_simple(_MARK_WIDTH_PX, mark_height, GdkPixbuf.InterpType.BILINEAR)
 
 
 class LoginView(Gtk.Box):
