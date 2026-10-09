@@ -8,6 +8,22 @@ history.
 
 ## 2026-10-09
 
+- **fix(login): the brand lockup renders at its real size, and the login body
+  is strict `{email, password}` again — the two bugs that broke the sign-in
+  screen.** (1) The mark: the vendored `full-color(-dark).svg` viewBox carries
+  the brand clear-space padding around the ink (the ink is ~74% × ~39% of the
+  viewBox), so the raw at-scale render shrank the lockup to an illegible
+  ~47×10px squiggle inside its 64px budget. The loader now renders
+  oversampled (512px), crops to the opaque bounding box (new pure, gi-free
+  `brand.ink_bbox` — headless-testable), and downscales to a 96px-wide mark:
+  the wordmark letterforms land ~21px high and read cleanly. (2) The login
+  call: `client.login` dropped its `remember_me` field — the server schema is
+  strict `{email, password}` and rejected the extra key with 422
+  ("unrecognized key"), so every login failed; session lifetime is
+  server-owned (30-day sliding sessions), the same contract the Flutter
+  client documents. Verification: `uv run pytest` 774 passed (the remember_me
+  pin rewritten as a strict-body assertion, 4 new `ink_bbox` specs), `ruff
+  check` + `mypy src` clean.
 - **feat(packaging): ship a `.desktop` entry — the app appears in launcher
   apps menus.** The package installed the binary + icons but no desktop
   entry, so launcher menus had nothing to list (found on the fleet

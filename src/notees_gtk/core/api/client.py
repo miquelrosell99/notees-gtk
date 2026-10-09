@@ -150,7 +150,7 @@ class NoteesClient:
 
     # ------------------------------------------------------------------- auth
 
-    def login(self, email: str, password: str, *, remember_me: bool = True, totp: str | None = None) -> AuthResult:
+    def login(self, email: str, password: str, *, totp: str | None = None) -> AuthResult:
         """Log in and store the issued bearer token for subsequent requests.
 
         When the account has 2FA enabled the password step answers with a
@@ -163,10 +163,14 @@ class NoteesClient:
         (or persisted via ``config_store.save_api_key``) authenticates every
         relay endpoint directly.
 
+        The login body is exactly ``{email, password}``: the server schema is
+        strict (extra keys are rejected with 422), and session lifetime is
+        server-owned — 30-day sessions with sliding renewal, no remember-me
+        flag (the Flutter client documents the same contract).
+
         Args:
             email: Account email.
             password: Account password.
-            remember_me: Passed through to the login endpoint.
             totp: TOTP (or backup) code for the 2FA second step.
 
         Returns:
@@ -176,7 +180,7 @@ class NoteesClient:
             TwoFactorRequired: 2FA is enabled and no ``totp`` code was supplied.
             ApiError: The login (or verify) request failed.
         """
-        data = self._post_json("/api/auth/login", {"email": email, "password": password, "remember_me": remember_me})
+        data = self._post_json("/api/auth/login", {"email": email, "password": password})
         if all(field in data for field in _TWO_FA_GATE_FIELDS):
             if totp is None:
                 raise TwoFactorRequired(preauth_token=data["preauth_token"], purpose=data["purpose"])

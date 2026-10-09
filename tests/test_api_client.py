@@ -167,10 +167,11 @@ class TestApiKeyAuth:
 class TestLogin:
     def test_success_returns_auth_result_and_stores_bearer(self) -> None:
         def login_handler(request: httpx.Request) -> httpx.Response:
+            # The server schema is strict {email, password} — extra keys 422
+            # (the old remember_me field blocked login until it was dropped).
             assert _json_body(request) == {
                 "email": "ada@example.com",
                 "password": "hunter2",
-                "remember_me": True,
             }
             return httpx.Response(200, json=LOGIN_OK)
 
@@ -191,13 +192,16 @@ class TestLogin:
         client.list_workspaces()
         assert len(requests) == 2
 
-    def test_remember_me_false_is_sent(self) -> None:
+    def test_login_body_is_strict_email_password(self) -> None:
+        """No extra keys ride the login body — the server rejects them with 422."""
+
         def handler(request: httpx.Request) -> httpx.Response:
-            assert _json_body(request)["remember_me"] is False
+            body = _json_body(request)
+            assert set(body) == {"email", "password"}
             return httpx.Response(200, json=LOGIN_OK)
 
         client, _ = _make_client(_router({("POST", "/api/auth/login"): handler}))
-        client.login("ada@example.com", "hunter2", remember_me=False)
+        client.login("ada@example.com", "hunter2")
 
     def test_wrong_password_raises_authentication_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
