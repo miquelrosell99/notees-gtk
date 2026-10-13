@@ -79,7 +79,13 @@ from notees_gtk.core.protocol.content import (
     plaintext_excerpt,
     stringify_content_ast,
 )
-from notees_gtk.core.protocol.dates import day_node_id, is_valid_time_of_day, parse_date_node_id
+from notees_gtk.core.protocol.dates import (
+    date_chain_class_id,
+    date_chain_parent_id,
+    day_node_id,
+    is_valid_time_of_day,
+    parse_date_node_id,
+)
 from notees_gtk.core.protocol.features import (
     SYSTEM_CLASS_ICONS_TASK,
     TASK_FAMILY_SEED,
@@ -987,6 +993,20 @@ class LocalStore:
         parent_id = str(parent_id) if parent_id is not None else None
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
         tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
+        # Date-chain class lock (SCHEMA.md "Datetime"): a date node's class
+        # set is FIXED to its precision's system class. The re-issued
+        # object.create is the OR-Set add carrier (class.assign rides it,
+        # also on an existing id), so the guard runs BEFORE the membership
+        # seeding below and the re-create early return.
+        locked_date_class = date_chain_class_id(object_id)
+        if locked_date_class is not None:
+            for class_id in class_ids:
+                if class_id != locked_date_class:
+                    raise MoveGuardError(
+                        f"{op_type}: node {object_id} is a date-chain node;"
+                        f" it can only carry the {locked_date_class} system class",
+                        op_type,
+                    )
         # Render bit (Revision 11): the payload may carry presentAsMain; the
         # applier defaults it by context — a parentless node presents as main
         # (document chrome by the second cascade branch), a parented one
@@ -1030,6 +1050,23 @@ class LocalStore:
             # Classes are containers (spec I4): a class parent is legal for
             # non-class children — which is all object.create can make.
             self._check_parent_allowed(env.workspace_id, parent_id, op_type)
+        # Date-chain parenting lock (SCHEMA.md "Datetime", same rule as
+        # object.move, with one birth-time exception): a date id may only be
+        # created AT its deterministic chain parent (year → root, month →
+        # year, day → month). Claiming any other parent is establishing an
+        # illegal parented state and fails loud; a parentless create is the
+        # standalone shape the client chain self-heal adopts, so it stays
+        # legal.
+        if (
+            parent_id is not None
+            and parse_date_node_id(object_id) is not None
+            and parent_id != date_chain_parent_id(object_id)
+        ):
+            raise MoveGuardError(
+                f"{op_type}: node {object_id} is a date-chain node;"
+                " it can only be created at its deterministic chain parent",
+                op_type,
+            )
 
         with self._conn:
             self._conn.execute(
@@ -1292,6 +1329,17 @@ class LocalStore:
             # anyway, so the guard surfaces it friendly).
             raise MoveGuardError(
                 f"{op_type}: node {object_id} is a class; classes are always roots and cannot have a parent",
+                op_type,
+            )
+        # Date-chain parenting lock (SCHEMA.md "Datetime"): a date node may
+        # ONLY live under its deterministic chain parent (year → root,
+        # month → year, day → month). The chain self-heal re-issues exactly
+        # this move, so the chain-correct parent stays legal; any other
+        # target is a reparenting attempt and fails loud.
+        if parse_date_node_id(object_id) is not None and parent_id != date_chain_parent_id(object_id):
+            raise MoveGuardError(
+                f"{op_type}: node {object_id} is a date-chain node;"
+                " its parent is locked to the deterministic chain parent",
                 op_type,
             )
 
@@ -1590,6 +1638,14 @@ class LocalStore:
     def _apply_class_create(self, env: RelayEnvelope) -> bool:
         payload = env.payload
         class_id = str(payload["classId"])
+        # Date-chain class lock (SCHEMA.md "Datetime"): a date node is a
+        # journal entry, never a class — declaring it one (fresh or the
+        # conversion flip) would sever its identity.
+        if parse_date_node_id(class_id) is not None:
+            raise MoveGuardError(
+                f"class.create: node {class_id} is a date-chain node; it can never be declared a class",
+                "class.create",
+            )
         ts = _envelope_ts(env)
         # Registry ``name`` is a denormalized cache of the class node's title
         # text (NOT NULL — the empty string is the absent sentinel; the
@@ -1745,6 +1801,17 @@ class LocalStore:
         object_id = str(payload["objectId"])
         class_id = str(payload["classId"])
         self._require_node(env.workspace_id, object_id, op_type)
+        # Date-chain class lock (SCHEMA.md "Datetime"): the precision's
+        # system class IS the date node's identity — removing it is illegal.
+        # Unassigning a FOREIGN class stays legal: it cleans up a legacy
+        # violation rather than freezing one.
+        locked_date_class = date_chain_class_id(object_id)
+        if locked_date_class is not None and class_id == locked_date_class:
+            raise MoveGuardError(
+                f"{op_type}: node {object_id} is a date-chain node;"
+                f" its {locked_date_class} system class cannot be removed",
+                op_type,
+            )
         with self._conn:
             self._class_member_remove(object_id, class_id, env)
             self._recompute_class_ids(object_id)
