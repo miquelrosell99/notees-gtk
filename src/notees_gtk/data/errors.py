@@ -40,10 +40,12 @@ class CycleError(StoreError):
 
 
 class MoveGuardError(StoreError):
-    """Cross-row tree guard: a node may never move under itself or its own
-    descendant, and a class node may never move under any parent (classes
-    are always roots — the friendly surface of the node table's
-    ``is_class = 0 OR parent_id IS NULL`` CHECK)."""
+    """Structural guard: a class node may never take a parent (classes are
+    always roots — the friendly surface of the node table's
+    ``is_class = 0 OR parent_id IS NULL`` CHECK), a date-chain node's
+    structure is FIXED — its parent is the deterministic chain parent, its
+    class set is its precision's system class (never declared a class
+    itself) — and a node may never move into its own subtree."""
 
 
 class NotFoundError(StoreError):

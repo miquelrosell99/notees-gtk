@@ -28,10 +28,13 @@ import re
 from datetime import date
 
 __all__ = [
+    "DATE_CHAIN_CLASS_UUIDS",
     "DATE_UUID_MAX_YEAR",
     "DATE_UUID_MIN_YEAR",
     "TIME_OF_DAY_PATTERN",
     "chain_node_ids",
+    "date_chain_class_id",
+    "date_chain_parent_id",
     "date_node_id",
     "day_node_id",
     "is_valid_time_of_day",
@@ -109,6 +112,40 @@ def date_node_id(iso_date: str, precision: str) -> str:
 def chain_node_ids(iso_date: str) -> dict[str, str]:
     """The full chain for a date: year (root) → month (under year) → day."""
     return {"year": year_node_id(iso_date), "month": month_node_id(iso_date), "day": day_node_id(iso_date)}
+
+
+#: The ONE system class a date-chain node may carry, by precision (seeds.ts
+#: ``SYSTEM_CLASS_UUIDS`` year/month/day — the date-chain class lock,
+#: SCHEMA.md "Datetime", owner 2026-10-13).
+DATE_CHAIN_CLASS_UUIDS = {
+    "year": "00000000-0000-0000-0001-000000000003",
+    "month": "00000000-0000-0000-0001-000000000004",
+    "day": "00000000-0000-0000-0001-000000000005",
+}
+
+
+def date_chain_parent_id(node_id: str) -> str | None:
+    """The parent a date-chain node is LOCKED to (SCHEMA.md "Datetime",
+    owner 2026-10-13): year → None (workspace root), month → its year node,
+    day → its month node; None for a non-date id."""
+    parsed = parse_date_node_id(node_id)
+    if parsed is None:
+        return None
+    iso = f"{parsed['year']:04d}-{parsed['month']:02d}-{parsed['day']:02d}"
+    if parsed["precision"] == "year":
+        return None
+    if parsed["precision"] == "month":
+        return year_node_id(iso)
+    return month_node_id(iso)
+
+
+def date_chain_class_id(node_id: str) -> str | None:
+    """The ONE system class a date-chain node may carry — its class set is
+    locked: year/month/day by precision; None for a non-date id."""
+    parsed = parse_date_node_id(node_id)
+    if parsed is None:
+        return None
+    return DATE_CHAIN_CLASS_UUIDS[str(parsed["precision"])]
 
 
 def parse_date_node_id(node_id: str) -> dict[str, int | str] | None:

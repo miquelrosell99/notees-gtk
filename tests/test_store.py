@@ -35,6 +35,7 @@ import pytest
 from conftest import make_server_snapshot
 
 from notees_gtk.core.protocol.clock import Hlc
+from notees_gtk.core.protocol.dates import chain_node_ids
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import PROTOCOL_VERSION, RelayEnvelope
 from notees_gtk.data.errors import (
@@ -1140,6 +1141,151 @@ class TestObjectMove:
         assert store.apply_remote(move_env(uid("c"), parent_id=uid("q"), hlc=(4, 0))) is False
         assert store.node(WS_A, uid("c")).parent_id == uid("p")
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(1,)]
+
+
+#: The system class a date-chain node is locked to, by precision (seeds.ts
+#: ``SYSTEM_CLASS_UUIDS`` parity — dates.py ``DATE_CHAIN_CLASS_UUIDS``).
+DATE_CLASS_IDS = {
+    "year": "00000000-0000-0000-0001-000000000003",
+    "month": "00000000-0000-0000-0001-000000000004",
+    "day": "00000000-0000-0000-0001-000000000005",
+}
+#: A non-date system class (task) — the FOREIGN class in the lock tests.
+TASK_CLASS_ID = "00000000-0000-0000-0001-000000000012"
+
+
+class TestDateChainLocks:
+    """The date-chain parent+class locks (SCHEMA.md "Datetime", owner
+    2026-10-13 — the TS slice a35bb7c5 port; the lockstep law requires all
+    three clients to reject alike). A date node's parent IS its
+    deterministic chain parent and its class set IS its precision's system
+    class — nothing else, never declared a class itself."""
+
+    @staticmethod
+    def _seed_chain(store: LocalStore, iso: str, base: int) -> dict[str, str]:
+        """Create a full legal chain (year at root, month under year, day
+        under month, each carrying its precision's system class)."""
+        chain = chain_node_ids(iso)
+        store.apply_remote(
+            create_env(chain["year"], parent_id=None, class_ids=(DATE_CLASS_IDS["year"],), hlc=(base, 0))
+        )
+        store.apply_remote(
+            create_env(
+                chain["month"],
+                parent_id=chain["year"],
+                class_ids=(DATE_CLASS_IDS["month"],),
+                hlc=(base + 1, 0),
+            )
+        )
+        store.apply_remote(
+            create_env(
+                chain["day"],
+                parent_id=chain["month"],
+                class_ids=(DATE_CLASS_IDS["day"],),
+                hlc=(base + 2, 0),
+            )
+        )
+        return chain
+
+    def test_move_rejects_anywhere_but_the_chain_parent(self, store: LocalStore) -> None:
+        chain_a = self._seed_chain(store, "2026-05-06", 1)
+        chain_b = self._seed_chain(store, "2027-06-07", 10)
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(20, 0)))
+        # Under an arbitrary page.
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(move_env(chain_a["day"], parent_id=uid("p"), hlc=(21, 0)))
+        # To the root (the day/month chain parent is not None).
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(move_env(chain_a["day"], parent_id=None, hlc=(22, 0)))
+        # A month under a DIFFERENT date's year node.
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(move_env(chain_a["month"], parent_id=chain_b["year"], hlc=(23, 0)))
+        # Non-date nodes stay movable (the guard keys on the date id).
+        store.apply_remote(create_env(uid("c"), parent_id=None, hlc=(24, 0)))
+        store.apply_remote(move_env(uid("c"), parent_id=uid("p"), hlc=(25, 0)))
+        # The rejected moves changed nothing.
+        assert store.node(WS_A, chain_a["day"]).parent_id == chain_a["month"]
+        assert store.node(WS_A, chain_a["month"]).parent_id == chain_a["year"]
+
+    def test_move_allows_the_chain_correct_parent(self, store: LocalStore) -> None:
+        """The client chain self-heal re-issues exactly these moves, so the
+        chain-correct parent stays legal."""
+        chain = self._seed_chain(store, "2026-05-06", 1)
+        store.apply_remote(move_env(chain["day"], parent_id=chain["month"], hlc=(20, 0)))
+        store.apply_remote(move_env(chain["month"], parent_id=chain["year"], hlc=(21, 0)))
+        store.apply_remote(move_env(chain["year"], parent_id=None, hlc=(22, 0)))
+        assert store.node(WS_A, chain["day"]).parent_id == chain["month"]
+        assert store.node(WS_A, chain["month"]).parent_id == chain["year"]
+        assert store.node(WS_A, chain["year"]).parent_id is None
+
+    def test_create_rejects_non_chain_parent_but_parentless_and_chain_shapes_stay_legal(
+        self, store: LocalStore
+    ) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        stray = chain_node_ids("2029-03-04")
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(create_env(stray["day"], parent_id=uid("p"), hlc=(2, 0)))
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(create_env(stray["year"], parent_id=uid("p"), hlc=(3, 0)))
+        # The standalone shape (parentless) is legal — the client chain
+        # self-heal adopts it onto the chain.
+        store.apply_remote(create_env(stray["day"], parent_id=None, hlc=(4, 0)))
+        assert store.node(WS_A, stray["day"]).parent_id is None
+        # The chain-correct shape (a fresh chain): year at root, month under
+        # year, day under month, each with the date classes.
+        fresh = chain_node_ids("2029-04-07")
+        store.apply_remote(
+            create_env(fresh["year"], parent_id=None, class_ids=(DATE_CLASS_IDS["year"],), hlc=(5, 0))
+        )
+        store.apply_remote(
+            create_env(
+                fresh["month"],
+                parent_id=fresh["year"],
+                class_ids=(DATE_CLASS_IDS["month"],),
+                hlc=(6, 0),
+            )
+        )
+        store.apply_remote(
+            create_env(fresh["day"], parent_id=fresh["month"], class_ids=(DATE_CLASS_IDS["day"],), hlc=(7, 0))
+        )
+        assert store.node(WS_A, fresh["day"]).parent_id == fresh["month"]
+
+    def test_create_rejects_foreign_class_fresh_and_reissued(self, store: LocalStore) -> None:
+        """The classIds guard runs BEFORE the re-create early return, so the
+        class.assign re-issued-create add carrier is covered too."""
+        chain = self._seed_chain(store, "2026-05-06", 1)
+        stray = chain_node_ids("2029-05-06")
+        # Fresh create with a foreign class.
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(create_env(stray["day"], class_ids=(TASK_CLASS_ID,), hlc=(20, 0)))
+        # The re-issued create (the OR-Set add carrier) on an EXISTING date
+        # node — the guard fires before the early return.
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(create_env(chain["day"], class_ids=(TASK_CLASS_ID,), hlc=(21, 0)))
+        # Its own system class re-add stays legal (the ensureDateChain carrier).
+        store.apply_remote(create_env(chain["day"], class_ids=(DATE_CLASS_IDS["day"],), hlc=(22, 0)))
+
+    def test_unassign_refuses_the_system_class_but_foreign_cleanup_stays_legal(self, store: LocalStore) -> None:
+        chain = self._seed_chain(store, "2026-05-06", 1)
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(
+                class_env("class.unassign", DATE_CLASS_IDS["day"], hlc=(20, 0), objectId=chain["day"])
+            )
+        # A foreign class was never assignable; removing one is legal
+        # cleanup of a legacy violation, not a lock breach.
+        store.apply_remote(
+            class_env(
+                "class.unassign",
+                "0192a000-0000-7000-8000-0000000000f1",
+                hlc=(21, 0),
+                objectId=chain["day"],
+            )
+        )
+
+    def test_class_create_never_declares_a_date_node_a_class(self, store: LocalStore) -> None:
+        chain = self._seed_chain(store, "2026-05-06", 1)
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(class_env("class.create", chain["year"], hlc=(20, 0), name="Year"))
 
 
 class TestObjectDelete:

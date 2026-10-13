@@ -11,7 +11,10 @@ from __future__ import annotations
 import pytest
 
 from notees_gtk.core.protocol.dates import (
+    DATE_CHAIN_CLASS_UUIDS,
     chain_node_ids,
+    date_chain_class_id,
+    date_chain_parent_id,
     date_node_id,
     day_node_id,
     is_valid_time_of_day,
@@ -69,6 +72,34 @@ class TestParseDateNodeId:
         assert parse_date_node_id("not-a-uuid") is None
         # Outside the 1900..2200 window.
         assert parse_date_node_id("00000000-0000-0000-00bb-089900000000") is None
+
+
+class TestDateChainLocks:
+    """The date-chain lock derivation (SCHEMA.md "Datetime", owner
+    2026-10-13 — ``dateChainParentId`` / ``dateChainClassId`` parity): the
+    locked parent and the one locked system class per precision."""
+
+    def test_chain_parent_round_trips_with_the_generators(self) -> None:
+        for iso in ("2020-03-04", "1999-12-31", "2100-01-01"):
+            chain = chain_node_ids(iso)
+            assert date_chain_parent_id(chain["year"]) is None
+            assert date_chain_parent_id(chain["month"]) == chain["year"]
+            assert date_chain_parent_id(chain["day"]) == chain["month"]
+
+    def test_non_date_ids_have_no_locked_parent(self) -> None:
+        assert date_chain_parent_id("0192a000-0000-7000-8000-000000000010") is None
+        assert date_chain_parent_id("not-a-uuid") is None
+
+    def test_chain_class_is_the_system_class_per_precision(self) -> None:
+        for iso in ("2020-03-04", "1999-12-31", "2100-01-01"):
+            chain = chain_node_ids(iso)
+            assert date_chain_class_id(chain["year"]) == DATE_CHAIN_CLASS_UUIDS["year"]
+            assert date_chain_class_id(chain["month"]) == DATE_CHAIN_CLASS_UUIDS["month"]
+            assert date_chain_class_id(chain["day"]) == DATE_CHAIN_CLASS_UUIDS["day"]
+
+    def test_non_date_ids_have_no_locked_class(self) -> None:
+        assert date_chain_class_id("0192a000-0000-7000-8000-000000000010") is None
+        assert date_chain_class_id("not-a-uuid") is None
 
 
 class TestTimeOfDayVocabulary:

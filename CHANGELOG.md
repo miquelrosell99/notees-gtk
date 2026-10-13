@@ -6,6 +6,40 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-13
+
+- **feat(store): parent-lock and class-lock date-chain nodes — the GTK port
+  of the monorepo's 2026-10-13 slice (TS reference commit a35bb7c5).** A date
+  node's parent IS its deterministic chain parent (year at the workspace
+  root, month under its year, day under its month) and its class set IS its
+  precision's system class — nothing else, never declared a class itself
+  (SCHEMA.md "Datetime"). The lockstep law requires all three clients to
+  reject alike, so the GTK appliers carry the same five guards, all raising
+  `MoveGuardError` (the sync engine's `_apply_guarded` skip-and-continue
+  quarantine covers them):
+  - **Domain** (`dates.py`): `date_chain_parent_id` / `date_chain_class_id`
+    derive the locked parent/class from the date id (year → `None`, month →
+    its year node, day → its month node; the one system class per precision
+    via `DATE_CHAIN_CLASS_UUIDS` — the seeds.ts year/month/day UUIDs), built
+    through the existing generators.
+  - **object.move** — any parent other than the chain parent fails loud
+    (this also rejects detach-to-root for month/day).
+  - **object.create placement** — a date id claiming a non-chain parent
+    fails loud; a parentless create stays legal (the standalone shape the
+    client chain self-heal adopts).
+  - **object.create classIds** — runs at the top of the applier, BEFORE the
+    OR-Set membership seeding and the re-create early return: every classId
+    on a date id must equal its precision's system class, so the re-issued
+    create (the class.assign add carrier, also on an existing id) is covered.
+  - **class.unassign** — the precision's system class cannot be removed;
+    unassigning a foreign class stays legal (legacy cleanup).
+  - **class.create** — a date id can never be declared a class.
+  This clears the LOCKSTEP-PENDING marker the main repo's SCHEMA.md carries
+  for the GTK appliers (no wire change — the vendored fixture corpus is
+  untouched). Verification: `uv run pytest` (6 new lock specs in
+  `test_store.py`, 4 new derivation specs in `test_dates.py`), `ruff check`
+  + `mypy src` clean.
+
 ## 2026-10-09
 
 - **fix(login): the sign-in contract matches the real server — login works
