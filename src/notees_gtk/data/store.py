@@ -645,6 +645,7 @@ class LocalStore:
             "object.update": self._apply_object_update,
             "object.delete": self._apply_object_delete,
             "object.restore": self._apply_object_restore,
+            "trash.empty": self._apply_trash_empty,
             "object.move": self._apply_object_move,
             "class.create": self._apply_class_create,
             "class.update": self._apply_class_update,
@@ -1212,42 +1213,91 @@ class LocalStore:
         self._require_node(env.workspace_id, object_id, op_type)
         permanent = bool(env.payload.get("permanent"))
         ts = _envelope_ts(env)
-        ids = self._subtree_ids(env.workspace_id, object_id)
-        placeholders = ", ".join("?" for _ in ids)
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, ?)",
-                (object_id, ts, 1 if permanent else 0),
-            )
-            if not permanent:
+        if not permanent:
+            ids = self._subtree_ids(env.workspace_id, object_id)
+            placeholders = ", ".join("?" for _ in ids)
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, 0)",
+                    (object_id, ts),
+                )
                 # Soft delete: trash the whole subtree (restore is whole-tree),
                 # keep the tree rows for restore.
                 self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
-                return True
-            # Permanent delete: hard-remove the subtree and every derived row.
-            self._conn.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", ids)
-            self._conn.execute(
-                f"DELETE FROM node_child_order WHERE parent_id IN ({placeholders}) OR child_id IN ({placeholders})",
-                [*ids, *ids],
-            )
-            for table in (
-                "class_member_set",
-                "tag_member_set",
-                "property_value",
-                "property_value_tombstone",
-                "property_value_element_tombstone",
-                "node_asset",
-            ):
-                self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", ids)
-            self._conn.execute(
-                f"DELETE FROM collection_member"
-                f" WHERE collection_id IN ({placeholders}) OR object_id IN ({placeholders})",
-                [*ids, *ids],
-            )
-            self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", ids)
-            self._conn.execute(
-                f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
-            )
+            return True
+        with self._conn:
+            self._permanently_delete_subtree(env.workspace_id, object_id, ts)
+        return True
+
+    def _permanently_delete_subtree(self, workspace_id: str, object_id: str, ts: str) -> None:
+        """Hard-delete a subtree and record the root's permanent retention row
+ the shared body of ``object.delete {permanent: true}`` and
+        ``trash.empty`` (lockstep with the TS reference's
+        ``permanentlyDeleteSubtree``, ``packages/store/src/appliers.ts``).
+        Every descendant table owned by the subtree is purged; the root's
+        ``is_permanent = 1`` trash row survives with ``deleted_at = ts``."""
+        ids = self._subtree_ids(workspace_id, object_id)
+        placeholders = ", ".join("?" for _ in ids)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, 1)",
+            (object_id, ts),
+        )
+        self._conn.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", ids)
+        self._conn.execute(
+            f"DELETE FROM node_child_order WHERE parent_id IN ({placeholders}) OR child_id IN ({placeholders})",
+            [*ids, *ids],
+        )
+        for table in (
+            "class_member_set",
+            "tag_member_set",
+            "property_value",
+            "property_value_tombstone",
+            "property_value_element_tombstone",
+            "node_asset",
+        ):
+            self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", ids)
+        self._conn.execute(
+            f"DELETE FROM collection_member"
+            f" WHERE collection_id IN ({placeholders}) OR object_id IN ({placeholders})",
+            [*ids, *ids],
+        )
+        self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", ids)
+        self._conn.execute(
+            f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
+        )
+
+    def _apply_trash_empty(self, env: RelayEnvelope) -> bool:
+        """Empty the trash (lockstep with the TS reference's
+        ``applyTrashEmpty``, ``packages/store/src/appliers.ts``):
+        permanently delete every node carrying a non-permanent trash row.
+        The root set is snapshotted at apply time, ordered by node_id for
+        determinism, and each root runs the same subtree purge as
+        ``object.delete {permanent: true}``. A root whose node row is gone
+        (consumed by an earlier iteration's subtree, or a legacy dangling
+        trash row) is swept, never fatal. Replay is idempotent: an empty
+        trash table no-ops.
+
+        Concurrency is plain log order, not special-cased: an
+        ``object.restore`` landing BEFORE this op removed the node from the
+        apply-time set (it survives); one landing after is LWW against the
+        permanent tombstones like any delete pair."""
+        ts = _envelope_ts(env)
+        workspace_id = env.workspace_id
+        roots = [
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT node_id FROM trash WHERE is_permanent = 0 ORDER BY node_id"
+            ).fetchall()
+        ]
+        with self._conn:
+            for node_id in roots:
+                if self._node_row(workspace_id, node_id) is None:
+                    # Consumed by an earlier iteration's subtree purge, or a
+                    # legacy dangling trash row with no node row: sweep the
+                    # stale row and skip — replay never fails on it.
+                    self._conn.execute("DELETE FROM trash WHERE node_id = ?", (node_id,))
+                    continue
+                self._permanently_delete_subtree(workspace_id, node_id, ts)
         return True
 
     def _apply_object_restore(self, env: RelayEnvelope) -> bool:

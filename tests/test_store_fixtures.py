@@ -947,6 +947,59 @@ class TestPropertyDatetimeFixture:
         assert day is not None and day.parent_id == month.id
 
 
+class TestTrashEmptyFixture:
+    """trash-empty.json: the bulk permanent delete hard-removes every trashed
+    root's subtree (an independently-trashed descendant inside one root's
+    subtree rides the purge), spares the page restored before the empty, and
+    leaves exactly one permanent retention row per emptied root."""
+
+    A = "0192a000-0000-7000-8000-0000000000f3"
+    A_CHILD = "0192a000-0000-7000-8000-0000000000f4"
+    B = "0192a000-0000-7000-8000-0000000000f5"
+    B_CHILD = "0192a000-0000-7000-8000-0000000000f6"
+    C = "0192a000-0000-7000-8000-0000000000f7"
+
+    def _replay(self, store: LocalStore) -> None:
+        for envelope in load_fixture("trash-empty.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+
+    def test_replay_hard_deletes_trashed_subtrees_and_spares_the_restored_page(self, store: LocalStore) -> None:
+        self._replay(store)
+        for node_id in (self.A, self.A_CHILD, self.B, self.B_CHILD):
+            assert store.node(WS, node_id) is None, node_id
+        restored = store.node(WS, self.C)
+        assert restored is not None
+        assert (restored.is_active, restored.present_as_main) == (True, True)
+
+    def test_retention_rows_are_exactly_the_two_emptied_roots_and_permanent(self, store: LocalStore) -> None:
+        self._replay(store)
+        fixture_ids = (self.A, self.A_CHILD, self.B, self.B_CHILD, self.C)
+        rows = [
+            (node_id, is_permanent)
+            for (node_id, is_permanent) in raw(store, "SELECT node_id, is_permanent FROM trash ORDER BY node_id")
+            if node_id in fixture_ids
+        ]
+        assert rows == [(self.A, 1), (self.B, 1)]
+
+    def test_a_second_empty_with_a_fresh_envelope_is_a_no_op(self, store: LocalStore) -> None:
+        self._replay(store)
+        second = RelayEnvelope.model_validate(
+            {
+                "protocolVersion": 3,
+                "workspaceId": WS,
+                "actorId": "0192a000-0000-7000-8000-000000000002",
+                "deviceId": "fixture-test-device",
+                "hlc": {"physical": 1727200009000, "logical": 0},
+                "affectedNodeIds": [],
+                "opType": "trash.empty",
+                "timestamp": "2026-09-24T12:00:09.000Z",
+                "payload": {},
+            }
+        )
+        assert store.apply_remote(second) is True
+        assert raw(store, "SELECT COUNT(*) FROM trash WHERE is_permanent = 0") == [(0,)]
+
+
 class TestCycleFixture:
     def test_cycle_closing_envelopes_throw_and_roll_back(self, store: LocalStore) -> None:
         root, leaf, leaf_extends_root, root_extends_leaf, root_extends_root_self = (

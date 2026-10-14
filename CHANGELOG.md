@@ -6,6 +6,50 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-14
+
+- **feat(protocol): `trash.empty` bulk op — the GTK lockstep port of the
+  monorepo's 2026-10-14 slice.** The wire gains one additive op (envelope v3,
+  no protocol version bump): empty the trash by permanently deleting every
+  node carrying a non-permanent trash row. Payload is a strict empty object —
+  any key is rejected outright (zod `z.object({}).strict()` parity); the
+  target set is evaluated at APPLY time against the trash table, never an
+  author-time id list, so an `object.restore` landing before the op keeps its
+  node alive and one landing after is plain log-order LWW against the
+  permanent tombstones. Replay is idempotent: an empty trash table no-ops.
+  - **Wire models** (`op_types.py`, `payloads.py`): `trash.empty` joins
+    `KNOWN_OP_TYPES` (23 op types, docstring count updated); zero-field
+    `TrashEmptyPayload` registers in `PAYLOAD_SCHEMAS` (apply-time payload
+    validation covers it automatically) plus a `build_trash_empty()` builder.
+  - **Applier** (`store.py`): the permanent branch of `object.delete` is
+    extracted into `_permanently_delete_subtree` (hard-delete the subtree,
+    purge the descendant derived rows, keep the root's `is_permanent = 1`
+    retention row with `deleted_at` = the envelope's timestamp) — the shared
+    body the new `_apply_trash_empty` runs once per snapshotted root
+    (`is_permanent = 0` rows ordered by node_id for determinism). A root
+    whose node row is gone — consumed by an earlier iteration's subtree
+    purge, or a legacy dangling trash row — is swept, never fatal. The GTK
+    purge table set is this repo's own permanent-delete list (tag
+    membership, collection membership, and class bindings in addition to the
+    TS reference's node/property/asset rows; the TS `node_link`/`edge`/
+    `node_stats` projections have no GTK tables — derived-schema parity, not
+    a semantic divergence).
+  - **Fixture**: `tests/fixtures/wire/trash-empty.json` vendored verbatim
+    from the monorepo (sha256 `12b63948…a222da`, byte-identical), registered
+    in `test_fixtures.py` and replayed by a new `TestTrashEmptyFixture`
+    (every trashed subtree hard-deleted, the restored-before-empty page
+    active, exactly two permanent retention rows, a second empty with a
+    fresh envelope no-ops).
+  - **Tests**: 5 unit specs in `test_store.py` (multiple trashed roots, an
+    independently-trashed descendant purged as its own root vs. consumed by
+    the parent's earlier purge — both id orderings, restore-before-empty,
+    idempotent second apply, stale trash row swept not fatal), payload-shape
+    specs in `test_payloads.py`, and the `KNOWN_OP_TYPES` parity set in
+    `test_envelope.py`.
+  Verification: `uv run pytest` (798 passed, 4 skipped), `uv run ruff
+  check`, `uv run mypy src` — all green. The vendored corpus diffs clean
+  against the monorepo work branch's `packages/protocol/fixtures/`.
+
 ## 2026-10-13
 
 - **feat(store): parent-lock and class-lock date-chain nodes — the GTK port

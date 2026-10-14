@@ -63,6 +63,10 @@ wire node fields gain ``description`` — the page subtitle in the core page
 chrome (the Capacities header precedent), plain text max 512 chars,
 ``object.update``-only with the same presence-writes / present-null-clears
 semantics.
+
+Trash batch: ``trash.empty`` — the strict empty payload
+(the apply-time trash table is the target set; any key is rejected), the
+bulk-permanent-delete companion to ``object.delete {permanent: true}``.
 """
 
 from __future__ import annotations
@@ -86,6 +90,7 @@ __all__ = [
     "build_object_restore",
     "build_object_update",
     "build_tag_unassign",
+    "build_trash_empty",
     "build_workspace_feature_set",
     "payload_schema_for",
     "validate_payload",
@@ -201,6 +206,14 @@ class ObjectDeletePayload(_Strict):
 
 class ObjectRestorePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
+
+
+class TrashEmptyPayload(_Strict):
+    """The ``trash.empty`` payload: a strict empty object — any key is
+    rejected outright (zod ``z.object({}).strict()`` parity,
+    ``packages/protocol/src/op-types.ts``). The op's target set is evaluated
+    at APPLY time against the trash table, never an author-time id list, so
+    the payload carries nothing."""
 
 
 class ObjectMovePayload(_Strict):
@@ -450,6 +463,7 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "object.update": ObjectUpdatePayload,
     "object.delete": ObjectDeletePayload,
     "object.restore": ObjectRestorePayload,
+    "trash.empty": TrashEmptyPayload,
     "object.move": ObjectMovePayload,
     "class.create": ClassCreatePayload,
     "class.update": ClassUpdatePayload,
@@ -597,6 +611,12 @@ def build_object_delete(object_id: str, *, permanent: bool = False) -> dict[str,
 def build_object_restore(object_id: str) -> dict[str, Any]:
     """Build an ``object.restore`` payload (whole-tree trash restore)."""
     return _validated("object.restore", {"objectId": object_id})
+
+
+def build_trash_empty() -> dict[str, Any]:
+    """Build a ``trash.empty`` payload — strictly ``{}`` (the apply-time trash
+    table is the target set; nothing rides the wire)."""
+    return _validated("trash.empty", {})
 
 
 def build_object_move(

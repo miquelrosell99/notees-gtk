@@ -28,6 +28,7 @@ from notees_gtk.core.protocol.payloads import (
     build_object_move,
     build_object_update,
     build_tag_unassign,
+    build_trash_empty,
     build_workspace_feature_set,
     payload_schema_for,
     validate_payload,
@@ -51,6 +52,23 @@ class TestRegistry:
     def test_schema_lookup(self) -> None:
         assert payload_schema_for("tag.unassign") is PAYLOAD_SCHEMAS["tag.unassign"]
         assert payload_schema_for("nope") is None
+
+
+class TestTrashEmptyPayload:
+    """The ``trash.empty`` payload is a strict empty object: the apply-time
+    trash table is the target set, so nothing rides the wire and any key is
+    rejected outright (zod ``z.object({}).strict()`` parity)."""
+
+    def test_empty_object_validates(self) -> None:
+        validate_payload("trash.empty", {})
+
+    @pytest.mark.parametrize("key", ["objectId", "permanent", "hlc", "name"])
+    def test_any_key_is_rejected(self, key: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("trash.empty", {key: "x"})
+
+    def test_builder_sends_the_strict_empty_object(self) -> None:
+        assert build_trash_empty() == {}
 
 
 class TestTitleIsContentStrictness:

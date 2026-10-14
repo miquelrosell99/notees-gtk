@@ -1,7 +1,7 @@
 """Known operation types for the relay sync protocol (v2).
 
 Mirrors ``packages/protocol/src/op-types.ts`` (the op registry): exactly
-these 22 op types have payload schemas server-side. The envelope schema itself
+these 23 op types have payload schemas server-side. The envelope schema itself
 accepts any non-empty ``opType`` string (see ``envelope.ts``); unknown op types
 are rejected at relay ingest with ``validation_failed`` (422). Producers should
 stick to this registry — that 422 maps to the quarantine path.
@@ -19,6 +19,8 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         "object.delete",
         "object.restore",
         "object.move",
+        # Trash
+        "trash.empty",
         # Classes
         "class.create",
         "class.update",
