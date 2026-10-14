@@ -83,6 +83,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/property-value-elements.json",
     "wire/typed-link-mark.json",
     "wire/typed-link-mark-deleted.json",
+    "wire/trash-empty.json",
     "wire/workspace-feature-set.json",
 ]
 

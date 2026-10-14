@@ -193,6 +193,10 @@ def restore_env(node_id: str, *, hlc: tuple[int, int]) -> RelayEnvelope:
     return make_env("object.restore", {"objectId": node_id}, hlc=hlc, affected=(node_id,))
 
 
+def trash_empty_env(*, hlc: tuple[int, int]) -> RelayEnvelope:
+    return make_env("trash.empty", {}, hlc=hlc)
+
+
 def class_env(op_type: str, class_id: str, *, hlc: tuple[int, int], name: Any = UNSET, **fields: Any) -> RelayEnvelope:
     """Build a class op envelope; the ``name`` convenience wraps into a text
     token (``contentAst``) exactly like the client builder."""
@@ -1376,6 +1380,81 @@ class TestObjectRestore:
         store.apply_remote(delete_env(uid("p"), permanent=True, hlc=(2, 0)))
         with pytest.raises(NotFoundError, match="does not exist"):
             store.apply_remote(restore_env(uid("p"), hlc=(3, 0)))
+
+
+class TestTrashEmpty:
+    """Lockstep with the TS reference's ``applyTrashEmpty``: the apply-time
+    non-permanent trash rows are the root set (snapshotted, ordered by
+    node_id for determinism); each root rides the same subtree purge as
+    ``object.delete {permanent: true}``; a root whose node row is gone is
+    swept, never fatal; a second empty on an emptied trash no-ops."""
+
+    def test_empty_permanently_deletes_every_trashed_root_and_its_riders(self, store: LocalStore, tmp_path: Path) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("c"), parent_id=uid("p"), content="child", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("s"), parent_id=None, hlc=(3, 0)))
+        # The child is trashed on its own BEFORE the parent — its own trash
+        # row makes it an independent root of the apply-time set. uid("c")
+        # sorts before uid("p"), so the child is purged first as its own
+        # root (keeping its retention row) and the parent's subtree no
+        # longer contains it; the opposite order (the fixture's f3/f4 case)
+        # consumes the child's row in the parent's purge instead.
+        store.apply_remote(delete_env(uid("c"), hlc=(4, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(5, 0)))
+        store.apply_remote(delete_env(uid("s"), hlc=(6, 0)))
+
+        store.apply_remote(trash_empty_env(hlc=(7, 0)))
+        for label in ("p", "c", "s"):
+            assert store.node(WS_A, uid(label)) is None
+        # Retention rows: every snapshotted root, permanent.
+        assert raw_rows(store, "SELECT node_id, is_permanent FROM trash ORDER BY node_id") == [
+            (uid("c"), 1),
+            (uid("p"), 1),
+            (uid("s"), 1),
+        ]
+
+    def test_child_trash_row_consumed_by_the_parents_earlier_purge_is_swept(self, store: LocalStore, tmp_path: Path) -> None:
+        # uid("p") sorts before uid("s"): the parent's purge runs first and
+        # consumes the independently-trashed child's node row AND trash row;
+        # the child's snapshot turn then finds no node row and sweeps — no
+        # retention row, no failure (the fixture's f3/f4 shape, unit-tested).
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("s"), parent_id=uid("p"), content="child", hlc=(2, 0)))
+        store.apply_remote(delete_env(uid("s"), hlc=(3, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(4, 0)))
+
+        store.apply_remote(trash_empty_env(hlc=(5, 0)))
+        assert store.node(WS_A, uid("p")) is None
+        assert store.node(WS_A, uid("s")) is None
+        assert raw_rows(store, "SELECT node_id, is_permanent FROM trash") == [(uid("p"), 1)]
+
+    def test_restore_landing_before_the_empty_keeps_the_node_alive(self, store: LocalStore, tmp_path: Path) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(2, 0)))
+        store.apply_remote(restore_env(uid("p"), hlc=(3, 0)))
+        store.apply_remote(trash_empty_env(hlc=(4, 0)))
+        assert store.node(WS_A, uid("p")).is_active is True
+        assert raw_rows(store, "SELECT COUNT(*) FROM trash") == [(0,)]
+
+    def test_second_empty_with_a_fresh_envelope_is_a_no_op(self, store: LocalStore, tmp_path: Path) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(2, 0)))
+        store.apply_remote(trash_empty_env(hlc=(3, 0)))
+        store.apply_remote(trash_empty_env(hlc=(4, 0)))
+        assert raw_rows(store, "SELECT node_id, is_permanent FROM trash") == [(uid("p"), 1)]
+
+    def test_stale_trash_row_without_a_node_row_is_swept_not_fatal(self, store: LocalStore, tmp_path: Path) -> None:
+        store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(delete_env(uid("p"), hlc=(2, 0)))
+        # Legacy dangling row: a trash row whose node row is long gone.
+        store._conn.execute(  # noqa: SLF001
+            "INSERT INTO trash (node_id, deleted_at, is_permanent) VALUES (?, '2026-01-01T00:00:00.000Z', 0)",
+            (uid("ghost"),),
+        )
+        store.apply_remote(trash_empty_env(hlc=(3, 0)))
+        assert store.node(WS_A, uid("p")) is None
+        # The ghost row was swept; the emptied root's permanent row survived.
+        assert raw_rows(store, "SELECT node_id FROM trash ORDER BY node_id") == [(uid("p"),)]
 
 
 class TestClassOps:

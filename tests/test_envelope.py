@@ -56,6 +56,7 @@ class TestOpTypeRegistry:
                     "object.update",
                     "object.delete",
                     "object.restore",
+                    "trash.empty",
                     "object.move",
                     "class.create",
                     "class.update",
