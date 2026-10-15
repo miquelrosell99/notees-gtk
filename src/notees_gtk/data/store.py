@@ -330,6 +330,32 @@ class EffectiveProperty:
     display: str | None = None
 
 
+def _content_class_link_ids(tokens: Any) -> list[str]:
+    """Content-asserted membership (the no-divergence law): every ``class_link`` token in a stored content stream IS a
+    classing of its node — the object appliers apply the OR-set add, so any
+    writer converges. Deep walk (tokens nest in quote/heading children)."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def walk(ts: Any) -> None:
+        if not isinstance(ts, list):
+            return
+        for token in ts:
+            if not isinstance(token, dict):
+                continue
+            if token.get("type") == "class_link":
+                class_id = token.get("classId")
+                if isinstance(class_id, str) and class_id not in seen:
+                    seen.add(class_id)
+                    found.append(class_id)
+            children = token.get("children")
+            if isinstance(children, list):
+                walk(children)
+
+    walk(tokens)
+    return found
+
+
 def _envelope_ts(env: RelayEnvelope) -> str:
     """Return the envelope timestamp as ISO-8601, falling back to now."""
     return env.timestamp.isoformat() if env.timestamp is not None else _now_iso()
@@ -994,14 +1020,24 @@ class LocalStore:
         parent_id = str(parent_id) if parent_id is not None else None
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
         tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
+        present_as_main_pre = payload.get("presentAsMain")
+        present_as_main_pre = (1 if parent_id is None else 0) if present_as_main_pre is None else int(bool(present_as_main_pre))
         # Date-chain class lock (SCHEMA.md "Datetime"): a date node's class
         # set is FIXED to its precision's system class. The re-issued
         # object.create is the OR-Set add carrier (class.assign rides it,
         # also on an existing id), so the guard runs BEFORE the membership
         # seeding below and the re-create early return.
+        # Content-asserted membership: an inline block keeps the rich stream,
+        # so its class_link tokens class the node; a document-chrome node's
+        # content flattens below (text-only — nothing to assert).
+        link_class_ids = (
+            []
+            if present_as_main_pre == 1
+            else _content_class_link_ids(payload.get("contentAst"))
+        )
         locked_date_class = date_chain_class_id(object_id)
         if locked_date_class is not None:
-            for class_id in class_ids:
+            for class_id in [*class_ids, *link_class_ids]:
                 if class_id != locked_date_class:
                     raise MoveGuardError(
                         f"{op_type}: node {object_id} is a date-chain node;"
@@ -1036,12 +1072,12 @@ class LocalStore:
         # stayed stale, rendering the node under TWO parents. The exceptions
         # are the classIds/tagIds OR-Set seeds below, the convergence carriers
         # for concurrent creates (they cannot move the node).
-        for class_id in class_ids:
+        for class_id in [*class_ids, *link_class_ids]:
             self._class_member_upsert(object_id, class_id, env)
         for tag_id in tag_ids:
             self._tag_member_upsert(object_id, tag_id, env)
         if self._node_row(env.workspace_id, object_id) is not None:
-            if class_ids:
+            if class_ids or link_class_ids:
                 self._recompute_class_ids(object_id)
             if tag_ids:
                 self._recompute_tag_ids(object_id)
@@ -1203,9 +1239,54 @@ class LocalStore:
         sets.append("actor_id = ?")
         values.append(env.actor_id)
         values.extend([env.workspace_id, object_id])
+        # Content-asserted membership: the class_link tokens about to be
+        # stored class the node (any writer converges). Class rows flatten
+        # (never carry links); date-chain nodes' class set is fixed — a
+        # foreign link there is the same illegal state as a foreign classId
+        # on create. The adds land after the write, inside one transaction.
+        asserted_class_ids: list[str] = []
+        if payload.get("contentAst") is not None:
+            flatten = bool(row[3])
+            asserted_class_ids = [] if flatten else _content_class_link_ids(payload["contentAst"])
+            locked_date_class = date_chain_class_id(object_id)
+            if locked_date_class is not None and any(
+                cid != locked_date_class for cid in asserted_class_ids
+            ):
+                raise MoveGuardError(
+                    f"{op_type}: node {object_id} is a date-chain node;"
+                    f" it can only carry the {locked_date_class} system class",
+                    op_type,
+                )
         with self._conn:
             self._conn.execute(f"UPDATE nodes SET {', '.join(sets)} WHERE workspace_id = ? AND id = ?", values)
+            for class_id in asserted_class_ids:
+                self._class_member_upsert(object_id, class_id, env)
+            if asserted_class_ids:
+                self._recompute_class_ids(object_id)
         return True
+
+    def _sweep_class_membership(self, class_id: str, purge: bool) -> None:
+        """A deleted class leaves every node's class_ids (the no-divergence
+        law's deletion arm): ``purge`` deletes the membership rows outright
+        (permanent delete / trash.empty), otherwise the pairs are tombstoned
+        (trash — restore brings the class node back; membership is
+        re-assertable from content). Lockstep with the TS reference's
+        ``sweepClassMembership`` (packages/store/src/appliers.ts)."""
+        members = [
+            str(r[0])
+            for r in self._conn.execute(
+                "SELECT node_id FROM class_member_set WHERE class_id = ? AND present = 1",
+                (class_id,),
+            ).fetchall()
+        ]
+        if purge:
+            self._conn.execute("DELETE FROM class_member_set WHERE class_id = ?", (class_id,))
+        else:
+            self._conn.execute(
+                "UPDATE class_member_set SET present = 0 WHERE class_id = ?", (class_id,)
+            )
+        for node_id in members:
+            self._recompute_class_ids(node_id)
 
     def _apply_object_delete(self, env: RelayEnvelope) -> bool:
         op_type = "object.delete"
@@ -1213,6 +1294,8 @@ class LocalStore:
         self._require_node(env.workspace_id, object_id, op_type)
         permanent = bool(env.payload.get("permanent"))
         ts = _envelope_ts(env)
+        deleted_row = self._node_row(env.workspace_id, object_id)
+        deleted_is_class = deleted_row is not None and bool(deleted_row[3])
         if not permanent:
             ids = self._subtree_ids(env.workspace_id, object_id)
             placeholders = ", ".join("?" for _ in ids)
@@ -1224,9 +1307,13 @@ class LocalStore:
                 # Soft delete: trash the whole subtree (restore is whole-tree),
                 # keep the tree rows for restore.
                 self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
+                if deleted_is_class:
+                    self._sweep_class_membership(object_id, purge=False)
             return True
         with self._conn:
             self._permanently_delete_subtree(env.workspace_id, object_id, ts)
+            if deleted_is_class:
+                self._sweep_class_membership(object_id, purge=True)
         return True
 
     def _permanently_delete_subtree(self, workspace_id: str, object_id: str, ts: str) -> None:
@@ -1291,13 +1378,17 @@ class LocalStore:
         ]
         with self._conn:
             for node_id in roots:
-                if self._node_row(workspace_id, node_id) is None:
+                root_row = self._node_row(workspace_id, node_id)
+                if root_row is None:
                     # Consumed by an earlier iteration's subtree purge, or a
                     # legacy dangling trash row with no node row: sweep the
                     # stale row and skip — replay never fails on it.
                     self._conn.execute("DELETE FROM trash WHERE node_id = ?", (node_id,))
                     continue
+                root_was_class = bool(root_row[3])
                 self._permanently_delete_subtree(workspace_id, node_id, ts)
+                if root_was_class:
+                    self._sweep_class_membership(node_id, purge=True)
         return True
 
     def _apply_object_restore(self, env: RelayEnvelope) -> bool:
@@ -1860,6 +1951,20 @@ class LocalStore:
             raise MoveGuardError(
                 f"{op_type}: node {object_id} is a date-chain node;"
                 f" its {locked_date_class} system class cannot be removed",
+                op_type,
+            )
+        # Content-reference lock (the no-divergence law): the stored content
+        # still carries an inline class_link to this class — unassigning
+        # would strand a live reference. The removal gesture strips the
+        # links FIRST; a raw class.unassign refuses rather than silently
+        # diverging — loud failure, never applied.
+        node_row = self._node_row(env.workspace_id, object_id)
+        if node_row is not None and class_id in _content_class_link_ids(
+            parse_content_ast(node_row[10])
+        ):
+            raise MoveGuardError(
+                f"{op_type}: node {object_id} content references class {class_id}"
+                " inline — remove the inline links first",
                 op_type,
             )
         with self._conn:
