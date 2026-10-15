@@ -10,7 +10,7 @@ presentation. Resolution rules implemented here:
 - ``mention``: ``displayText`` wins, then the resolver's current target name
   (auto-rename free), then the raw target id — never an "…" placeholder;
   the captured ``text`` is non-authoritative (Fork 4);
-- ``class_chip``: render-only (Fork 3) — ``displayText`` ?? resolved class
+- ``class_link``: render-only (Fork 3) — ``displayText`` ?? resolved class
   name ?? raw class id; inserting/deleting a chip never mutates ``class_ids``;
 - ``typed_link``: a mark on the prose word —
   the marked word renders underlined, the verb is carried for tooltips/metadata;
@@ -161,7 +161,7 @@ def _mention_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tu
     return target_id, resolved or target_id
 
 
-def _class_chip_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tuple[str, str]:
+def _class_link_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tuple[str, str]:
     class_id = str(token.get("classId") or "")
     display = token.get("displayText")
     if isinstance(display, str) and display:
@@ -195,8 +195,8 @@ def _inline_view(token: Any, resolver: NameResolver | None) -> InlineView | None
     if ttype == "mention":
         target_id, text = _mention_text(token, resolver)
         return MentionRun(target_id=target_id, text=text)
-    if ttype == "class_chip":
-        class_id, text = _class_chip_text(token, resolver)
+    if ttype == "class_link":
+        class_id, text = _class_link_text(token, resolver)
         return ClassChipRun(class_id=class_id, text=text)
     if ttype == "typed_link":
         return TypedLinkRun(verb=_verb_string(token.get("verb")), text=str(token.get("text", "")))

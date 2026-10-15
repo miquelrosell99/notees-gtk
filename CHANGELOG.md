@@ -6,6 +6,21 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-15
+
+- **refactor(protocol)!: the inline class reference is `class_link` — the
+  GTK lockstep port of the monorepo's 2026-10-15 rename (retired
+  `class_chip`).** The render-only content token that references a class node
+  inline (wavy underline, no membership effect) is renamed to say what it
+  is — a node link, class variant. `content.py` validates `class_link` /
+  its `classId`; `ast_render.py` resolves and renders it unchanged
+  (render-only semantics are untouched); the vendored wire corpus gains
+  `class-link.json` (re-vendored byte-identical, gate list updated). The
+  strict schema rejects the retired `class_chip` key outright — the
+  monorepo's stored-log migration rewrites live envelopes before clients
+  re-sync. **Verification:** `uv run pytest` (799 passed), `ruff check`,
+  `mypy src` all green.
+
 ## 2026-10-14
 
 - **feat(protocol): `trash.empty` bulk op — the GTK lockstep port of the

@@ -238,8 +238,8 @@ def validate_content_token(token: Any) -> None:
             _require_str(token, "displayText", min_length=1, max_length=512)
         if token.get("linkId") is not None:
             _check_uuid(token.get("linkId"), "mention linkId")
-    elif ttype == "class_chip":
-        _check_uuid(token.get("classId"), "class_chip classId")
+    elif ttype == "class_link":
+        _check_uuid(token.get("classId"), "class_link classId")
         _check_no_extra(token, {"classId", "displayText"})
         if token.get("displayText") is not None:
             _require_str(token, "displayText", min_length=1, max_length=512)

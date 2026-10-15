@@ -2,7 +2,7 @@
 
 Covers the SCHEMA.md Content grammar mapping to view records — text runs
 with marks, hard_break, mention (displayText → resolved name → raw id),
-class_chip, typed_link (underlined verb mark), external_link, math, quote
+class_link, typed_link (underlined verb mark), external_link, math, quote
 (the only nested token), block tokens as labeled placeholders — plus the
 plaintext excerpt derivation and the editor's plaintext→token mapping.
 """
@@ -106,16 +106,16 @@ def test_view_mention_resolver_error_still_renders() -> None:
     assert view == PageView(items=(MentionRun(target_id="t-1", text="t-1"),))
 
 
-def test_view_class_chip_resolves_class_name() -> None:
-    doc = [{"type": "class_chip", "classId": "class-1"}]
+def test_view_class_link_resolves_class_name() -> None:
+    doc = [{"type": "class_link", "classId": "class-1"}]
     view = ast_render.ast_to_view(doc_json(doc), resolve_name=lambda target: f"class({target})")
     assert view == PageView(items=(ClassChipRun(class_id="class-1", text="class(class-1)"),))
 
 
-def test_view_class_chip_display_text_and_raw_id_fallback() -> None:
-    doc = [{"type": "class_chip", "classId": "class-1", "displayText": "One-off"}]
+def test_view_class_link_display_text_and_raw_id_fallback() -> None:
+    doc = [{"type": "class_link", "classId": "class-1", "displayText": "One-off"}]
     assert ast_render.ast_to_view(doc_json(doc)) == PageView(items=(ClassChipRun(class_id="class-1", text="One-off"),))
-    plain = [{"type": "class_chip", "classId": "class-9"}]
+    plain = [{"type": "class_link", "classId": "class-9"}]
     assert ast_render.ast_to_view(doc_json(plain)) == PageView(
         items=(ClassChipRun(class_id="class-9", text="class-9"),)
     )
