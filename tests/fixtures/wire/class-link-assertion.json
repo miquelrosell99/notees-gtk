@@ -1,0 +1,156 @@
+{
+  "comment": "Content-asserted class membership (SCHEMA.md Fork 3, the no-divergence law, owner ruling 2026-10-15): a class_link token in a stored content stream IS a classing of its node. The block is created with NO explicit classIds — the inline link alone OR-set-adds Persona (any writer converges; the reference can never outlive the membership). A quote child asserting Familia adds it too. The strip update removes both links, and only THEN does class.unassign succeed — a raw unassign while the content still references the class refuses loud (the removal gesture's strip-then-unassign order, at the wire).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000660",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000660"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:15.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000660"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000661",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000661"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:15.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000661"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000662",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000662"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:15.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000662",
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "class_link",
+            "classId": "0192a000-0000-7000-8000-000000000660"
+          }
+        ],
+        "parentId": null,
+        "presentAsMain": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000663",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000662"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:15.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000662",
+        "contentAst": [
+          {
+            "type": "class_link",
+            "classId": "0192a000-0000-7000-8000-000000000660"
+          },
+          {
+            "type": "quote",
+            "children": [
+              {
+                "type": "class_link",
+                "classId": "0192a000-0000-7000-8000-000000000661"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000664",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000662"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:15.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000662",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "plain now"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000665",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200015500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000662"
+      ],
+      "opType": "class.unassign",
+      "timestamp": "2026-09-24T12:00:15.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000662",
+        "classId": "0192a000-0000-7000-8000-000000000660"
+      }
+    }
+  ]
+}

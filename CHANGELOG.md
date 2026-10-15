@@ -8,6 +8,22 @@ history.
 
 ## 2026-10-15
 
+- **feat(appliers): the no-divergence law — content-asserted membership,
+  the class.unassign content lock, and the class-delete membership sweep
+  (GTK lockstep port of the monorepo's 2026-10-15 slice).** A `class_link`
+  token in a stored content stream IS a classing of its node: the object
+  create/update appliers OR-set-add the referenced classes (any writer —
+  web, CLI, GTK, imports — converges; document-chrome content still
+  flattens, date-chain nodes keep their fixed class). `class.unassign`
+  refuses loud while the stored content references the class (the removal
+  gesture strips the links first, strip-then-unassign). Deleting a class
+  node (trash or permanent, and trash.empty) sweeps its memberships —
+  trash tombstones the pairs, permanent purges them. The vendored wire
+  corpus gains `class-link-assertion.json`. **Verification:** `uv run
+  pytest` (800 passed), `ruff check`, `mypy src` all green.
+
+## 2026-10-15
+
 - **refactor(protocol)!: the inline class reference is `class_link` — the
   GTK lockstep port of the monorepo's 2026-10-15 rename (retired
   `class_chip`).** The render-only content token that references a class node
