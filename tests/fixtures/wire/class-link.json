@@ -1,0 +1,121 @@
+{
+  "comment": "Inline class link (SCHEMA.md 'Class link' — the render-only node link to a class node; the 2026-10-15 rename of the retired class_chip token). The class is created, a block carries two class_link tokens (bare + displayText override), then an object.update rewrites the content to a single bare link. The token never mutates class_ids — the block stays unclassed throughout; displayText is a one-off wording, the default renders the class's current name.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000650",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200014000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000650"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:14.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000650"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000651",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200014100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000651"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:14.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000651",
+        "presentAsMain": true,
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Home"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000652",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200014200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000652"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:14.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000652",
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "see "
+          },
+          {
+            "type": "class_link",
+            "classId": "0192a000-0000-7000-8000-000000000650"
+          },
+          {
+            "type": "text",
+            "text": " and "
+          },
+          {
+            "type": "class_link",
+            "classId": "0192a000-0000-7000-8000-000000000650",
+            "displayText": "the mailing class"
+          }
+        ],
+        "parentId": "0192a000-0000-7000-8000-000000000651"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000653",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200014300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000652"
+      ],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:14.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000652",
+        "contentAst": [
+          {
+            "type": "class_link",
+            "classId": "0192a000-0000-7000-8000-000000000650"
+          }
+        ]
+      }
+    }
+  ]
+}
