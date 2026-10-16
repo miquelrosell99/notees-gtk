@@ -1,0 +1,108 @@
+{
+  "comment": "Revision 12 embedding flag: isEmbedded defaults to true (embedded, the Block role) for parented nodes and false (standalone) for parentless roots. Envelope 1 creates a parentless page P (flag absent → stored 0, standalone by definition); envelope 2 creates block B under P (flag absent → stored 1, embedded); envelope 3 creates S under P with an explicit standalone claim (isEmbedded: false). Envelopes 4-6 exercise the promotion/demotion toggle: B promotes (isEmbedded: false), S demotes (isEmbedded: true), B demotes back (isEmbedded: true). Moves never write the flag; the parent-page condition (is-embedded-parent-page.json) gates the standalone claim under non-page parents.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000a51",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af1"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:05.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af1",
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "P" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a52",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005001, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af2"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:05.001Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af2",
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "B" }],
+        "parentId": "0192a000-0000-7000-8000-000000000af1"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a53",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005002, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af3"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:05.002Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af3",
+        "isEmbedded": false,
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "S" }],
+        "parentId": "0192a000-0000-7000-8000-000000000af1"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a54",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005003, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af2"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:05.003Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af2",
+        "isEmbedded": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a55",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005004, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af3"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:05.004Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af3",
+        "isEmbedded": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a56",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200005005, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000af2"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:05.005Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000af2",
+        "isEmbedded": true
+      }
+    }
+  ]
+}

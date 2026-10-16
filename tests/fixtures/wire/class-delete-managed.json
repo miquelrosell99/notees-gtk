@@ -45,7 +45,7 @@
       "timestamp": "2026-09-24T12:00:11.100Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000615",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "classIds": [
           "00000000-0000-0000-0001-000000000012"
         ],

@@ -22,7 +22,7 @@ import pytest
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
-from notees_gtk.data.errors import CycleError
+from notees_gtk.data.errors import CycleError, MoveGuardError
 from notees_gtk.data.store import (
     EffectiveProperty,
     EffectivePropertySchema,
@@ -31,8 +31,10 @@ from notees_gtk.data.store import (
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 
-#: The cycle fixture must throw — never part of the replay/determinism sets.
-REPLAY_EXCLUDED = {"class-extends-cycle.json"}
+#: Fixtures whose application must THROW — never part of the replay/determinism
+#: sets (class-extends-cycle closes a cycle; is-embedded-parent-page claims the
+#: standalone role under an embedded block, the parent-page condition).
+REPLAY_EXCLUDED = {"class-extends-cycle.json", "is-embedded-parent-page.json"}
 
 WS = "0192a000-0000-7000-8000-000000000001"
 NODE_PAGE = "0192a000-0000-7000-8000-000000000010"
@@ -143,8 +145,8 @@ class TestObjectCreateFixtures:
             assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
         page = store.node(WS, NODE_PAGE)
         book = store.node(WS, NODE_BOOK)
-        assert page is not None and (page.is_class, page.present_as_main) == (False, True)
-        assert book is not None and (book.is_class, book.present_as_main) == (False, True)
+        assert page is not None and (page.is_class, page.is_embedded) == (False, False)
+        assert book is not None and (book.is_class, book.is_embedded) == (False, False)
         # Title-is-content: the fixture's title rides as a text token of the
         # node's content (no name field on the wire).
         assert book.content == json.dumps([{"type": "text", "text": "The Structure of Scientific Revolutions"}])
@@ -432,7 +434,7 @@ class TestClassConvertFixture:
         assert store.apply_remote(convert_page) is True
         row = store.node(WS, self.PAGE)
         assert row is not None
-        assert (row.is_class, row.present_as_main, row.parent_id) == (True, False, None)
+        assert (row.is_class, row.is_embedded, row.parent_id) == (True, False, None)
         # Title-is-content: the node's existing text content is the class
         # title (the conversion payload carried no contentAst).
         assert json.loads(row.content or "[]") == [{"type": "text", "text": "Genre collection"}]
@@ -969,7 +971,7 @@ class TestTrashEmptyFixture:
             assert store.node(WS, node_id) is None, node_id
         restored = store.node(WS, self.C)
         assert restored is not None
-        assert (restored.is_active, restored.present_as_main) == (True, True)
+        assert (restored.is_active, restored.is_embedded) == (True, False)
 
     def test_retention_rows_are_exactly_the_two_emptied_roots_and_permanent(self, store: LocalStore) -> None:
         self._replay(store)
@@ -1032,6 +1034,30 @@ class TestCycleFixture:
         # And the thrown envelope ids were not consumed: a retry after a wipe
         # re-applies the prefix (the throw rolled the dedupe record back too).
         assert raw(store, "SELECT COUNT(*) FROM relay_operations") == [(3,)]
+
+
+class TestIsEmbeddedParentPageFixture:
+    def test_standalone_claim_under_an_embedded_block_throws_and_rolls_back(
+        self, store: LocalStore
+    ) -> None:
+        page_p, block_b, violating_x = (
+            RelayEnvelope.model_validate(item) for item in load_fixture("is-embedded-parent-page.json")
+        )
+        p = "0192a000-0000-7000-8000-0000000000f1"
+        b = "0192a000-0000-7000-8000-0000000000f2"
+        x = "0192a000-0000-7000-8000-0000000000f3"
+        # The prefix applies cleanly: page P, then embedded block B under P.
+        assert store.apply_remote(page_p) is True
+        assert store.apply_remote(block_b) is True
+        row = store.node(WS, b)
+        assert row is not None and row.parent_id == p and row.is_embedded is True
+
+        # Claiming the standalone role (isEmbedded: false) under the BLOCK fails
+        # loud (parent-page condition, Revision 12) and
+        # rolls back: no row for X.
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(violating_x)
+        assert store.node(WS, x) is None
 
 
 class TestReplayIdempotence:

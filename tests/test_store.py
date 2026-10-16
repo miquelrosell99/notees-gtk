@@ -118,7 +118,7 @@ def create_env(
     node_id: str = NODE,
     *,
     parent_id: str | None = None,
-    present_as_main: bool | None = None,
+    is_embedded: bool | None = None,
     content: Any = UNSET,
     class_ids: tuple[str, ...] = (),
     tag_ids: tuple[str, ...] = (),
@@ -137,8 +137,8 @@ def create_env(
     defaults it by context (parentless → main, parented → inline).
     """
     payload: dict[str, Any] = {"objectId": node_id, "parentId": parent_id}
-    if present_as_main is not None:
-        payload["presentAsMain"] = present_as_main
+    if is_embedded is not None:
+        payload["isEmbedded"] = is_embedded
     if class_ids:
         payload["classIds"] = list(class_ids)
     if tag_ids:
@@ -263,7 +263,7 @@ class TestMigrations:
         assert {"is_active", "class_ids", "content_plain", "hlc_physical", "hlc_logical", "actor_id"} <= columns
         # v5 tags + v6 class order (web schema v5→v6 / v6→v7 parity) and the
         # Revision-11 render-state booleans (web schema v7→v8 parity).
-        assert {"tag_ids", "class_order", "is_class", "present_as_main"} <= columns
+        assert {"tag_ids", "class_order", "is_class", "is_embedded"} <= columns
         assert "archived" not in columns
         assert "node_type" not in columns
         assert "node_content_hlc" not in tables
@@ -327,7 +327,7 @@ class TestMigrations:
         # Revision-11 mapping straight from the reshape: page → presents
         # as main (the v7 rebuild is a no-op on this path).
         assert row.is_class is False
-        assert row.present_as_main is True
+        assert row.is_embedded is False
         upgraded.close()
         with sqlite3.connect(path) as raw:
             assert "node_content_hlc" not in {r[0] for r in raw.execute("SELECT name FROM sqlite_master")}
@@ -378,23 +378,23 @@ class TestMigrations:
             columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
         assert version == SCHEMA_VERSION
         assert "node_type" not in columns
-        assert {"is_class", "present_as_main"} <= columns
+        assert {"is_class", "is_embedded"} <= columns
         root_page = upgraded.node(WS_A, "v6-root-page")
         assert root_page is not None
-        assert (root_page.is_class, root_page.present_as_main) == (False, True)
+        assert (root_page.is_class, root_page.is_embedded) == (False, False)
         assert root_page.parent_id is None
         child_page = upgraded.node(WS_A, "v6-child-page")
         assert child_page is not None
         # Parented page: bit preserved as main, parent edge untouched.
-        assert (child_page.is_class, child_page.present_as_main) == (False, True)
+        assert (child_page.is_class, child_page.is_embedded) == (False, False)
         assert child_page.parent_id == "v6-root-page"
         block = upgraded.node(WS_A, "v6-block")
         assert block is not None
-        assert (block.is_class, block.present_as_main) == (False, False)
+        assert (block.is_class, block.is_embedded) == (False, True)
         assert block.parent_id == "v6-root-page"
         class_row = upgraded.node(WS_A, "v6-class")
         assert class_row is not None
-        assert (class_row.is_class, class_row.present_as_main) == (True, False)
+        assert (class_row.is_class, class_row.is_embedded) == (True, False)
         assert class_row.parent_id is None
         upgraded.close()
 
@@ -663,7 +663,7 @@ class TestObjectCreate:
             workspace_id=WS_A,
             parent_id=None,
             is_class=False,
-            present_as_main=True,  # parentless create defaults to main
+            is_embedded=False,  # parentless create defaults to main
             name=None,  # title-is-content: the retired cache is never written
             class_ids=(),
             tag_ids=(),
@@ -721,13 +721,13 @@ class TestObjectCreate:
                 affected=(uid("child"),),
             )
         )
-        assert store.node(WS_A, uid("parent")).present_as_main is True
-        assert store.node(WS_A, uid("child")).present_as_main is False
+        assert store.node(WS_A, uid("parent")).is_embedded is False
+        assert store.node(WS_A, uid("child")).is_embedded is True
 
     def test_create_explicit_present_as_main_wins_over_the_default(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, hlc=(2, 0)))
-        assert store.node(WS_A, uid("child")).present_as_main is True
+        store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), is_embedded=False, hlc=(2, 0)))
+        assert store.node(WS_A, uid("child")).is_embedded is False
 
     def test_create_content_ast_stored_as_json_with_derived_plaintext(self, store: LocalStore) -> None:
         # Content flatten invariant: a PARENTLESS node (present_as_main=1)
@@ -760,7 +760,7 @@ class TestObjectCreate:
         row = store.node(WS_A, uid("lone"))
         assert row is not None
         assert row.parent_id is None
-        assert (row.is_class, row.present_as_main) == (False, True)
+        assert (row.is_class, row.is_embedded) == (False, False)
 
     def test_retired_node_type_key_rejected_by_strict_validation(self, store: LocalStore) -> None:
         """No wire compat of any kind: object.create/update payloads carrying
@@ -802,7 +802,7 @@ class TestObjectCreate:
         row = store.node(WS_A, uid("child"))
         assert row is not None
         assert row.parent_id == uid("cls-1")
-        assert (row.is_class, row.present_as_main) == (False, False)
+        assert (row.is_class, row.is_embedded) == (False, True)
         # Inline child of a class keeps its full rich token stream.
         assert json.loads(row.content or "") == rich
 
@@ -894,10 +894,10 @@ class TestObjectUpdate:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), content=rich, hlc=(2, 0)))
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), isEmbedded=False)) is True
         row = store.node(WS_A, uid("child"))
         assert row is not None
-        assert row.present_as_main is True
+        assert row.is_embedded is False
         assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
 
     def test_demotion_does_not_unflatten_content(self, store: LocalStore) -> None:
@@ -906,14 +906,14 @@ class TestObjectUpdate:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(
-            create_env(uid("child"), parent_id=uid("parent"), present_as_main=True, content=rich, hlc=(2, 0))
+            create_env(uid("child"), parent_id=uid("parent"), is_embedded=False, content=rich, hlc=(2, 0))
         )
         # Created straight as main: content flattened at create time.
         assert json.loads(store.node(WS_A, uid("child")).content or "") == [{"type": "text", "text": "Bob said hi"}]
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=False)) is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), isEmbedded=True)) is True
         row = store.node(WS_A, uid("child"))
         assert row is not None
-        assert row.present_as_main is False
+        assert row.is_embedded is True
         assert json.loads(row.content or "") == [{"type": "text", "text": "Bob said hi"}]
 
     def test_main_presenting_content_update_keeps_the_rich_tokens(self, store: LocalStore) -> None:
@@ -964,23 +964,23 @@ class TestObjectUpdate:
         stays parented in place; only the render bit flips."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(2, 0)))
-        assert store.node(WS_A, uid("child")).present_as_main is False
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
-        assert store.node(WS_A, uid("child")).present_as_main is True
+        assert store.node(WS_A, uid("child")).is_embedded is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), isEmbedded=False)) is True
+        assert store.node(WS_A, uid("child")).is_embedded is False
         assert store.node(WS_A, uid("child")).parent_id == uid("parent")
-        assert store.apply_remote(update_env(uid("child"), hlc=(4, 0), presentAsMain=False)) is True
-        assert store.node(WS_A, uid("child")).present_as_main is False
+        assert store.apply_remote(update_env(uid("child"), hlc=(4, 0), isEmbedded=True)) is True
+        assert store.node(WS_A, uid("child")).is_embedded is True
 
     def test_present_as_main_toggle_respects_row_lww(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
         store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), hlc=(2, 0)))
-        assert store.apply_remote(update_env(uid("child"), hlc=(2, 0), presentAsMain=True)) is False
-        assert store.node(WS_A, uid("child")).present_as_main is False
-        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), presentAsMain=True)) is True
-        assert store.node(WS_A, uid("child")).present_as_main is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(2, 0), isEmbedded=False)) is False
+        assert store.node(WS_A, uid("child")).is_embedded is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), isEmbedded=False)) is True
+        assert store.node(WS_A, uid("child")).is_embedded is False
         # A stale toggle at an older HLC never regresses the bit.
-        assert store.apply_remote(update_env(uid("child"), hlc=(2, 5), presentAsMain=False)) is False
-        assert store.node(WS_A, uid("child")).present_as_main is True
+        assert store.apply_remote(update_env(uid("child"), hlc=(2, 5), isEmbedded=True)) is False
+        assert store.node(WS_A, uid("child")).is_embedded is False
 
 
 class TestObjectMove:
@@ -1091,18 +1091,18 @@ class TestObjectMove:
         assert row.parent_id is None
         # Moves never write the render bit: the bit stays inline (unread for
         # parentless nodes — benign by construction).
-        assert row.present_as_main is False
+        assert row.is_embedded is True
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(0,)]
 
     def test_root_move_of_main_presenting_node_keeps_the_bit(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(create_env(uid("p"), parent_id=None, hlc=(1, 0)))
-        store.apply_remote(create_env(uid("sub"), parent_id=uid("p"), present_as_main=True, hlc=(2, 0)))
+        store.apply_remote(create_env(uid("sub"), parent_id=uid("p"), is_embedded=False, hlc=(2, 0)))
         store.apply_remote(move_env(uid("sub"), parent_id=None, hlc=(3, 0)))
         row = store.node(WS_A, uid("sub"))
         assert row is not None
         assert row.parent_id is None
         # Moves never write the bit: parentless-with-bit-set is benign.
-        assert row.present_as_main is True
+        assert row.is_embedded is False
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('sub')}'") == [(0,)]
 
     def test_move_under_class_parent_is_legal(self, store: LocalStore) -> None:
@@ -1462,7 +1462,7 @@ class TestClassOps:
         row = store.node(WS_A, uid("cls-1"))
         assert row is not None
         assert row.is_class is True
-        assert row.present_as_main is False
+        assert row.is_embedded is False  # classes converge to the standalone 0
         assert row.parent_id is None
         # Title-is-content: the class title IS its content; the registry
         # ``name`` is a derived cache of that text (never the node column).
@@ -2317,7 +2317,7 @@ class TestSnapshotRestore:
                     "id": uid("n1"),
                     "workspace_id": WS_A,
                     "is_class": 0,
-                    "present_as_main": 1,
+                    "is_embedded": 0,
                     "parent_id": None,
                     "class_ids": json.dumps([uid("c-1")]),
                     "name": "Snap Page",
@@ -2335,7 +2335,7 @@ class TestSnapshotRestore:
                     "id": uid("n2"),
                     "workspace_id": WS_A,
                     "is_class": 0,
-                    "present_as_main": 0,
+                    "is_embedded": 1,
                     "parent_id": uid("n1"),
                     "content": "[]",
                 },
@@ -2346,13 +2346,13 @@ class TestSnapshotRestore:
         # Same-name, same-polarity mapping: is_class/present_as_main/
         # is_active/class_ids/name copy verbatim and the row-LWW columns seed
         # the LWW baseline.
-        assert rows[uid("n1")].present_as_main is True
+        assert rows[uid("n1")].is_embedded is False
         assert rows[uid("n1")].is_class is False
         assert rows[uid("n1")].is_active is False  # is_active=0
         assert rows[uid("n1")].content == mirror
         assert rows[uid("n1")].class_ids == (uid("c-1"),)
         assert rows[uid("n1")].name == "Snap Page"
-        assert rows[uid("n2")].present_as_main is False
+        assert rows[uid("n2")].is_embedded is True
         assert rows[uid("n2")].is_class is False
         assert rows[uid("n2")].is_active is True
         # Seeded LWW baseline (hlc 5,2): lower/equal writes must lose.
@@ -2377,7 +2377,7 @@ class TestSnapshotRestore:
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 is_class INTEGER NOT NULL DEFAULT 0,
-                present_as_main INTEGER NOT NULL DEFAULT 0,
+                is_embedded INTEGER NOT NULL DEFAULT 1,
                 parent_id TEXT,
                 content TEXT NOT NULL DEFAULT '[]',
                 is_active INTEGER NOT NULL DEFAULT 1
@@ -2385,14 +2385,14 @@ class TestSnapshotRestore:
             """
         )
         conn.execute(
-            f"INSERT INTO node (id, workspace_id, present_as_main, content) VALUES ('{uid('legacy')}', ?, 1, 'old')",
+            f"INSERT INTO node (id, workspace_id, is_embedded, content) VALUES ('{uid('legacy')}', ?, 0, 'old')",
             (WS_A,),
         )
         blob = conn.serialize()
         conn.close()
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True
         row = store.node(WS_A, uid("legacy"))
-        assert row is not None and row.present_as_main is True and row.content == "old"
+        assert row is not None and row.is_embedded is False and row.content == "old"
         # No baseline → any later update wins.
         assert (
             store.apply_remote(update_env(uid("legacy"), hlc=(1, 0), contentAst=[{"type": "text", "text": "new"}]))
@@ -2403,8 +2403,8 @@ class TestSnapshotRestore:
     def test_restore_filters_by_workspace(self, store: LocalStore) -> None:
         blob = make_server_snapshot(
             [
-                {"id": uid("n1"), "workspace_id": WS_A, "is_class": 0, "present_as_main": 1, "content": "[]"},
-                {"id": uid("n2"), "workspace_id": WS_B, "is_class": 0, "present_as_main": 1, "content": "[]"},
+                {"id": uid("n1"), "workspace_id": WS_A, "is_class": 0, "is_embedded": 0, "content": "[]"},
+                {"id": uid("n2"), "workspace_id": WS_B, "is_class": 0, "is_embedded": 0, "content": "[]"},
             ]
         )
         assert store.restore_snapshot(blob, workspace_id=WS_A) is True

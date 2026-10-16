@@ -19,7 +19,7 @@
       "timestamp": "2026-09-24T12:00:07.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000020",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "contentAst": [
           {
             "type": "text",

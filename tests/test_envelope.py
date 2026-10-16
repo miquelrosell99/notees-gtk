@@ -42,7 +42,7 @@ VALID_ENVELOPE: dict[str, Any] = {
     "affectedNodeIds": ["0192a000-0000-7000-8000-000000000010"],
     "opType": "object.create",
     "timestamp": "2026-09-24T12:00:00.000Z",
-    "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "presentAsMain": True, "classIds": []},
+    "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "isEmbedded": False, "classIds": []},
 }
 
 
@@ -292,7 +292,7 @@ class TestNewEnvelope:
             "actor_id": "actor-1",
             "device_id": "device-a",
             "op_type": "object.create",
-            "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "presentAsMain": True},
+            "payload": {"objectId": "0192a000-0000-7000-8000-000000000010", "isEmbedded": False},
             "clock": Clock("device-a"),
             "now_ms": lambda: 1767225600000,
         }

@@ -67,7 +67,7 @@
           }
         ],
         "parentId": null,
-        "presentAsMain": false
+        "isEmbedded": true
       }
     },
     {

@@ -136,13 +136,15 @@ class _Strict(BaseModel):
 
 class ObjectCreatePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
-    # Render bit (Revision 11): read only when the node has a parent — true =
-    # the parent's main-children zone + document chrome when zoomed; false =
-    # inline body + block chrome. Unread for parentless nodes (document chrome
-    # by the second cascade branch). Optional — the applier defaults it by
-    # context: true when parentless, false otherwise. The retired nodeType key
-    # is rejected outright by this strict schema.
-    present_as_main: bool | None = Field(default=None, alias="presentAsMain")
+    # Embedding flag (Revision 12): whether the node's content belongs to its
+    # parent's body — true = embedded (the Block role, the DEFAULT for
+    # parented nodes), false = a standalone structural element under the
+    # parent (the Page role). Unread for parentless nodes (document chrome by
+    # the second cascade branch) and classes (ClassView). Optional — the
+    # applier defaults it by context: false (standalone) when parentless,
+    # true (embedded) otherwise. The retired nodeType and presentAsMain keys
+    # are rejected outright by this strict schema.
+    is_embedded: bool | None = Field(default=None, alias="isEmbedded")
     class_ids: list[UUID] = Field(default_factory=list, alias="classIds")
     tag_ids: list[UUID] = Field(default_factory=list, alias="tagIds")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
@@ -157,11 +159,12 @@ class ObjectCreatePayload(_Strict):
 
 class ObjectUpdatePayload(_Strict):
     object_id: UUID = Field(alias="objectId")
-    # Render-bit toggle (Revision 11): promotion/demotion flips presentAsMain
-    # true/false (identity preserved; a 0→1 promotion stringifies the content
-    # in the same op; demotion never un-flattens). The retired nodeType key is
-    # rejected outright by this strict schema.
-    present_as_main: bool | None = Field(default=None, alias="presentAsMain")
+    # Embedding-flag toggle (Revision 12): promotion/demotion flips isEmbedded
+    # true/false — promotion is the FALSE claim (the Page role; it stringifies
+    # the content in the same op, 1→0; demotion never un-flattens). The
+    # retired nodeType and presentAsMain keys are rejected outright by this
+    # strict schema.
+    is_embedded: bool | None = Field(default=None, alias="isEmbedded")
     icon: str | None = Field(default=None, max_length=64)
     # Preset token (`sky`) or custom `#RRGGBB` hex (colors.py grammar);
     # null CLEARS the node's color.
@@ -520,7 +523,7 @@ def _validated(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
 def build_object_create(
     object_id: str,
     *,
-    present_as_main: bool | None = None,
+    is_embedded: bool | None = None,
     class_ids: list[str] | None = None,
     tag_ids: list[str] | None = None,
     name: str | None = None,
@@ -534,13 +537,13 @@ def build_object_create(
     Title-is-content: the protocol has no object ``name``. The ``name``
     convenience becomes the node's initial text content (a single text
     token) when no explicit ``content_ast`` is given; when both are given,
-    ``content_ast`` wins and ``name`` is dropped. ``present_as_main`` is the
-    Revision-11 render bit; omit it and the applier defaults it by context
-    (true when parentless, false otherwise).
+    ``content_ast`` wins and ``name`` is dropped. ``is_embedded`` is the
+    Revision-12 embedding flag; omit it and the applier defaults it by context
+    (false/standalone when parentless, true/embedded otherwise).
     """
     payload: dict[str, Any] = {"objectId": object_id}
-    if present_as_main is not None:
-        payload["presentAsMain"] = present_as_main
+    if is_embedded is not None:
+        payload["isEmbedded"] = is_embedded
     if class_ids is not None:
         payload["classIds"] = list(class_ids)
     if tag_ids is not None:
@@ -562,7 +565,7 @@ def build_object_create(
 def build_object_update(
     object_id: str,
     *,
-    present_as_main: bool | None = None,
+    is_embedded: bool | None = None,
     content_ast: list[Any] | None = None,
     content_delta_b64: str | None = None,
     icon: str | None = None,
@@ -582,8 +585,8 @@ def build_object_update(
     it untouched.
     """
     payload: dict[str, Any] = {"objectId": object_id}
-    if present_as_main is not None:
-        payload["presentAsMain"] = present_as_main
+    if is_embedded is not None:
+        payload["isEmbedded"] = is_embedded
     if content_ast is not None:
         payload["contentAst"] = content_ast
     if content_delta_b64 is not None:
