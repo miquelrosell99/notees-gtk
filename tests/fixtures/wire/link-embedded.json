@@ -1,0 +1,71 @@
+{
+  "comment": "Link embedding (owner ruling 2026-10-16): the mention token's optional isEmbedded flag — a MANUAL per-link choice, default FALSE. Envelope 1 creates page P; envelope 2 creates a block under P whose sole content is a mention of P marked isEmbedded: true (the link presents the target's content in place when it is the block's whole content); envelope 3 clears the flag back to the default ordinary inline link. The derived edge row projects the flag (edge.is_embedded), updated in place — the edge identity is content-addressed WITHOUT the flag.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000b51",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000bf10"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:06.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000bf10",
+        "isEmbedded": false,
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "P" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000b52",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006001, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000bf11"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:06.001Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000bf11",
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-00000000bf10",
+            "text": "P",
+            "isEmbedded": true
+          }
+        ],
+        "parentId": "0192a000-0000-7000-8000-00000000bf10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000b53",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200006002, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000bf11"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:06.002Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000bf11",
+        "contentAst": [
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-00000000bf10",
+            "text": "P"
+          }
+        ]
+      }
+    }
+  ]
+}
