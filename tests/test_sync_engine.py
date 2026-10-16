@@ -80,7 +80,7 @@ def create_env(
     node_id: str,
     *,
     parent_id: str | None = None,
-    present_as_main: bool | None = None,
+    is_embedded: bool | None = None,
     content: object = None,
     hlc: tuple[int, int] = (1, 0),
     actor: str = ACTOR_A,
@@ -88,8 +88,8 @@ def create_env(
 ) -> RelayEnvelope:
     """Build an ``object.create`` envelope; ``content`` may be a token list or a bare string."""
     payload: dict[str, object] = {"objectId": node_id, "parentId": parent_id}
-    if present_as_main is not None:
-        payload["presentAsMain"] = present_as_main
+    if is_embedded is not None:
+        payload["isEmbedded"] = is_embedded
     payload.update(extra)
     if content is not None:
         payload["contentAst"] = [{"type": "text", "text": content}] if isinstance(content, str) else content
@@ -439,12 +439,12 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
             [
-                {"id": uid("n1"), "workspace_id": WS, "is_class": 0, "present_as_main": 1, "content": "one", "updated_at": None},
+                {"id": uid("n1"), "workspace_id": WS, "is_class": 0, "is_embedded": 0, "content": "one", "updated_at": None},
                 {
                     "id": uid("n2"),
                     "workspace_id": WS,
                     "is_class": 0,
-                    "present_as_main": 0,
+                    "is_embedded": 1,
                     "parent_id": uid("n1"),
                     "content": "two",
                     "updated_at": None,
@@ -466,7 +466,7 @@ class TestSnapshotRestore:
         relay = FakeRelayClient(WS)
         relay.restore_epoch = 7
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": uid("fresh"), "workspace_id": WS, "is_class": 0, "present_as_main": 1, "content": "restored", "updated_at": None}]
+            [{"id": uid("fresh"), "workspace_id": WS, "is_class": 0, "is_embedded": 0, "content": "restored", "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
         store.apply_remote(create_env(uid("stale-local")))
@@ -494,7 +494,7 @@ class TestSnapshotRestore:
     def test_snapshot_older_than_cursor_is_skipped(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = make_server_snapshot(
-            [{"id": uid("n1"), "workspace_id": WS, "is_class": 0, "present_as_main": 1, "updated_at": None}]
+            [{"id": uid("n1"), "workspace_id": WS, "is_class": 0, "is_embedded": 0, "updated_at": None}]
         )
         relay.snapshot_up_to_seq = 42
         store.set_cursor(WS, 100)

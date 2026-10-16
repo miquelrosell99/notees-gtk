@@ -18,7 +18,7 @@
       "timestamp": "2026-09-24T12:00:12.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000620",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "classIds": [],
         "contentAst": [
           {
@@ -84,7 +84,7 @@
       "timestamp": "2026-09-24T12:00:12.200Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-000000000621",
-        "presentAsMain": true
+        "isEmbedded": false
       }
     },
     {

@@ -6,6 +6,35 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-16
+
+- **feat(model): the Revision-12 embedding model — `isEmbedded` replaces
+  `presentAsMain` (polarity inverted), the parent-page condition guard, and
+  the fixture corpus re-vendor (main-repo lockstep, owner 2026-10-16).** The
+  node model's three concerns are named separately: classification
+  (`is_class`), parent relationship (`parent_id`), and embedding
+  (`is_embedded` — whether the node's content belongs to the parent's body;
+  true = the Block role and the DEFAULT for parented nodes, false = the
+  standalone Page role). Wire: `ObjectCreate`/`ObjectUpdate` carry optional
+  `isEmbedded` (the strict schemas reject the retired `presentAsMain` key
+  outright, mirroring the zod reference); the applier defaults parentless →
+  0, parented → 1; promotion = the false claim and still stringifies the
+  content. **The parent-page condition ships with this slice** (the
+  2026-10-15 lockstep debt): a standalone claim under a non-page parent fails
+  loud (`MoveGuardError`) on create, promotion (update), and move; demotion
+  of a parented page is gated on its standalone children being gone; the
+  recursive `_is_page_row` chain walk enforces it (a class or embedded-block
+  parent makes the claim inert). Store: schema v15 rebuilds the nodes table,
+  renaming `present_as_main` → `is_embedded` with polarity inversion and
+  converging class rows to 0 (so the ladder and the appliers' canonical
+  writes meet); the historical v3/v4 node_type rebuilds emit the new column
+  with the Revision-12 polarity directly. Fixtures: the corpus re-vendors
+  from the main repo's landed slice (31 files, sha256-identical — the
+  `present-as-main-parent-page.json` → `is-embedded-parent-page.json` rename
+  and the new `object-is-embedded.json`); the parent-page fixture joins the
+  replay-excluded set with its own throw-and-roll-back test. **Verification:**
+  `uv run pytest` 804 passed / `ruff check` clean / `mypy src` clean.
+
 ## 2026-10-15
 
 - **feat(appliers): the no-divergence law — content-asserted membership,

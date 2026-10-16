@@ -8,7 +8,7 @@ ported from ``packages/store/src/appliers.ts``: row-level last-write-wins by
 membership, user-defined class order (``class.reorder``, LWW-by-arrival),
 title-is-content (a node's title IS its content — no ``name`` writes; nodes
 with document chrome carry text-only content), the Revision-11 render-state
-model (``is_class`` identity + ``present_as_main`` render bit; classes are
+model (``is_class`` identity + ``is_embedded`` embedding flag; classes are
 containers and always roots), m2m class extends with an
 applier-maintained transitive closure (cycles fail loud), fractional
 child-order positions, property values with tombstones, soft/permanent
@@ -115,7 +115,7 @@ _log = logging.getLogger(__name__)
 #: v5 adds the tag OR-Set (web schema v5→v6 parity); v6 adds the per-node
 #: class order list (web schema v6→v7 parity); v7 is the Revision-11
 #: render-state model (web schema v7→v8 parity): the node_type enumeration is
-#: replaced by ``is_class`` + ``present_as_main``; v8 adds the per-workspace
+#: replaced by ``is_class`` + ``present_as_main`` (Revision 12 renames + inverts it to ``is_embedded``); v8 adds the per-workspace
 #: feature toggle table (web schema v9→v10 parity); v9 is the
 #: property-wire batch (web schema v10→v11 parity): PG5 element
 #: tombstones + the property_value rebuild (the UNIQUE(node, schema, idx)
@@ -144,7 +144,7 @@ _log = logging.getLogger(__name__)
 #: plain text max 512 chars — lands as a nullable node column mapped by
 #: object.update (presence writes, present-null clears — the color
 #: convention); object.create carries none.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -161,12 +161,13 @@ _SNAPSHOT_TABLES = frozenset({"node"})
 #: the LWW columns seed the row baseline when the snapshot carries them.
 #: ``tag_ids``/``class_order`` ride along when the snapshot was taken from a
 #: schema v6+/v7+ store (absent columns are skipped, the cache defaults win).
-#: Revision 11: ``is_class``/``present_as_main`` replace the retired node_type.
+#: Revision 12: ``is_class``/``is_embedded`` (the Revision-11 ``present_as_main``
+#: retired and inverted) replace the retired node_type.
 _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "id": "id",
     "workspace_id": "workspace_id",
     "is_class": "is_class",
-    "present_as_main": "present_as_main",
+    "is_embedded": "is_embedded",
     "parent_id": "parent_id",
     "class_ids": "class_ids",
     "class_order": "class_order",
@@ -222,11 +223,13 @@ class NodeRow:
             non-class node; classes are always roots).
         is_class: Identity marker (Revision 11) — true = class node, always a
             root, renders the ClassView.
-        present_as_main: Render bit read only for parented non-class nodes:
-            true = the parent's main-children zone + document chrome when
-            zoomed; false = inline body + block chrome. Unread for parentless
-            nodes (document chrome by the second cascade branch) and classes
-            (ClassView by the first branch).
+        is_embedded: Embedding flag read only for parented non-class nodes:
+            true = the node's content belongs to the parent's body (the
+            Block role, the DEFAULT for parented nodes); false = a standalone
+            structural element under the parent (the Page role — the
+            main-children zone + document chrome when zoomed). Unread for
+            parentless nodes (document chrome by the second cascade branch)
+            and classes (ClassView by the first branch).
         name: Legacy display-name cache, never written by the appliers
             (title-is-content: a node's title IS its content). Remaining
             readers are transition-only; snapshot restores may populate it.
@@ -258,7 +261,7 @@ class NodeRow:
     workspace_id: str
     parent_id: str | None
     is_class: bool
-    present_as_main: bool
+    is_embedded: bool
     name: str | None
     class_ids: tuple[str, ...]
     tag_ids: tuple[str, ...]
@@ -927,12 +930,12 @@ class LocalStore:
     # ------------------------------------------------------------- applier utils
 
     def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
-        # Column order is the contract: is_class/present_as_main sit at 3/4
+        # Column order is the contract: is_class/is_embedded sit at 3/4
         # (the LWW appliers read them positionally) and the row-LWW triple at
         # 12/13/14; the wire node fields ride at 15/16/17 and the page
         # subtitle at 18 (appended, so every existing position is stable).
         row: tuple[Any, ...] | None = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, icon, color,"
+            "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, icon, color,"
             " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id,"
             " cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
@@ -974,6 +977,25 @@ class LocalStore:
             (workspace_id, node_id),
         ).fetchone()
         return None if row is None else (None if row[0] is None else str(row[0]))
+
+    def _is_page_row(self, row: tuple[Any, ...]) -> bool:
+        """True when the node row renders with document chrome under the
+        recursive parent-page rule (owner ruling 2026-10-15, carried into
+        Revision 12): a class never does (ClassView), a parentless non-class
+        row always does (the flag is unread), and a parented row does exactly
+        when ``is_embedded = 0`` (the standalone claim) AND its parent also
+        renders with document chrome. Cycles are impossible (subtree moves
+        are guarded); a missing parent row is a defensive "not a page"."""
+        if bool(row[3]):
+            return False
+        if row[2] is None:
+            return True
+        if int(row[4]) != 0:
+            return False
+        parent = self._node_row(str(row[1]), str(row[2]))
+        if parent is None:
+            return False
+        return self._is_page_row(parent)
 
     def _check_parent_allowed(self, workspace_id: str, parent_id: str, op_type: str) -> tuple[Any, ...]:
         """Shared placement guard for object.create/object.move: the parent
@@ -1021,8 +1043,8 @@ class LocalStore:
         parent_id = str(parent_id) if parent_id is not None else None
         class_ids = [str(class_id) for class_id in (payload.get("classIds") or [])]
         tag_ids = [str(tag_id) for tag_id in (payload.get("tagIds") or [])]
-        present_as_main_pre = payload.get("presentAsMain")
-        present_as_main_pre = (1 if parent_id is None else 0) if present_as_main_pre is None else int(bool(present_as_main_pre))
+        is_embedded_pre = payload.get("isEmbedded")
+        is_embedded_pre = (0 if parent_id is None else 1) if is_embedded_pre is None else int(bool(is_embedded_pre))
         # Date-chain class lock (SCHEMA.md "Datetime"): a date node's class
         # set is FIXED to its precision's system class. The re-issued
         # object.create is the OR-Set add carrier (class.assign rides it,
@@ -1033,7 +1055,7 @@ class LocalStore:
         # content flattens below (text-only — nothing to assert).
         link_class_ids = (
             []
-            if present_as_main_pre == 1
+            if is_embedded_pre == 0
             else _content_class_link_ids(payload.get("contentAst"))
         )
         locked_date_class = date_chain_class_id(object_id)
@@ -1045,14 +1067,15 @@ class LocalStore:
                         f" it can only carry the {locked_date_class} system class",
                         op_type,
                     )
-        # Render bit (Revision 11): the payload may carry presentAsMain; the
-        # applier defaults it by context — a parentless node presents as main
-        # (document chrome by the second cascade branch), a parented one
-        # starts inline (block chrome; the "hide from body" gloss is the
-        # 0→1 toggle). object.create always makes is_class = 0 nodes; class
+        # Embedding flag (Revision 12): the payload may carry isEmbedded; the
+        # applier defaults it by context — a parentless node is standalone
+        # (document chrome by the second cascade branch; the flag is stored
+        # but unread), a parented one starts embedded (its content belongs to
+        # the parent's body — block chrome; the promotion boundary is the
+        # 1→0 toggle). object.create always makes is_class = 0 nodes; class
         # declaration remains the class.create op.
-        present_as_main = payload.get("presentAsMain")
-        present_as_main = (1 if parent_id is None else 0) if present_as_main is None else int(bool(present_as_main))
+        is_embedded = payload.get("isEmbedded")
+        is_embedded = (0 if parent_id is None else 1) if is_embedded is None else int(bool(is_embedded))
         after_id = payload.get("afterId")
         after_id = str(after_id) if after_id is not None else None
         before_id = payload.get("beforeId")
@@ -1060,10 +1083,10 @@ class LocalStore:
         ts = _envelope_ts(env)
 
         # Content flatten invariant (SCHEMA.md): document-chrome nodes
-        # (is_class or present_as_main) carry text-only content; an inline
+        # (is_class or is_embedded = 0) carry text-only content; an embedded
         # block keeps the full rich token stream.
         content_ast = payload.get("contentAst")
-        tokens: Any = stringify_content_ast(content_ast) if present_as_main == 1 else (content_ast or [])
+        tokens: Any = stringify_content_ast(content_ast) if is_embedded == 0 else (content_ast or [])
         content = json.dumps(tokens, ensure_ascii=False)
         content_plain = plaintext_excerpt(tokens)
 
@@ -1087,7 +1110,19 @@ class LocalStore:
         if parent_id is not None:
             # Classes are containers (spec I4): a class parent is legal for
             # non-class children — which is all object.create can make.
-            self._check_parent_allowed(env.workspace_id, parent_id, op_type)
+            parent = self._check_parent_allowed(env.workspace_id, parent_id, op_type)
+            # Parent-page condition (owner ruling 2026-10-15, Revision 12):
+            # the standalone role is only effective under a page parent —
+            # claiming it under a class or an embedded block establishes an
+            # illegal parented state and fails loud. (A parented default is
+            # embedded = 1, so is_embedded == 0 here is always an explicit
+            # claim.)
+            if is_embedded == 0 and not self._is_page_row(parent):
+                raise MoveGuardError(
+                    f"{op_type}: is_embedded = 0 (standalone) requires the parent to render"
+                    " with document chrome (the parent is a class or an embedded block)",
+                    op_type,
+                )
         # Date-chain parenting lock (SCHEMA.md "Datetime", same rule as
         # object.move, with one birth-time exception): a date id may only be
         # created AT its deterministic chain parent (year → root, month →
@@ -1109,14 +1144,14 @@ class LocalStore:
         with self._conn:
             self._conn.execute(
                 """INSERT INTO nodes
-                     (workspace_id, id, is_class, present_as_main, parent_id, name, class_ids, content, content_plain,
+                     (workspace_id, id, is_class, is_embedded, parent_id, name, class_ids, content, content_plain,
                       icon, color, is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
                    VALUES (?, ?, 0, ?, ?, NULL, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     object_id,
-                    present_as_main,
+                    is_embedded,
                     parent_id,
                     content,
                     content_plain,
@@ -1157,18 +1192,39 @@ class LocalStore:
 
         sets: list[str] = []
         values: list[Any] = []
-        # Promotion/demotion (Revision 11) is the presentAsMain toggle: the bit
-        # joins the row-level LWW set; a 0→1 flip (promotion) stringifies the
-        # rich token stream to text-only in the same op (the lossy boundary
-        # the UI warns about), while a 1→0 demotion leaves the content
-        # untouched — demotion never un-flattens. On a class row the bit is
-        # inert (classes render ClassView regardless); applying it
-        # harmlessly keeps the op uniform.
-        present_as_main = payload.get("presentAsMain")
-        if present_as_main is not None:
-            sets.append("present_as_main = ?")
-            values.append(1 if present_as_main else 0)
-            if present_as_main and not bool(row[4]):
+        # Promotion/demotion (Revision 12) is the isEmbedded toggle: the flag
+        # joins the row-level LWW set; a 1→0 flip (promotion to the Page
+        # role) stringifies the rich token stream to text-only in the same op
+        # (the lossy boundary the UI warns about), while a 0→1 demotion
+        # leaves the content untouched — demotion never un-flattens. On a
+        # class row the flag is inert (classes render ClassView regardless);
+        # applying it harmlessly keeps the op uniform. Promotion (the
+        # standalone claim) is gated by the parent-page condition; demotion
+        # of a parented page is gated on its standalone children being gone.
+        is_embedded = payload.get("isEmbedded")
+        if is_embedded is not None:
+            if is_embedded is False and row[2] is not None:
+                parent = self._node_row(env.workspace_id, str(row[2]))
+                if parent is None or not self._is_page_row(parent):
+                    raise MoveGuardError(
+                        f"{op_type}: is_embedded = 0 (standalone) requires the parent to render"
+                        " with document chrome (the parent is a class or an embedded block)",
+                        op_type,
+                    )
+            if is_embedded is True and bool(row[4]) is False and row[2] is not None:
+                standalone_child = self._conn.execute(
+                    "SELECT 1 FROM nodes WHERE parent_id = ? AND is_embedded = 0 LIMIT 1",
+                    (object_id,),
+                ).fetchone()
+                if standalone_child is not None:
+                    raise MoveGuardError(
+                        f"{op_type}: cannot demote node {object_id} while it carries"
+                        " standalone (is_embedded = 0) children (demote or move them first)",
+                        op_type,
+                    )
+            sets.append("is_embedded = ?")
+            values.append(1 if is_embedded else 0)
+            if is_embedded is False and bool(row[4]):
                 flattened = json.dumps(stringify_content_ast(parse_content_ast(row[10])), ensure_ascii=False)
                 sets.append("content = ?")
                 values.append(flattened)
@@ -1473,6 +1529,20 @@ class LocalStore:
                 f"{op_type}: node {object_id} is a class; classes are always roots and cannot have a parent",
                 op_type,
             )
+        # Parent-page condition (owner ruling 2026-10-15, Revision 12): a
+        # standalone node (is_embedded = 0) renders with document chrome only
+        # under a page parent, so moving one under a class or an embedded
+        # block establishes an illegal parented state and fails loud (moves
+        # never write the flag — the alternative, silently clearing it, would
+        # rewrite render state behind the user's back).
+        if parent_id is not None and int(row[4]) == 0:
+            parent = self._node_row(env.workspace_id, parent_id)
+            if parent is None or not self._is_page_row(parent):
+                raise MoveGuardError(
+                    f"{op_type}: node {object_id} is standalone (is_embedded = 0);"
+                    " it can only move under a parent that renders with document chrome",
+                    op_type,
+                )
         # Date-chain parenting lock (SCHEMA.md "Datetime"): a date node may
         # ONLY live under its deterministic chain parent (year → root,
         # month → year, day → month). The chain self-heal re-issues exactly
@@ -1489,7 +1559,7 @@ class LocalStore:
         # move publishes or drops — a position write never outlives a newer
         # parent write and vice versa. Moves never write the render bit: a
         # parentless non-class node renders with document chrome by the second
-        # cascade branch regardless of present_as_main.
+        # cascade branch regardless of is_embedded (unread there).
         if not self._incoming_wins(env, row[12], row[13], row[14]):
             return False
 
@@ -1694,7 +1764,7 @@ class LocalStore:
         class_id: str,
         fields: dict[str, Any],
     ) -> None:
-        """The class node (is_class=1, present_as_main=0) is the structural
+        """The class node (is_class=1, is_embedded=0) is the structural
         authority for the class_list read model; the registry row carries
         class-only config.
 
@@ -1711,7 +1781,7 @@ class LocalStore:
         with self._conn:
             self._conn.execute(
                 """INSERT OR IGNORE INTO nodes
-                     (workspace_id, id, is_class, present_as_main, parent_id, class_ids, name, content, content_plain,
+                     (workspace_id, id, is_class, is_embedded, parent_id, class_ids, name, content, content_plain,
                       icon, color,
                       is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
@@ -1838,7 +1908,7 @@ class LocalStore:
         # bit flips).
         with self._conn:
             converted = self._conn.execute(
-                "UPDATE nodes SET is_class = 1, present_as_main = 0, parent_id = NULL"
+                "UPDATE nodes SET is_class = 1, is_embedded = 0, parent_id = NULL"
                 " WHERE workspace_id = ? AND id = ? AND is_class = 0",
                 (env.workspace_id, class_id),
             )
@@ -2880,7 +2950,7 @@ class LocalStore:
         ts = _envelope_ts(env)
         self._conn.execute(
             """INSERT OR IGNORE INTO nodes
-                 (workspace_id, id, is_class, present_as_main, parent_id, name, class_ids, content, content_plain,
+                 (workspace_id, id, is_class, is_embedded, parent_id, name, class_ids, content, content_plain,
                   icon, color, is_active, created_at, updated_at, created_by, updated_by,
                   hlc_physical, hlc_logical, actor_id)
                VALUES (?, ?, 1, 0, NULL, NULL, '[]', ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2988,7 +3058,7 @@ class LocalStore:
         excluded unless ``include_inactive`` is set.
         """
         sql = (
-            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
+            "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
             " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ?"
         )
@@ -3005,7 +3075,7 @@ class LocalStore:
     def children(self, workspace_id: str, parent_id: str) -> list[NodeRow]:
         """Direct children in child-order position order (the outliner read)."""
         rows = self._conn.execute(
-            """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.present_as_main, n.name, n.class_ids, n.tag_ids,
+            """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.is_embedded, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain,
                       n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description
                FROM nodes n
@@ -3020,7 +3090,7 @@ class LocalStore:
     def node(self, workspace_id: str, node_id: str) -> NodeRow | None:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
-            "SELECT id, workspace_id, parent_id, is_class, present_as_main, name, class_ids, tag_ids, icon, color,"
+            "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
             " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
@@ -3044,7 +3114,7 @@ class LocalStore:
             workspace_id=str(row[1]),
             parent_id=row[2],
             is_class=bool(row[3]),
-            present_as_main=bool(row[4]),
+            is_embedded=bool(row[4]),
             name=row[5],
             class_ids=class_ids,
             tag_ids=tag_ids,
@@ -3393,7 +3463,7 @@ class LocalStore:
 
         The blob is a serialized copy of the server's derived database,
         whose node table is ``node`` (singular) with the column names
-        (``is_class``/``present_as_main``, ``is_active`` — same polarity as
+        (``is_class``/``is_embedded``, ``is_active`` — same polarity as
         the cache, ``class_ids``, and the row-LWW columns
         ``hlc_physical``/``hlc_logical``/``actor_id`` which seed the cache's
         LWW baseline when present). The table is discovered from
@@ -3554,15 +3624,17 @@ _NODES_DDL = """
 CREATE TABLE IF NOT EXISTS nodes (
     workspace_id TEXT NOT NULL,
     id TEXT NOT NULL,
-    -- Revision-11 render-state model (replaces the node_type enumeration):
+    -- Revision-12 embedding model (replaces the node_type enumeration and
+    -- Revision 11's present_as_main render bit, renamed + inverted):
     -- is_class is the ONLY identity marker — classes are always roots;
-    -- present_as_main is the render bit read by the third cascade branch for
-    -- parented non-class nodes: 1 = the parent's main-children zone +
-    -- document chrome when zoomed, 0 = inline body + block chrome. The bit is
-    -- unread for parentless nodes (document chrome by the second branch) and
-    -- for classes (ClassView by the first branch).
+    -- is_embedded is the embedding flag read by the third cascade branch for
+    -- parented non-class nodes: 1 (the DEFAULT) = the node's content belongs
+    -- to the parent's body — the Block role; 0 = a standalone structural
+    -- element — the Page role (main-children zone + document chrome when
+    -- zoomed). The flag is unread for parentless nodes (document chrome by
+    -- the second branch) and for classes (ClassView by the first branch).
     is_class INTEGER NOT NULL DEFAULT 0,
-    present_as_main INTEGER NOT NULL DEFAULT 0,
+    is_embedded INTEGER NOT NULL DEFAULT 1,
     parent_id TEXT,
     name TEXT,
     class_ids TEXT NOT NULL DEFAULT '[]',
@@ -3807,14 +3879,16 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     for column in ("id", "workspace_id", "parent_id", "name", "icon", "color", "content", "updated_at"):
         if column in legacy:
             copy_exprs[column] = _quote_ident(column)
-    # Revision-11 render-state model: the legacy node_type enumeration maps
-    # to the two booleans (page → is_class 0 + present_as_main 1).
+    # Revision-12 embedding model: the legacy node_type enumeration maps to
+    # the two booleans directly in the canonical shape (page → is_class 0 +
+    # is_embedded 0; block → (0, 1); class → (1, 0) — class rows converge to
+    # 0, matching the v15 ladder's inversion).
     if "node_type" in legacy:
         copy_exprs["is_class"] = f"CASE WHEN {_quote_ident('node_type')} = 'class' THEN 1 ELSE 0 END"
-        copy_exprs["present_as_main"] = f"CASE WHEN {_quote_ident('node_type')} = 'page' THEN 1 ELSE 0 END"
+        copy_exprs["is_embedded"] = f"CASE WHEN {_quote_ident('node_type')} = 'block' THEN 1 ELSE 0 END"
     else:
         copy_exprs.setdefault("is_class", "0")
-        copy_exprs.setdefault("present_as_main", "0")
+        copy_exprs.setdefault("is_embedded", "1")
     if "archived" in legacy:
         copy_exprs["is_active"] = f"1 - {_quote_ident('archived')}"
     copy_exprs.setdefault("is_active", "1")
@@ -3898,7 +3972,7 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
             workspace_id TEXT NOT NULL,
             id TEXT NOT NULL,
             is_class INTEGER NOT NULL DEFAULT 0,
-            present_as_main INTEGER NOT NULL DEFAULT 0,
+            is_embedded INTEGER NOT NULL DEFAULT 1,
             parent_id TEXT,
             name TEXT,
             class_ids TEXT NOT NULL DEFAULT '[]',
@@ -3920,14 +3994,14 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (workspace_id, id)
         );
         INSERT INTO nodes_v7 (
-            workspace_id, id, is_class, present_as_main, parent_id, name,
+            workspace_id, id, is_class, is_embedded, parent_id, name,
             class_ids, class_order, tag_ids, icon, color, is_active, content,
             content_plain, created_at, updated_at, created_by, updated_by,
             hlc_physical, hlc_logical, actor_id
         )
         SELECT workspace_id, id,
             CASE WHEN node_type = 'class' THEN 1 ELSE 0 END,
-            CASE WHEN node_type = 'page' THEN 1 ELSE 0 END,
+            CASE WHEN node_type = 'block' THEN 1 ELSE 0 END,
             parent_id, name, class_ids, class_order, tag_ids, icon, color,
             is_active, content, content_plain, created_at, updated_at,
             created_by, updated_by, hlc_physical, hlc_logical, actor_id
@@ -4164,6 +4238,72 @@ def _migrate_v14(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN description TEXT")
 
 
+def _migrate_v15(conn: sqlite3.Connection) -> None:
+    """v15 — the Revision-12 embedding model (web schema v21 parity, owner
+    2026-10-16): ``present_as_main`` is renamed to ``is_embedded`` WITH
+    POLARITY INVERSION (is_embedded = 1 - present_as_main: the old
+    main-zone bit 1 becomes the standalone claim 0, the old inline-body 0
+    becomes the embedded default 1; class rows converge to 0 so the ladder
+    and the appliers' canonical writes meet). Table rebuild (the v12
+    precedent); guarded on the old column so the step is a no-op for
+    databases that already carry is_embedded (idempotent)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+    if "present_as_main" not in columns:
+        return
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE nodes_v15 (
+            workspace_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            is_class INTEGER NOT NULL DEFAULT 0,
+            is_embedded INTEGER NOT NULL DEFAULT 1,
+            parent_id TEXT,
+            name TEXT,
+            class_ids TEXT NOT NULL DEFAULT '[]',
+            class_order TEXT NOT NULL DEFAULT '[]',
+            tag_ids TEXT NOT NULL DEFAULT '[]',
+            content TEXT,
+            content_plain TEXT NOT NULL DEFAULT '',
+            icon TEXT,
+            color TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            created_by TEXT,
+            updated_by TEXT,
+            hlc_physical INTEGER NOT NULL DEFAULT 0,
+            hlc_logical INTEGER NOT NULL DEFAULT 0,
+            actor_id TEXT,
+            cover_asset_id TEXT,
+            banner_asset_id TEXT,
+            aliased_node_id TEXT,
+            description TEXT,
+            PRIMARY KEY (workspace_id, id)
+        );
+        INSERT INTO nodes_v15 (
+            workspace_id, id, is_class, is_embedded, parent_id, name,
+            class_ids, class_order, tag_ids, content, content_plain, icon, color,
+            is_active, created_at, updated_at, created_by, updated_by,
+            hlc_physical, hlc_logical, actor_id,
+            cover_asset_id, banner_asset_id, aliased_node_id, description
+        )
+        SELECT workspace_id, id, is_class,
+            CASE WHEN is_class = 1 THEN 0
+                 WHEN present_as_main = 1 THEN 0
+                 ELSE 1 END,
+            parent_id, name, class_ids, class_order, tag_ids, content, content_plain,
+            icon, color, is_active, created_at, updated_at, created_by, updated_by,
+            hlc_physical, hlc_logical, actor_id,
+            cover_asset_id, banner_asset_id, aliased_node_id, description
+        FROM nodes;
+        DROP TABLE nodes;
+        ALTER TABLE nodes_v15 RENAME TO nodes;
+        PRAGMA foreign_keys = ON;
+        """
+    )
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -4180,4 +4320,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (12, _migrate_v12),
     (13, _migrate_v13),
     (14, _migrate_v14),
+    (15, _migrate_v15),
 )

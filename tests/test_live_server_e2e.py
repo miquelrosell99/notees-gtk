@@ -335,13 +335,13 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     # --- 4: the server's object API agrees — three-way equality. ---
     main = device_a.client._get_json(f"/api/objects/{PAGE_MAIN}")["object"]
     assert main["isClass"] is False
-    assert main["presentAsMain"] is True
+    assert main["isEmbedded"] is False
     assert main["name"] == "Live Page"  # server object API still exposes the derived name
     assert main["classIds"] == [CLASS_SOURCE]
     assert main["parentId"] is None
     block = device_a.client._get_json(f"/api/objects/{BLOCK_ONE}")["object"]
     assert block["isClass"] is False
-    assert block["presentAsMain"] is False
+    assert block["isEmbedded"] is True
     assert block["parentId"] == PAGE_MAIN
     assert block["contentAst"] == [
         {"type": "text", "text": "See "},

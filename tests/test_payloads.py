@@ -326,7 +326,7 @@ class TestRenderStateModelStrictness:
 
     @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
     def test_present_as_main_accepted(self, op_type: str) -> None:
-        payload: dict[str, Any] = {"objectId": UUID_1, "presentAsMain": True}
+        payload: dict[str, Any] = {"objectId": UUID_1, "isEmbedded": False}
         if op_type == "object.update":
             validate_payload(op_type, payload)
         else:
@@ -371,7 +371,7 @@ class TestBuilders:
     def test_object_create_full_shape(self) -> None:
         payload = build_object_create(
             UUID_1,
-            present_as_main=False,
+            is_embedded=True,
             class_ids=[UUID_2],
             tag_ids=[UUID_3],
             content_ast=[{"type": "text", "text": "hi"}],
@@ -379,7 +379,7 @@ class TestBuilders:
         )
         assert payload == {
             "objectId": UUID_1,
-            "presentAsMain": False,
+            "isEmbedded": True,
             "classIds": [UUID_2],
             "tagIds": [UUID_3],
             "contentAst": [{"type": "text", "text": "hi"}],

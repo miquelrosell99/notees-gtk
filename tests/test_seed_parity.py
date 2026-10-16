@@ -194,7 +194,7 @@ class TestNewSourceSubclasses:
             row = store.node(WS, class_id)
             assert row is not None
             assert row.is_class is True
-            assert row.present_as_main is False
+            assert row.is_embedded is False  # classes converge to the standalone 0
             assert row.content_plain == name  # title-is-content: the label IS the content
             assert row.parent_id is None  # classes are always roots
         with sqlite3.connect(_db_path(store)) as raw:
@@ -389,7 +389,7 @@ class TestDeployCatalogFive:
             row = store.node(WS, class_id)
             assert row is not None
             assert row.is_class is True
-            assert row.present_as_main is False
+            assert row.is_embedded is False  # classes converge to the standalone 0
             assert row.content_plain == title  # title-is-content: the display title IS the content
             assert row.parent_id is None  # classes are always roots
         with sqlite3.connect(_db_path(store)) as raw:

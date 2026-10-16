@@ -18,7 +18,7 @@
       "timestamp": "2026-09-24T12:00:07.000Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-0000000000f3",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "classIds": [],
         "contentAst": [
           {
@@ -75,7 +75,7 @@
       "timestamp": "2026-09-24T12:00:07.200Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-0000000000f5",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "classIds": [],
         "contentAst": [
           {
@@ -132,7 +132,7 @@
       "timestamp": "2026-09-24T12:00:07.400Z",
       "payload": {
         "objectId": "0192a000-0000-7000-8000-0000000000f7",
-        "presentAsMain": true,
+        "isEmbedded": false,
         "classIds": [],
         "contentAst": [
           {

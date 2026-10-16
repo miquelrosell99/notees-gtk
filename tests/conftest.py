@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS node (
     -- is unread for parentless nodes (document chrome by the second branch)
     -- and for classes (ClassView by the first branch).
     is_class INTEGER NOT NULL DEFAULT 0,
-    present_as_main INTEGER NOT NULL DEFAULT 0,
+    is_embedded INTEGER NOT NULL DEFAULT 1,
     parent_id TEXT REFERENCES node(id),
     class_ids TEXT NOT NULL DEFAULT '[]',
     -- User-defined class ORDER (class.reorder, LWW-by-arrival); the
