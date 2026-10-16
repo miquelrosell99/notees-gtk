@@ -8,6 +8,23 @@ history.
 
 ## 2026-10-16
 
+- **feat(model): node links carry their own `isEmbedded` flag — manual,
+  default false (main-repo lockstep).** The
+  `mention` content token accepts the optional `isEmbedded` boolean
+  (strict schema; absent/false = an ordinary inline link). Embedding is a
+  per-link USER choice: only a link marked embedded — and sole in its
+  block — presents the target's content in place; every pre-existing link
+  reads false. The GTK store carries no edge projection table (mentions
+  are mined per read), so the port is the token schema: the flag rides the
+  stored content verbatim. Also lands the deferred merge of the
+  Revision-12 embedding-model slice (this repo's `main` now carries the
+  rename + the parent-page guard). Fixtures: the corpus re-vendors from
+  the main repo's slice (32 files, sha256-identical, `link-embedded.json`
+  added). **Verification:** `uv run pytest` 804 passed / `ruff` clean /
+  `mypy` clean.
+
+- **feat(model): the Revision-12 embedding model — `isEmbedded` replaces
+
 - **feat(model): the Revision-12 embedding model — `isEmbedded` replaces
   `presentAsMain` (polarity inverted), the parent-page condition guard, and
   the fixture corpus re-vendor (main-repo lockstep).** The

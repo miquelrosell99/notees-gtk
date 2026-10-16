@@ -75,6 +75,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/hr.json",
     "wire/heading-content.json",
     "wire/is-embedded-parent-page.json",
+    "wire/link-embedded.json",
     "wire/object-color.json",
     "wire/object-is-embedded.json",
     "wire/object-move-before.json",

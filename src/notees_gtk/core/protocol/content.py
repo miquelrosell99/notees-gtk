@@ -233,11 +233,19 @@ def validate_content_token(token: Any) -> None:
     elif ttype == "mention":
         _check_uuid(token.get("targetNodeId"), "mention targetNodeId")
         _require_str(token, "text", min_length=1)
-        _check_no_extra(token, {"targetNodeId", "text", "displayText", "linkId"})
+        _check_no_extra(token, {"targetNodeId", "text", "displayText", "linkId", "isEmbedded"})
         if token.get("displayText") is not None:
             _require_str(token, "displayText", min_length=1, max_length=512)
         if token.get("linkId") is not None:
             _check_uuid(token.get("linkId"), "mention linkId")
+        # Link embedding: the manual per-link
+        # embedding flag — true = an embedded link (where the link is its
+        # block's sole content, the block presents the target's content in
+        # place). Absent/false = an ordinary inline link (the default; every
+        # pre-existing link reads false). Independent of the node's own
+        # is_embedded structural role.
+        if token.get("isEmbedded") is not None and not isinstance(token.get("isEmbedded"), bool):
+            raise _fail("mention 'isEmbedded' must be a boolean")
     elif ttype == "class_link":
         _check_uuid(token.get("classId"), "class_link classId")
         _check_no_extra(token, {"classId", "displayText"})
