@@ -270,8 +270,9 @@ class TestClassExtendsFixture:
 
 class TestClassPropertyDefaultsFixture:
     """Replay of class-property-defaults.json with intermediate states
-    (mirrors the monorepo store test): default applies → multi-class conflict
-    resolves first-applied-wins → unset flips the winner."""
+    (mirrors the monorepo store test): the schema's ONE GLOBAL default
+    applies → a second binding adds presence, not
+    a competing default → unsetting both bindings removes the property."""
 
     PRIORITY = "0192a000-0000-7000-8000-000000000301"
     TASK = "0192a000-0000-7000-8000-000000000302"
@@ -296,7 +297,6 @@ class TestClassPropertyDefaultsFixture:
                 metadata=None,
                 source="default",
                 bound_by=self.TASK,
-                required=None,
                 readonly=None,
                 hide_when_empty=None,
                 sequence=0,
@@ -305,21 +305,29 @@ class TestClassPropertyDefaultsFixture:
         # The default is DERIVED: no property_value row was ever written.
         assert raw(store, "SELECT COUNT(*) FROM property_value WHERE node_id = ?", (self.ITEM,)) == [(0,)]
 
-    def test_prefix_7_first_applied_class_wins_the_conflict(self, store: LocalStore) -> None:
+    def test_prefix_7_first_applied_class_wins_the_binding(self, store: LocalStore) -> None:
         envelopes = self._load()
         for env in envelopes[:7]:
-            store.apply_remote(env)  # envelope 7 is a re-create: tree no-op by design
-        # Task's membership add HLC (envelope 4) precedes Project's
-        # (envelope 7): Task's 'medium' beats Project's 'high'.
+            store.apply_remote(env)  # envelope 6 is a re-create: tree no-op by design
+        # The default is the SCHEMA's single global value — Project's binding
+        # adds presence (Task still wins boundBy, earliest assignment HLC),
+        # not a competing default.
         effective = store.get_effective_properties(self.ITEM)
         assert [(row.value, row.source, row.bound_by) for row in effective] == [("medium", "default", self.TASK)]
 
-    def test_full_8_unset_flips_the_winner(self, store: LocalStore) -> None:
+    def test_unset_task_project_still_binds_the_same_global_default(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:8]:
+            store.apply_remote(env)
+        store.apply_remote(envelopes[7])  # unset Task's binding — Project still binds
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [("medium", "default", self.PROJECT)]
+
+    def test_full_replay_unsets_both_bindings_no_binding_no_default(self, store: LocalStore) -> None:
         envelopes = self._load()
         for env in envelopes:
             store.apply_remote(env)
-        effective = store.get_effective_properties(self.ITEM)
-        assert [(row.value, row.source, row.bound_by) for row in effective] == [("high", "default", self.PROJECT)]
+        assert store.get_effective_properties(self.ITEM) == []
 
 
 class TestClassUnassignFixture:
@@ -789,12 +797,14 @@ class TestClassPropertyActiveFixture:
     def test_prefix_6_disable_wins_the_row_race_default_vanishes_row_survives(self, store: LocalStore) -> None:
         for env in self._load()[:6]:
             assert store.apply_remote(env) is True
-        # The ROW survives with its default intact, flagged inactive…
+        # The ROW survives, flagged inactive; the SCHEMA-level default
+        # is untouched…
         assert raw(
             store,
-            "SELECT active, default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            "SELECT active FROM class_property WHERE class_id = ? AND property_schema_id = ?",
             (self.CLASS, self.SCHEMA),
-        ) == [(0, '"opt-a"')]
+        ) == [(0,)]
+        assert raw(store, "SELECT default_value FROM property_schema WHERE id = ?", (self.SCHEMA,)) == [('"opt-a"',)]
         # …so the effective read shows neither the default nor metadata.
         assert store.get_effective_properties(self.ITEM) == []
 

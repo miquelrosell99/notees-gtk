@@ -409,6 +409,9 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
             "name": "Priority",
             "type": "select",
             "options": [{"id": "low", "label": "low"}, {"id": "medium", "label": "medium"}],
+            # The default is SCHEMA-level (one
+            # global default per property, the Logseq shape).
+            "defaultValue": "medium",
         },
     )
     device_a.produce(
@@ -482,13 +485,14 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     ]
 
     # --- 2: class binding through the engine's write path + effective default. ---
+    # The binding carries ONLY the per-class mechanics (sequence, active) —
+    # the default rode the schema create above.
     device_a.produce(
         "class.property.set",
         {
             "classId": CLASS_KIND,
             "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
             "sequence": 0,
-            "defaultValue": "medium",
         },
         affected=(CLASS_KIND,),
     )

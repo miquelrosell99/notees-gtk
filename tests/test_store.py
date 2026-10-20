@@ -17,8 +17,8 @@ property tombstones, and soft/permanent deletes with trash retention — plus
 the property-correctness waves: PG4 extends-aware binding resolution (the
 diamond rule), PG6 apply-time value validation (shape/scalar/cardinality/
 precision/filter/existence), the M38 asset property type (the implicit
-asset-class filter), and PC2 typed binding defaults (write-side fail-loud +
-read-side drop).
+asset-class filter), and PC2 typed schema defaults (write-side fail-loud +
+read-side drop — the default moved from the binding to the schema).
 """
 
 from __future__ import annotations
@@ -405,33 +405,27 @@ class TestMigrations:
         retired binding columns (readonly/hide_when_empty pre-v3.1.0, display
         the v11 experiment): the surviving per-class columns
         (sequence, required, default_value, active + LWW causality) keep
-        their rows verbatim."""
+        their rows verbatim. (v17 then retires required/default_value too —
+ so the upgraded table carries only
+        sequence + active.)"""
         path = tmp_path / "v11.db"
         instance = LocalStore(path)
         instance.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
-        instance.apply_remote(
-            make_env(
-                "class.property.set",
-                {
-                    "classId": uid("cls-1"),
-                    "propertySchemaId": uid("ps-1"),
-                    "sequence": 3,
-                    "required": True,
-                    "defaultValue": "low",
-                },
-                hlc=(2, 0),
-            )
-        )
         instance.close()
         # Downgrade the on-disk shape to v11: property_schema loses the three
-        # render-contract columns; class_property regains the retired binding columns
-        # (with data — the rebuild must drop them).
+        # render-contract columns; class_property regains the retired binding
+        # columns (with data — the rebuild must drop them). The pre-v12 row
+        # is seeded straight into the downgrade table — the current strict
+        # payload rejects those keys on the wire (the v17 semantics), so a
+        # real v11 database is the only place the historical row shape
+        # exists.
         with sqlite3.connect(path) as raw:
             raw.execute("ALTER TABLE property_schema DROP COLUMN display")
             raw.execute("ALTER TABLE property_schema DROP COLUMN readonly")
             raw.execute("ALTER TABLE property_schema DROP COLUMN hide_when_empty")
+            raw.execute("ALTER TABLE property_schema DROP COLUMN default_value")
             raw.executescript(
-                """
+                f"""
                 CREATE TABLE class_property_v11 (
                     class_id TEXT NOT NULL,
                     property_schema_id TEXT NOT NULL,
@@ -447,10 +441,8 @@ class TestMigrations:
                     actor_id TEXT,
                     PRIMARY KEY (class_id, property_schema_id)
                 );
-                INSERT INTO class_property_v11
-                    SELECT class_id, property_schema_id, sequence, required, 0, 1,
-                           default_value, active, 'bullet', hlc_physical, hlc_logical, actor_id
-                    FROM class_property;
+                INSERT INTO class_property_v11 VALUES
+                    ('{uid('cls-1')}', '{uid('ps-1')}', 3, 1, 0, 1, '"low"', 1, 'bullet', 2, 0, '{ACTOR}');
                 DROP TABLE class_property;
                 ALTER TABLE class_property_v11 RENAME TO class_property;
                 CREATE INDEX IF NOT EXISTS idx_class_property_class ON class_property (class_id);
@@ -463,18 +455,19 @@ class TestMigrations:
             binding_columns = {row[1] for row in raw.execute("PRAGMA table_info(class_property)")}
             schema_columns = {row[1] for row in raw.execute("PRAGMA table_info(property_schema)")}
             rows = raw.execute(
-                "SELECT sequence, required, default_value, active FROM class_property"
+                "SELECT sequence, active FROM class_property"
                 f" WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'"
             ).fetchall()
         assert version == SCHEMA_VERSION
-        # The binding table carries only the per-class mechanics now.
-        assert {"readonly", "hide_when_empty", "display"} & binding_columns == set()
-        assert {"sequence", "required", "default_value", "active"} <= binding_columns
-        # The schema table gained the render contracts.
-        assert {"display", "readonly", "hide_when_empty"} <= schema_columns
-        # The pre-batch row keeps its data — required survives, the retired
-        # display value is gone with the column.
-        assert rows == [(3, 1, '"low"', 1)]
+        # The binding table carries only the per-class mechanics now — v12
+        # retired the render contracts, v17 retired required/default_value.
+        assert {"readonly", "hide_when_empty", "display", "required", "default_value"} & binding_columns == set()
+        assert {"sequence", "active"} <= binding_columns
+        # The schema table gained the render contracts and the default column.
+        assert {"display", "readonly", "hide_when_empty", "default_value"} <= schema_columns
+        # The pre-batch row keeps its data — sequence/active survive the two
+        # rebuilds, the retired columns are gone with the columns.
+        assert rows == [(3, 1)]
         # The migrated store takes new schema-side display writes like a
         # fresh v12 one.
         upgraded.apply_remote(
@@ -1587,40 +1580,55 @@ class TestClassOps:
 
 class TestClassPropertyBindings:
     def test_set_inserts_row_and_patch_keeps_omitted_fields(self, store: LocalStore) -> None:
+        """The binding row is sequence/active ONLY;
+        the default rides the SCHEMA row — the last default write wins
+        across classes (one global default per property)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 0, "defaultValue": "medium"},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 0},
                 hlc=(2, 0),
             )
         )
         assert raw_rows(
             store,
-            "SELECT sequence, required, default_value, hlc_physical"
+            "SELECT sequence, active, hlc_physical"
             f" FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [(0, None, '"medium"', 2)]
+        ) == [(0, 1, 2)]
 
-        # Patch only default + required: sequence survives via COALESCE.
+        # Patch only the sequence: the binding patches; the schema default
+        # survives untouched.
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "slot", "type": "text"},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "defaultValue": "low"}, hlc=(4, 0))
+        )
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "defaultValue": "low", "required": True},
-                hlc=(3, 0),
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 2},
+                hlc=(5, 0),
             )
         )
         assert raw_rows(
             store,
-            "SELECT sequence, required, default_value, hlc_physical FROM class_property"
+            "SELECT sequence, active, hlc_physical FROM class_property"
             f" WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [(0, 1, '"low"', 3)]
+        ) == [(2, 1, 5)]
+        assert raw_rows(store, f"SELECT default_value FROM property_schema WHERE id = '{uid('ps-1')}'") == [('"low"',)]
 
     def test_stale_set_dropped_by_row_lww(self, store: LocalStore) -> None:
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "defaultValue": "low"},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 3},
                 hlc=(3, 0),
             )
         )
@@ -1628,7 +1636,7 @@ class TestClassPropertyBindings:
             store.apply_remote(
                 make_env(
                     "class.property.set",
-                    {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "defaultValue": "stale"},
+                    {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 9},
                     hlc=(2, 0),
                 )
             )
@@ -1636,8 +1644,8 @@ class TestClassPropertyBindings:
         )
         assert raw_rows(
             store,
-            f"SELECT default_value FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [('"low"',)]
+            f"SELECT sequence FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [(3,)]
 
     def test_display_position_is_schema_sourced_on_effective_rows(self, store: LocalStore) -> None:
         """The position is PROPERTY-level — it rides the SCHEMA row
@@ -1648,7 +1656,13 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "propertySchema.create",
-                {"propertySchemaId": uid("ps-1"), "name": "State", "type": "select", "display": "bullet"},
+                {
+                    "propertySchemaId": uid("ps-1"),
+                    "name": "State",
+                    "type": "select",
+                    "display": "bullet",
+                    "defaultValue": "todo",
+                },
                 hlc=(2, 0),
             )
         )
@@ -1659,7 +1673,6 @@ class TestClassPropertyBindings:
                     "classId": uid("cls-1"),
                     "propertySchemaId": uid("ps-1"),
                     "sequence": 1,
-                    "defaultValue": "todo",
                 },
                 hlc=(3, 0),
             )
@@ -1737,9 +1750,16 @@ class TestClassPropertyBindings:
     def test_class_property_set_render_contract_keys_fail_loud(self, store: LocalStore) -> None:
         """display/readonly/hideWhenEmpty are retired keys on the
         binding payload — the apply-time strict gate rejects the envelope
-        outright (required stays a real binding field)."""
+        outright. So are ``required`` and ``defaultValue`` (``required`` retired outright, ``defaultValue`` moved to
+        the property schema)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
-        for key, value in (("display", "bullet"), ("readonly", True), ("hideWhenEmpty", True)):
+        for key, value in (
+            ("display", "bullet"),
+            ("readonly", True),
+            ("hideWhenEmpty", True),
+            ("required", True),
+            ("defaultValue", "low"),
+        ):
             with pytest.raises(EnvelopeValidationError, match=key):
                 store.apply_remote(
                     make_env(
@@ -1751,9 +1771,9 @@ class TestClassPropertyBindings:
 
     def test_inactive_binding_keeps_schema_contracts_on_unbound_authored(self, store: LocalStore) -> None:
         """PC4: an inactive binding never becomes a candidate, so an
-        authored value reads unbound — required/sequence drop to None (they
-        are binding-sourced) — while the schema's render contracts still
-        ride the row (they are PROPERTY-level, unbound values included)."""
+        authored value reads unbound — sequence drops to None (it is
+        binding-sourced; `required` retired outright) — while the schema's render contracts still ride the
+        row (they are PROPERTY-level, unbound values included)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
             make_env(
@@ -1765,7 +1785,7 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 1, "required": True},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 1},
                 hlc=(3, 0),
             )
         )
@@ -1794,30 +1814,39 @@ class TestClassPropertyBindings:
         # …the effective read marks the value unbound (binding metadata
         # None) while the schema's display still rides.
         assert [
-            (row.source, row.bound_by, row.required, row.sequence, row.display)
+            (row.source, row.bound_by, row.sequence, row.display)
             for row in store.get_effective_properties(member)
-        ] == [("authored", None, None, None, "bullet")]
+        ] == [("authored", None, None, "bullet")]
 
-    def test_explicit_json_null_default_is_a_real_default(self, store: LocalStore) -> None:
-        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+    def test_schema_default_keep_vs_clear_via_update(self, store: LocalStore) -> None:
+        """The schema default is keep/clear typed:
+        update-side absent keeps the stored value, a present null clears
+        it (the number-formats contract)."""
         store.apply_remote(
             make_env(
-                "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "defaultValue": None},
-                hlc=(2, 0),
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "State", "type": "select", "defaultValue": "low"},
+                hlc=(1, 0),
             )
         )
-        assert raw_rows(
-            store,
-            f"SELECT default_value FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [("null",)]
+        assert raw_rows(store, f"SELECT default_value FROM property_schema WHERE id = '{uid('ps-1')}'") == [('"low"',)]
+        # Absent keeps.
+        store.apply_remote(
+            make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "name": "State"}, hlc=(2, 0))
+        )
+        assert raw_rows(store, f"SELECT default_value FROM property_schema WHERE id = '{uid('ps-1')}'") == [('"low"',)]
+        # A present null clears.
+        store.apply_remote(
+            make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "defaultValue": None}, hlc=(3, 0))
+        )
+        assert raw_rows(store, f"SELECT default_value FROM property_schema WHERE id = '{uid('ps-1')}'") == [(None,)]
 
     def test_unset_deletes_the_binding_row(self, store: LocalStore) -> None:
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "defaultValue": "low"},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 0},
                 hlc=(2, 0),
             )
         )
@@ -1832,13 +1861,15 @@ class TestClassUnassign:
         store.apply_remote(class_env("class.create", uid("cls-x"), hlc=(1, 0), name="X"))
         store.apply_remote(
             make_env(
-                "propertySchema.create", {"propertySchemaId": uid("ps-x"), "name": "effort", "type": "text"}, hlc=(2, 0)
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-x"), "name": "effort", "type": "text", "defaultValue": "xs"},
+                hlc=(2, 0),
             )
         )
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-x"), "propertySchemaId": uid("ps-x"), "sequence": 0, "defaultValue": "xs"},
+                {"classId": uid("cls-x"), "propertySchemaId": uid("ps-x"), "sequence": 0},
                 hlc=(3, 0),
             )
         )
@@ -2886,6 +2917,7 @@ class TestPropertyWireBatch:
                     "name": "stage",
                     "type": "select",
                     "options": [{"id": "a", "label": "A"}],
+                    "defaultValue": "a",
                 },
                 hlc=(4, 0),
             )
@@ -2895,19 +2927,23 @@ class TestPropertyWireBatch:
                 "class.property.set",
                 class_id,
                 hlc=(5, 0),
-                **{"propertySchemaId": schema_id, "defaultValue": "a", "active": True},
+                **{"propertySchemaId": schema_id, "active": True},
             )
         )
         assert [row.value for row in store.get_effective_properties(item)] == ["a"]
         store.apply_remote(
             class_env("class.property.set", class_id, hlc=(6, 0), **{"propertySchemaId": schema_id, "active": False})
         )
-        # The ROW survives (unlike class.property.unset)…
+        # The ROW survives (unlike class.property.unset); the schema-level
+        # default is untouched…
         assert raw_rows(
             store,
-            "SELECT active, default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            "SELECT active FROM class_property WHERE class_id = ? AND property_schema_id = ?",
             (class_id, schema_id),
-        ) == [(0, '"a"')]
+        ) == [(0,)]
+        assert raw_rows(
+            store, "SELECT default_value FROM property_schema WHERE id = ?", (schema_id,)
+        ) == [('"a"',)]
         assert store.get_effective_properties(item) == []
         # …and a plain unset deletes it outright.
         store.apply_remote(class_env("class.property.unset", class_id, hlc=(7, 0), **{"propertySchemaId": schema_id}))
@@ -3001,7 +3037,10 @@ class TestPg4ExtendsAwareBindings:
     SCHEMA = uid("pg4-schema")
 
     def _chain_store(self, store: LocalStore, bind_on: list[str]) -> None:
-        """BASE <- MID <- LEAF chain, one text schema bound on each named class."""
+        """BASE <- MID <- LEAF chain, one text schema bound on each named
+        class. The default is SCHEMA-global — set
+        once after the bindings; the conflict these tests resolve is the
+        WINNING BINDING (boundBy/sequence), not the value."""
         store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
         for class_id, name, hlc in [
             (self.BASE, "Base", (2, 0)),
@@ -3024,9 +3063,16 @@ class TestPg4ExtendsAwareBindings:
                     "class.property.set",
                     class_id,
                     hlc=(8 + i, 0),
-                    **{"propertySchemaId": self.SCHEMA, "sequence": i, "defaultValue": f"dft-{i}"},
+                    **{"propertySchemaId": self.SCHEMA, "sequence": i},
                 )
             )
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": self.SCHEMA, "defaultValue": "dft"},
+                hlc=(8 + len(bind_on), 0),
+            )
+        )
 
     @staticmethod
     def _assign(store: LocalStore, node_id: str, class_id: str, hlc: tuple[int, int]) -> None:
@@ -3038,22 +3084,23 @@ class TestPg4ExtendsAwareBindings:
         self._chain_store(store, [self.BASE])
         self._assign(store, NODE, self.LEAF, (20, 0))
         effective = store.get_effective_properties(NODE)
-        assert [(row.value, row.source, row.bound_by) for row in effective] == [("dft-0", "default", self.BASE)]
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [("dft", "default", self.BASE)]
 
     def test_own_binding_beats_inherited_and_shortest_path_wins(self, store: LocalStore) -> None:
         self._chain_store(store, [self.BASE, self.MID])
-        # A node carrying MID itself: the own binding (distance 0) supplies
-        # the default over BASE's inherited row (distance 1).
+        # A node carrying MID itself: the own binding (distance 0) wins over
+        # BASE's inherited row (distance 1) — the schema default is the same
+        # global value either way; the winner supplies boundBy/sequence.
         self._assign(store, NODE, self.MID, (20, 0))
         winner = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
-        assert (winner.value, winner.source, winner.bound_by) == ("dft-1", "default", self.MID)
+        assert (winner.value, winner.source, winner.bound_by) == ("dft", "default", self.MID)
         # A LEAF-only node sees MID at distance 1 and BASE at distance 2 —
-        # the shorter path supplies the default.
+        # the shorter path wins the binding.
         other = uid("pg4-leaf-node")
         store.apply_remote(create_env(other, name="Owner", hlc=(19, 0)))
         self._assign(store, other, self.LEAF, (21, 0))
         winner_b = next(row for row in store.get_effective_properties(other) if row.property_schema_id == self.SCHEMA)
-        assert (winner_b.value, winner_b.bound_by) == ("dft-1", self.MID)
+        assert (winner_b.value, winner_b.bound_by) == ("dft", self.MID)
 
     def test_diamond_tie_at_equal_distance_resolves_by_assignment_hlc(self, store: LocalStore) -> None:
         store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
@@ -3079,7 +3126,7 @@ class TestPg4ExtendsAwareBindings:
                 "class.property.set",
                 self.MID,
                 hlc=(9, 0),
-                **{"propertySchemaId": self.SCHEMA, "sequence": 0, "defaultValue": "from-A"},
+                **{"propertySchemaId": self.SCHEMA, "sequence": 0},
             )
         )
         store.apply_remote(
@@ -3087,40 +3134,41 @@ class TestPg4ExtendsAwareBindings:
                 "class.property.set",
                 self.MID_B,
                 hlc=(9, 0),
-                **{"propertySchemaId": self.SCHEMA, "sequence": 0, "defaultValue": "from-B"},
+                **{"propertySchemaId": self.SCHEMA, "sequence": 0},
+            )
+        )
+        # The schema's single global default — the same value everywhere.
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": self.SCHEMA, "defaultValue": "from-global"},
+                hlc=(10, 0),
             )
         )
         # LEAF assigned first (earliest add HLC) — its path to MID wins the tie.
         self._assign(store, NODE, self.LEAF, (20, 0))
         self._assign(store, NODE, self.LEAF_B, (21, 0))
         winner = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
-        assert (winner.value, winner.bound_by) == ("from-A", self.MID)
-        # Reversed assignment order on another node flips the winner.
+        assert (winner.value, winner.bound_by) == ("from-global", self.MID)
+        # Reversed assignment order on another node flips the winner binding.
         other = uid("pg4-other")
         store.apply_remote(create_env(other, name="Other", hlc=(19, 0)))
         self._assign(store, other, self.LEAF_B, (20, 0))
         self._assign(store, other, self.LEAF, (21, 0))
         winner_b = next(row for row in store.get_effective_properties(other) if row.property_schema_id == self.SCHEMA)
-        assert (winner_b.value, winner_b.bound_by) == ("from-B", self.MID_B)
+        assert (winner_b.value, winner_b.bound_by) == ("from-global", self.MID_B)
 
     def test_inherited_binding_metadata_surfaces_on_authored_rows(self, store: LocalStore) -> None:
         self._chain_store(store, [self.BASE])
-        # Required rides the BINDING; readonly is PROPERTY-level and
-        # rides the SCHEMA — the authored row surfaces both, boundBy naming
-        # the ancestor whose binding won.
+        # Readonly is PROPERTY-level and rides the SCHEMA; sequence/boundBy
+        # are binding-sourced — the authored row surfaces both, boundBy
+        # naming the ancestor whose binding won. (`required` retired from
+        # the binding outright.)
         store.apply_remote(
             make_env(
                 "propertySchema.update",
                 {"propertySchemaId": self.SCHEMA, "readonly": True},
-                hlc=(8, 0),
-            )
-        )
-        store.apply_remote(
-            class_env(
-                "class.property.set",
-                self.BASE,
-                hlc=(9, 0),
-                **{"propertySchemaId": self.SCHEMA, "required": True},
+                hlc=(10, 0),
             )
         )
         self._assign(store, NODE, self.LEAF, (20, 0))
@@ -3129,7 +3177,7 @@ class TestPg4ExtendsAwareBindings:
         assert row.value == "mine"
         assert row.source == "authored"
         assert row.bound_by == self.BASE
-        assert row.required is True
+        assert row.sequence == 0
         assert row.readonly is True
 
 
@@ -3576,10 +3624,12 @@ class TestPb2OneShapePerType:
 
 
 class TestPc2TypedDefaults:
-    """PC2: a class-binding defaultValue must be typed per the schema type —
-    the write path (class.property.set) fails loud, and the effective read
-    drops a stored default that drifted out of match (schema delete+recreate
-    with a different type). Mirrors the monorepo store's
+    """PC2: a property SCHEMA defaultValue (moved
+    from the class binding to the schema, one global default per property)
+    must be typed per the schema type — the write path
+    (propertySchema.create/update) fails loud, and the effective read drops
+    a stored default that drifted out of match (schema delete+recreate with
+    a different type). Mirrors the monorepo store's
     property-values.test.ts PC2 suite."""
 
     CLS = uid("pc2-cls")
@@ -3593,24 +3643,22 @@ class TestPc2TypedDefaults:
             )
         )
 
-    def test_wrong_typed_default_fails_loud(self, store: LocalStore) -> None:
+    def test_update_fails_loud_on_a_wrong_typed_default(self, store: LocalStore) -> None:
         self._bound_store(store, "text", uid("pc2-text"))
         with pytest.raises(PropertyValueShapeError):
             store.apply_remote(
-                class_env(
-                    "class.property.set",
-                    self.CLS,
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": uid("pc2-text"), "defaultValue": True},
                     hlc=(4, 0),
-                    **{"propertySchemaId": uid("pc2-text"), "defaultValue": True},
                 )
             )
         with pytest.raises(PropertyValueShapeError):
             store.apply_remote(
-                class_env(
-                    "class.property.set",
-                    self.CLS,
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": uid("pc2-text"), "defaultValue": {"nodeId": NODE}},
                     hlc=(5, 0),
-                    **{"propertySchemaId": uid("pc2-text"), "defaultValue": {"nodeId": NODE}},
                 )
             )
 
@@ -3618,38 +3666,49 @@ class TestPc2TypedDefaults:
         self._bound_store(store, "object", uid("pc2-object"))
         with pytest.raises(PropertyValueShapeError):
             store.apply_remote(
-                class_env(
-                    "class.property.set",
-                    self.CLS,
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": uid("pc2-object"), "defaultValue": {"nodeId": NODE}},
                     hlc=(4, 0),
-                    **{"propertySchemaId": uid("pc2-object"), "defaultValue": {"nodeId": NODE}},
                 )
             )
-        # JSON null IS a real default for any type.
+        # An explicit null CLEARS (the keep/clear contract — SQL NULL, the
+        # canonical "no default" spelling).
         store.apply_remote(
-            class_env(
-                "class.property.set",
-                self.CLS,
-                hlc=(5, 0),
-                **{"propertySchemaId": uid("pc2-object"), "defaultValue": None},
+            make_env("propertySchema.update", {"propertySchemaId": uid("pc2-object"), "defaultValue": None}, hlc=(5, 0))
+        )
+        assert raw_rows(store, "SELECT default_value FROM property_schema WHERE id = ?", (uid("pc2-object"),)) == [
+            (None,)
+        ]
+
+    def test_create_time_default_validates_against_the_payload_type(self, store: LocalStore) -> None:
+        with pytest.raises(PropertyValueShapeError):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {"propertySchemaId": uid("pc2-text"), "name": "slot", "type": "text", "defaultValue": 42},
+                    hlc=(1, 0),
+                )
+            )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("pc2-text"), "name": "slot", "type": "text", "defaultValue": "from-create"},
+                hlc=(2, 0),
             )
         )
-        assert raw_rows(
-            store,
-            "SELECT default_value FROM class_property WHERE class_id = ? AND property_schema_id = ?",
-            (self.CLS, uid("pc2-object")),
-        ) == [("null",)]
+        assert raw_rows(store, "SELECT default_value FROM property_schema WHERE id = ?", (uid("pc2-text"),)) == [
+            ('"from-create"',)
+        ]
 
     def test_typed_defaults_store_and_derive(self, store: LocalStore) -> None:
         schema_id = uid("pc2-number")
         self._bound_store(store, "number", schema_id)
         store.apply_remote(
-            class_env(
-                "class.property.set",
-                self.CLS,
-                hlc=(4, 0),
-                **{"propertySchemaId": schema_id, "defaultValue": 7},
-            )
+            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id, "sequence": 0})
+        )
+        store.apply_remote(
+            make_env("propertySchema.update", {"propertySchemaId": schema_id, "defaultValue": 7}, hlc=(5, 0))
         )
         node = uid("pc2-node")
         store.apply_remote(create_env(node, class_ids=(self.CLS,), hlc=(10, 0), name="N"))
@@ -3660,42 +3719,36 @@ class TestPc2TypedDefaults:
         schema_id = uid("pc2-drift")
         self._bound_store(store, "number", schema_id)
         store.apply_remote(
-            class_env(
-                "class.property.set",
-                self.CLS,
-                hlc=(4, 0),
-                **{"propertySchemaId": schema_id, "defaultValue": 7},
-            )
+            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id, "sequence": 0})
         )
-        # PG3-style drift: delete + recreate the schema under the SAME id as text.
-        store.apply_remote(make_env("propertySchema.delete", {"propertySchemaId": schema_id}, hlc=(5, 0)))
+        store.apply_remote(
+            make_env("propertySchema.update", {"propertySchemaId": schema_id, "defaultValue": 7}, hlc=(5, 0))
+        )
+        # PG3-style drift: delete + recreate the schema under the SAME id as
+        # text (a create carrying no default clears the column).
+        store.apply_remote(make_env("propertySchema.delete", {"propertySchemaId": schema_id}, hlc=(6, 0)))
         store.apply_remote(
             make_env(
                 "propertySchema.create",
                 {"propertySchemaId": schema_id, "name": "slot", "type": "text"},
-                hlc=(6, 0),
+                hlc=(7, 0),
             )
         )
         node = uid("pc2-drift-node")
         store.apply_remote(create_env(node, class_ids=(self.CLS,), hlc=(10, 0), name="N"))
-        # The binding row survives; the wrong-typed stored default is dropped.
+        # The binding row survives; no default derives.
         assert store.get_effective_properties(node) == []
 
     def test_unknown_schema_id_skips_default_validation(self, store: LocalStore) -> None:
         store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
         store.apply_remote(class_env("class.create", self.CLS, hlc=(2, 0), name="C"))
         loose = uid("pc2-loose")
+        # A schema-less update (unknown id — no schema FK) is not validated;
+        # there is no row to store into either (the TS parity: no throw).
         store.apply_remote(
-            class_env(
-                "class.property.set",
-                self.CLS,
-                hlc=(3, 0),
-                **{"propertySchemaId": loose, "defaultValue": {"anything": True}},
-            )
+            make_env("propertySchema.update", {"propertySchemaId": loose, "defaultValue": {"anything": True}}, hlc=(3, 0))
         )
-        assert raw_rows(store, "SELECT default_value FROM class_property WHERE property_schema_id = ?", (loose,)) == [
-            (json.dumps({"anything": True}),)
-        ]
+        assert raw_rows(store, "SELECT default_value FROM property_schema WHERE id = ?", (loose,)) == []
 
 
 class TestWireNodeFields:
@@ -3966,13 +4019,27 @@ class TestAssetPropertyType:
     def test_node_typed_defaults_stay_unsupported(self, store: LocalStore) -> None:
         self._world(store)
         assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True)) is True
+        # The default moved to the schema; a
+        # node-typed schema rejects a non-null default on BOTH write paths.
         with pytest.raises(PropertyValueShapeError, match="must be null"):
             store.apply_remote(
-                class_env(
-                    "class.property.set",
-                    self.SOURCE_CLASS,
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": self.SCHEMA, "defaultValue": {"nodeId": self.ASSET_NODE}},
                     hlc=(6, 0),
-                    **{"propertySchemaId": self.SCHEMA, "defaultValue": {"nodeId": self.ASSET_NODE}},
+                )
+            )
+        with pytest.raises(PropertyValueShapeError, match="must be null"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {
+                        "propertySchemaId": uid("asset-dft"),
+                        "name": "Dft",
+                        "type": "asset",
+                        "defaultValue": {"nodeId": self.ASSET_NODE},
+                    },
+                    hlc=(7, 0),
                 )
             )
 
@@ -4372,17 +4439,24 @@ class TestPropertyScope:
                 )
             )
         # B extends A (in scope): the binding is live — it must be accepted.
+        # The default is SCHEMA-global: one value
+        # for every carrier.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": self.SCHEMA, "defaultValue": "inherited"},
+                    hlc=(10, 0),
+                )
+            )
+            is True
+        )
         assert (
             store.apply_remote(
                 make_env(
                     "class.property.set",
-                    {
-                        "classId": self.CLASS_B,
-                        "propertySchemaId": self.SCHEMA,
-                        "sequence": 0,
-                        "defaultValue": "inherited",
-                    },
-                    hlc=(10, 0),
+                    {"classId": self.CLASS_B, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                    hlc=(11, 0),
                 )
             )
             is True
@@ -4398,14 +4472,16 @@ class TestPropertyScope:
         self._scoped_world(store)
         store.apply_remote(
             make_env(
-                "class.property.set",
-                {
-                    "classId": self.CLASS_A,
-                    "propertySchemaId": self.SCHEMA,
-                    "sequence": 0,
-                    "defaultValue": "defaulted",
-                },
+                "propertySchema.update",
+                {"propertySchemaId": self.SCHEMA, "defaultValue": "defaulted"},
                 hlc=(8, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": self.CLASS_A, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                hlc=(9, 0),
             )
         )
         # NODE_X: no authored rows, no derived default (the stray binding is inert).

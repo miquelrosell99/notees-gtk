@@ -1,5 +1,5 @@
 {
-  "comment": "PC4 (§34.56) + §34.89/§34.90 (option icon + the display position, now PROPERTY-level): class_property.active — the binding row's soft-unbind flag (row LWW). A select schema binds to the Pipeline class with a default; a newer class.property.set flips active=false (an interleaved enable at a LOWER HLC loses the row LWW race), so the derived default vanishes from the effective read while the binding ROW survives. An authored value written while the binding is inactive still reads (boundBy null — unbound). A final re-enable restores the active flag (the authored value at idx 0 keeps shadowing the default). The schema's options carry the §34.89 icon (plus the §34.43 color grammar from PG16), parsed verbatim into the stored options JSON. A trailing propertySchema.update positions the value display at the bullet (§34.90 'display': panel|bullet|inline, a PROPERTY-level field — read off the schema, never the binding). LOCKSTEP-PENDING: the active payload key ships inert until the GTK m6+/Flutter m16+ releases parse it; the display key rides the §34.90 client batch.",
+  "comment": "PC4 (§34.56) + §34.89/§34.90 (option icon + the display position, now PROPERTY-level): class_property.active — the binding row's soft-unbind flag (row LWW). A select schema (GLOBAL default 'opt-a' on the schema — one default per property, not per class) binds to the Pipeline class; a newer class.property.set flips active=false (an interleaved enable at a LOWER HLC loses the row LWW race), so the derived default vanishes from the effective read while the binding ROW survives. An authored value written while the binding is inactive still reads (boundBy null — unbound). A final re-enable restores the active flag (the authored value at idx 0 keeps shadowing the default). The schema's options carry the §34.89 icon (plus the §34.43 color grammar from PG16), parsed verbatim into the stored options JSON. A trailing propertySchema.update positions the value display at the bullet (§34.90 'display': panel|bullet|inline, a PROPERTY-level field — read off the schema, never the binding). LOCKSTEP-PENDING: the active payload key ships inert until the GTK m6+/Flutter m16+ releases parse it; the display key rides the §34.90 client batch.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000731",
@@ -19,6 +19,7 @@
         "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
         "name": "stage",
         "type": "select",
+        "defaultValue": "opt-a",
         "options": [
           {
             "id": "opt-a",
@@ -107,8 +108,7 @@
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000742",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000741",
-        "sequence": 1,
-        "defaultValue": "opt-a"
+        "sequence": 1
       }
     },
     {

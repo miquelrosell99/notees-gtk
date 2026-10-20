@@ -8,6 +8,44 @@ history.
 
 ## 2026-10-20
 
+- **feat(protocol,store): the binding-defaults batch — `required` retires,
+  `defaultValue` moves to the property schema (main-repo lockstep, the property-definition surfaces batch).**
+  `class.property.set` is now STRICTLY `{classId, propertySchemaId,
+  sequence?, active?}` — `required` retires outright (its only render
+  effect — hiding the icon-button's "None" row — was mild enforcement,
+  contradicting the render-contract law: suggestion only, never
+  enforcement) and `defaultValue` MOVES to `propertySchema.create`/
+  `propertySchema.update` — ONE global default per property, the Logseq
+  shape; a per-class default was configuration creep the class page never
+  needed. The strict payload schemas reject both retired keys like any
+  unknown key (payload tests parametrize the rejection). The moved default
+  is nullable-optional with the keep-vs-clear contract on update (absent
+  keeps, explicit null clears); PC2 types it per the schema type at APPLY —
+  against the payload's type at create, the schema's STORED type at update
+  (the update carries no type), schema-less writes (unknown id) unchecked —
+  failing loud on a wrong-typed default, never coercing; node-typed schemas
+  (datetime/object/asset) accept only JSON null, "a default that links a
+  node is meaningless". Store: SCHEMA_VERSION 16→17 (web schema v24→v25
+  parity) — `class_property` REBUILDS without `required`/`default_value`
+  (the v12/v14 precedent; the moved values arrive from the live log rewrite
+  migrate-drop-binding-required.mts + the epoch bump, so the backfill is
+  deliberately NULL) and `property_schema` gains `default_value` TEXT
+  (JSON-encoded, NULL = no default); the historical v11 migration's
+  ephemeral `display` add is now guarded on the pre-v12 row shape so fresh
+  chains never trip v12's rebuild into copying retired columns. The
+  effective-properties read derives the default from the SCHEMA row (the
+  winning ACTIVE binding still supplies boundBy/sequence, never the value);
+  the `required` field drops from the effective-row read model. Seeds: the
+  task-family binding insert writes sequence only. Live e2e: the properties
+  scenario authors the default on the schema create. Fixtures: the corpus
+  re-vendors from the main repo (36 files, byte-identical — sha256
+  verified; `class-property-defaults.json`, `class-property-active.json`,
+  `class-unassign.json` re-encoded to the new shape, the defaults fixture
+  gaining the trailing `class.property.unset` for the second class).
+  **Verification:** `uv run pytest` 853 passed / 4 skipped / `ruff` clean /
+  `mypy src` clean; the live e2e module against the built monorepo server
+  (`NOTEES_V2_ROOT`) passes 3/3.
+
 - **feat(protocol,store): the property-scope batch + per-block list styles
   (main-repo lockstep).** `propertySchema.create` RETIRES the display-only `scope`
   enum — the strict payload rejects the key outright, verified explicitly

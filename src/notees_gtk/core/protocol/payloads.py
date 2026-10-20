@@ -40,8 +40,7 @@ parsers). The value-display position and the render contracts
 (``display``/``readonly``/``hideWhenEmpty``) are PROPERTY-level and live on
 ``propertySchema.create/update`` (nullable-optional; update-side absent
 keeps, null clears) — the binding-level ``display`` on
-``class.property.set`` was withdrawn the same day, and ``required`` is the
-deliberate per-class exception that stays on the binding.
+``class.property.set`` was withdrawn the same day.
 
 Builders are the write-side conveniences (web parity: ``WorkspaceClient``
 ``createObject``/``createClass``/``reorderClasses``). Title-is-content
@@ -81,6 +80,16 @@ empty array rejected); ``propertySchema.update`` gains ``icon`` /
 ``scopeClassIds`` / ``targetClassFilter`` / ``multi`` / ``validationRules``
 (``{min?, max?, pattern?}`` strict, nullable, keep-vs-clear; min <= max
 parse-time). The retired-key fixtures re-encoded.
+
+Binding-defaults batch (the property-definition
+surfaces batch): ``class.property.set`` is now STRICTLY
+``{classId, propertySchemaId, sequence?, active?}`` — ``required`` retires
+outright (its only render effect hid the icon-button's "None" row, mild
+enforcement contradicting the render contract) and ``defaultValue`` MOVES
+to the property schema: ``propertySchema.create``/``propertySchema.update``
+gain it (any JSON value, nullable-optional; update-side absent keeps, null
+clears). ONE global default per property, the Logseq shape; PC2 types it
+per the schema type at apply (node-typed schemas accept only JSON null).
 """
 
 from __future__ import annotations
@@ -299,23 +308,24 @@ class ClassSetExtendsPayload(_Strict):
 
 class ClassPropertySetPayload(_Strict):
     """The class → property-schema binding upsert — the genuinely PER-CLASS
-    mechanics only (panel order, the class's own default, the class's
-    soft-unbind, and per-class requirement).
+    mechanics only: panel order (``sequence``) and the class's soft-unbind
+    (``active``).
 
-   the render contracts readonly,
-    hideWhenEmpty, display are PROPERTY-level characteristics and live on the
-    property schema (``propertySchema.create/update``) — the strict schema
-    rejects them here like any retired key. ``required`` is the exception
-    the owner kept at the binding: a property may be mandatory for one
-    class, optional for another (TS parity: nullable here — an explicit
-    null clears, omitted keeps).
+    (the property-definition surfaces batch):
+    ``required`` and ``defaultValue`` RETIRE from the binding — ``required``
+    is gone outright (its only render effect was mild enforcement,
+    contradicting the render-contract law: suggestion only, never
+    enforcement) and ``defaultValue`` MOVED to the property schema
+    (``propertySchema.create/update``) — ONE global default per property,
+    the Logseq shape. The strict schema rejects both keys like any retired
+    key. A binding answers "does THIS class list the property, in what
+    order"; a schema answers "what the property is, how it behaves, and
+    what value it starts with everywhere".
     """
 
     class_id: UUID = Field(alias="classId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
     sequence: int | None = None
-    required: bool | None = None
-    default_value: Any = Field(default=None, alias="defaultValue")
     # PC4: the soft-unbind flag — an inactive binding stops
     # contributing to the effective read while the ROW survives. Omitted =
     # keep the stored flag (the patch convention). zod parity: an explicit
@@ -386,6 +396,14 @@ class PropertySchemaCreatePayload(_Strict):
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
+    # The property's DEFAULT VALUE (moved from the
+    # class binding to the schema, the Logseq shape): ONE global default per
+    # property, not per class. Typed per the schema type (PC2, validated at
+    # apply — node-typed schemas (datetime/object/asset) accept only JSON
+    # null, "a default that links a node is meaningless"). Absent = no
+    # default (NULL column). Editing a default in the UI writes an authored
+    # property.set on the node, which from then on shadows the default.
+    default_value: Any = Field(default=None, alias="defaultValue")
     # The render contracts are PROPERTY-level —
     # a property displays/behaves the same everywhere it
     # appears, whatever class binds it (or none). ``display`` is the
@@ -394,7 +412,8 @@ class PropertySchemaCreatePayload(_Strict):
     # the block bullet; "inline" before the block content — the
     # icon_visibility port); ``readonly``/``hideWhenEmpty`` are the tri-state
     # render flags. All nullable-optional (absent or null stores NULL).
-    # ``required`` is NOT here — it stays on the class binding (per-class).
+    # ``required`` is NOT here — it retired outright (its only render effect was mild enforcement); the default
+    # lives HERE, not on the binding.
     display: _DISPLAY_POSITION | None = Field(default=None)
     readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
@@ -453,9 +472,17 @@ class PropertySchemaUpdatePayload(_Strict):
     number_pad: int | None = Field(default=None, alias="numberPad", ge=1, le=20)
     number_decimals: int | None = Field(default=None, alias="numberDecimals", ge=0, le=10)
     number_rounding: _NUMBER_ROUNDING | None = Field(default=None, alias="numberRounding")
+    # The default value (create-side doc above): absent keeps the stored
+    # value, present-null clears it (the same keep/clear contract as the
+    # number formats). Applicability + the PC2 type-check run at apply time
+    # against the schema's STORED type, exactly like validationRules — the
+    # update carries no type; a schema-less write (unknown id) stores
+    # unchecked.
+    default_value: Any = Field(default=None, alias="defaultValue")
     # Render contracts (PROPERTY-level): same absent-keeps /
-    # null-clears contract as the number formats — `required` is NOT among
-    # them; it stays on the class binding.
+    # null-clears contract as the number formats — `required` retired from
+    # the binding outright; the default
+    # lives here.
     display: _DISPLAY_POSITION | None = Field(default=None)
     readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
