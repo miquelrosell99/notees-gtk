@@ -67,6 +67,20 @@ semantics.
 Trash batch: ``trash.empty`` — the strict empty payload
 (the apply-time trash table is the target set; any key is rejected), the
 bulk-permanent-delete companion to ``object.delete {permanent: true}``.
+
+List-style batch (web store v22→v23 parity):
+``object.create``/``object.update`` gain the optional nullable
+``listStyle`` ("numbered"|"alpha"|"roman" — absent/null = bullet; a
+present null on update CLEARS, the icon/color precedent).
+
+Property-scope batch:
+``propertySchema.create`` RETIRES the display-only ``scope`` enum
+(rejected outright by the strict schema) and gains ``icon`` +
+``scopeClassIds`` (the sole locality authority — absent/null = global, the
+empty array rejected); ``propertySchema.update`` gains ``icon`` /
+``scopeClassIds`` / ``targetClassFilter`` / ``multi`` / ``validationRules``
+(``{min?, max?, pattern?}`` strict, nullable, keep-vs-clear; min <= max
+parse-time). The retired-key fixtures re-encoded.
 """
 
 from __future__ import annotations
@@ -120,8 +134,14 @@ _PROPERTY_TYPE = Literal[
     # first asset-typed schema (retyped from object).
     "asset",
 ]
-_SCOPE = Literal["global", "class", "object"]
 _DATE_PRECISION = Literal["year", "month", "day"]
+#: Per-block list style (the listStyle wire node field —
+#: op-types.ts ``LIST_STYLES``): replaces the bullet dot with a derived
+#: marker. The NUMBER is never stored — clients derive it at render time
+#: from the contiguous run of same-style siblings. Absent/null = the bullet
+#: default; present-null on object.update CLEARS back to the bullet
+#: (the icon/color precedent).
+_LIST_STYLE = Literal["numbered", "alpha", "roman"]
 _NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
 # The binding's value-display position — where a select/multi_select
 # (or boolean) value renders on a block row. A render contract only.
@@ -155,6 +175,8 @@ class ObjectCreatePayload(_Strict):
     # are present `afterId` wins (the TS reference never sends both).
     after_id: UUID | None = Field(default=None, alias="afterId")
     before_id: UUID | None = Field(default=None, alias="beforeId")
+    # Initial list style; absent/null = bullet (the default).
+    list_style: _LIST_STYLE | None = Field(default=None, alias="listStyle")
 
 
 class ObjectUpdatePayload(_Strict):
@@ -189,6 +211,8 @@ class ObjectUpdatePayload(_Strict):
     # cardinality-1, plain text, max 512 chars; never a class-bound property.
     # Presence writes, present-null clears, absence preserves.
     description: str | None = Field(default=None, max_length=512)
+    # List style; null CLEARS back to the bullet default (like `color`).
+    list_style: _LIST_STYLE | None = Field(default=None, alias="listStyle")
     content_delta_b64: str | None = Field(default=None, alias="contentDeltaB64")
     content_ast: list[Any] | None = Field(default=None, alias="contentAst")
 
@@ -336,7 +360,22 @@ class PropertySchemaCreatePayload(_Strict):
     name: str = Field(min_length=1, max_length=256)
     type: _PROPERTY_TYPE
     multi: bool = False
-    scope: _SCOPE = "global"
+    # The schema's icon (the property-definition surfaces
+    # batch): an OPTIONAL MDI icon name (camelCase @mdi/js convention,
+    # max 64 chars — the same string shape as node/class/option icons);
+    # absent/null = no icon.
+    icon: str | None = Field(default=None, max_length=64)
+    # The SOLE locality authority (R1): absent/null
+    # = GLOBAL (any node may carry the property); a non-empty UUID list =
+    # LOCAL to those classes AND their extends-ancestors (eligibility walks
+    # class_hierarchy the same way binding resolution does). The EMPTY array
+    # is rejected — exactly one spelling of "global". This field RETIRES the
+    # display-only ``scope: "global"|"class"|"object"`` enum (rejected
+    # outright by this strict schema like any retired key; live logs rewrite
+    # in place via the monorepo's migrate-property-scope.mts). Bindings
+    # (class_property rows) carry ZERO availability semantics — scope says
+    # who MAY carry the property; a binding says what a class DOES WITH it.
+    scope_class_ids: list[UUID] | None = Field(default=None, alias="scopeClassIds")
     options: list[_OptionEntry] | None = None
     target_class_filter: list[UUID] | None = Field(default=None, alias="targetClassFilter")
     date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
@@ -360,10 +399,52 @@ class PropertySchemaCreatePayload(_Strict):
     readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
 
+    @model_validator(mode="after")
+    def _check_scope_class_ids_not_empty(self) -> PropertySchemaCreatePayload:
+        # The empty array is rejected (the zod ``.min(1)`` parity) — exactly
+        # one spelling of "global".
+        if self.scope_class_ids is not None and len(self.scope_class_ids) == 0:
+            raise ValueError("propertySchema.create 'scopeClassIds' must be a non-empty list when present")
+        return self
+
+
+class _ValidationRules(_Strict):
+    """Value validation rules (v1 parity — op-types.ts
+    ``validationRulesSchema``): ``{min?, max?, pattern?}``, all optional.
+    min/max apply to number schemas, pattern to text/url/email; the
+    applicability check runs at APPLY time against the schema's stored type
+    and ``min <= max`` is a parse-time rule."""
+
+    min: float | None = None
+    max: float | None = None
+    pattern: str | None = None
+
+    @model_validator(mode="after")
+    def _check_min_le_max(self) -> _ValidationRules:
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("validationRules: min must be <= max when both are present")
+        return self
+
 
 class PropertySchemaUpdatePayload(_Strict):
     property_schema_id: UUID = Field(alias="propertySchemaId")
     name: str | None = Field(default=None, min_length=1, max_length=256)
+    # The keep-vs-clear contract: absent keeps the stored
+    # value, a present null clears back to NULL/global/none — the same shape
+    # as the number formats below (the applier distinguishes absence from
+    # null by key presence, the zod ``!== undefined`` parity).
+    icon: str | None = Field(default=None, max_length=64)
+    scope_class_ids: list[UUID] | None = Field(default=None, alias="scopeClassIds")
+    # Node-typed (m2o/m2m) target classes; absent keeps, null clears the
+    # filter (an empty array means "no filter").
+    target_class_filter: list[UUID] | None = Field(default=None, alias="targetClassFilter")
+    # Values single/multiple; absent keeps, null clears back to single.
+    multi: bool | None = Field(default=None)
+    # Value validation rules: absent keeps the stored rules, null clears
+    # them. Applicability is enforced at APPLY time against the schema's
+    # stored type; values are validated against the stored rules at
+    # property.set (integrity, fail loud, SCHEMA.md "Properties").
+    validation_rules: _ValidationRules | None = Field(default=None, alias="validationRules")
     options: list[_OptionEntry] | None = None
     date_precision: _DATE_PRECISION | None = Field(default=None, alias="datePrecision")
     date_qualified: bool | None = Field(default=None, alias="dateQualified")
@@ -378,6 +459,13 @@ class PropertySchemaUpdatePayload(_Strict):
     display: _DISPLAY_POSITION | None = Field(default=None)
     readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
+
+    @model_validator(mode="after")
+    def _check_scope_class_ids_not_empty(self) -> PropertySchemaUpdatePayload:
+        # Same rejection as create (the zod ``.min(1)`` parity).
+        if self.scope_class_ids is not None and len(self.scope_class_ids) == 0:
+            raise ValueError("propertySchema.update 'scopeClassIds' must be a non-empty list when present")
+        return self
 
 
 class PropertySchemaDeletePayload(_Strict):
@@ -531,6 +619,7 @@ def build_object_create(
     parent_id: str | None | object = _UNSET,
     after_id: str | None = None,
     before_id: str | None = None,
+    list_style: str | None = None,
 ) -> dict[str, Any]:
     """Build an ``object.create`` payload (web ``WorkspaceClient.createObject``).
 
@@ -559,6 +648,8 @@ def build_object_create(
         payload["afterId"] = after_id
     if before_id is not None:
         payload["beforeId"] = before_id
+    if list_style is not None:
+        payload["listStyle"] = list_style
     return _validated("object.create", payload)
 
 
@@ -574,6 +665,7 @@ def build_object_update(
     banner_asset_id: str | None | object = _UNSET,
     aliased_node_id: str | None | object = _UNSET,
     description: str | None | object = _UNSET,
+    list_style: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Build an ``object.update`` payload (at least one field required).
 
@@ -582,7 +674,7 @@ def build_object_update(
     node fields (``cover_asset_id`` / ``banner_asset_id`` /
     ``aliased_node_id`` / ``description``) follow the same convention:
     ``None`` sends an explicit null that CLEARS the column, omitting leaves
-    it untouched.
+    it untouched. ``list_style`` rides the same nullable contract.
     """
     payload: dict[str, Any] = {"objectId": object_id}
     if is_embedded is not None:
@@ -603,6 +695,8 @@ def build_object_update(
         payload["aliasedNodeId"] = aliased_node_id
     if description is not _UNSET:
         payload["description"] = description
+    if list_style is not _UNSET:
+        payload["listStyle"] = list_style
     return _validated("object.update", payload)
 
 

@@ -6,6 +6,44 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-20
+
+- **feat(protocol,store): the property-scope batch + per-block list styles
+  (main-repo lockstep).** `propertySchema.create` RETIRES the display-only `scope`
+  enum — the strict payload rejects the key outright, verified explicitly
+  in the payload tests — and gains `icon` (nullable MDI name) and
+  `scopeClassIds` (the sole locality authority: absent/null = global, a
+  non-empty class-id list = local to those classes and their
+  extends-ancestors; the empty array is rejected). `propertySchema.update`
+  gains the keep-vs-clear nullable `icon` / `scopeClassIds` /
+  `targetClassFilter` / `multi` / `validationRules` ({min?, max?, pattern?}
+  strict, min <= max parse-time). Appliers: SCHEMA_VERSION 15→16 — the
+  `list_style` node column lands (web schema v22→v23 parity; absent/null =
+  bullet, present-null clears, the icon/color precedent) and the
+  `property_schema` table rebuilds (the v12 precedent; web schema v24
+  parity) with `icon` / `scope_class_ids` / `validation_rules` replacing
+  the retired `scope` column. Enforcement: `property.set` on an ineligible
+  node fails loud (R3, extends-aware class_hierarchy closure; schema-less
+  writes stay unchecked), `class.property.set` outside the scope fails loud
+  (R5, dead config), the stored `validationRules` validate every value
+  before the write (R2 — inclusive min/max after the numeric-string
+  normalization, full-string pattern on text/url/email scalars via the
+  `^(?:…)$` anchors, carrier refs and schema-less writes unchecked, multi
+  validates per element), a non-compilable pattern fails at the rule write
+  (never an applier crash), and the effective read tags ineligible authored
+  rows `eligible=False` while never deriving a default for an ineligible
+  node (R4 — narrowing a scope is never retroactive). Seeds: the task
+  family now seeds at GLOBAL scope (the seed-scope audit landed on main —
+  the whole family is reusable, Status explicitly so); the GTK client is
+  the only repo-side seed emitter, and it matches (NULL
+  `scope_class_ids`). Fixtures: the corpus re-vendors from the main repo
+  (36 files, byte-identical — `object-list-style.json`,
+  `property-schema-scope.json`, `property-schema-update-fields.json`,
+  `property-validation-rules.json` added; `property-validation-rules.json`
+  joins the replay-excluded set, its reject tail applied deliberately in
+  its own test — the store.test.ts parity). **Verification:** `uv run
+  pytest` 847 passed / 4 skipped / `ruff` clean / `mypy` clean.
+
 ## 2026-10-16
 
 - **feat(model): node links carry their own `isEmbedded` flag — manual,

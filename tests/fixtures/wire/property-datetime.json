@@ -16,8 +16,7 @@
         "propertySchemaId": "0192a000-0000-7000-8000-000000000810",
         "name": "When",
         "type": "datetime",
-        "multi": false,
-        "scope": "global"
+        "multi": false
       }
     },
     {
@@ -36,7 +35,6 @@
         "name": "Year",
         "type": "datetime",
         "multi": false,
-        "scope": "global",
         "datePrecision": "year"
       }
     },

@@ -153,7 +153,10 @@ def _seed_authors_schema(store: LocalStore) -> None:
                     "name": "authors",
                     "type": "object",
                     "multi": True,
-                    "scope": "class",
+                    # The seed-scope audit: a bound
+                    # spec seeds its schema LOCAL to bindTo — scopeClassIds
+                    # [source]; the retired "class" scope enum is rejected.
+                    "scopeClassIds": [SOURCE],
                     "targetClassFilter": [AGENT],
                 },
                 2,
@@ -234,10 +237,10 @@ class TestFinalAuthorsSpec:
         _seed_authors_schema(store)
         with sqlite3.connect(_db_path(store)) as raw:
             row = raw.execute(
-                "SELECT name, type, multi, scope, target_class_filter FROM property_schema WHERE id = ?",
+                "SELECT name, type, multi, scope_class_ids, target_class_filter FROM property_schema WHERE id = ?",
                 (AUTHORS_SCHEMA,),
             ).fetchone()
-        assert row == ("authors", "object", 1, "class", json.dumps([AGENT]))
+        assert row == ("authors", "object", 1, json.dumps([SOURCE]), json.dumps([AGENT]))
 
     def test_withdrawn_linked_authors_id_is_never_seeded(self, store: LocalStore) -> None:
         """…0025 (linkedAuthors) was withdrawn with the FINAL authors model;

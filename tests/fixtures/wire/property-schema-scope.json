@@ -1,0 +1,230 @@
+{
+  "comment": "Property-schema scope: the retired display-only `scope` enum is replaced by `scopeClassIds` — absent/null = global, a non-empty class-id list = local to those classes AND their extends-ancestors (eligibility walks the same class_hierarchy closure binding resolution uses). This fixture pins the write paths on a scratch workspace: a 'Genre' text schema with an icon, created scoped to class A; a binding A→Genre (R5 accept — the binding class is in scope); property.set on an A-classed node and on a B-classed node whose B extends A (EXTENDS-AWARE eligibility — the ancestor is in scope); then the scope WIDENS to global (update keep/clear: null clears), an unclassed node authors a value (legal while global), and the scope NARROWS back to A — narrowing is never retroactive: the authored row survives in the log and the effective read tags it eligible=false (the store suite asserts it). LOCKSTEP-PENDING: GTK/Flutter appliers must converge on this fixture (the R3/R5 guards + eligibility tagging) before the live migration runs.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000900",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000901"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:40.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000901",
+        "contentAst": [{ "type": "text", "text": "Genre-bearing" }],
+        "icon": "mdiTagOutline"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000902",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000903"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:40.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000903",
+        "contentAst": [{ "type": "text", "text": "Sub-genre-bearing" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000904",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000903"],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:40.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000903",
+        "parentClassIds": ["0192a000-0000-7000-8000-000000000901"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000905",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040300, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:40.300Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "name": "Genre",
+        "type": "text",
+        "multi": false,
+        "icon": "mdiTagOutline",
+        "scopeClassIds": ["0192a000-0000-7000-8000-000000000901"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000906",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000901"],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:40.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000901",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "sequence": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000907",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000921"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:40.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000921",
+        "isEmbedded": false,
+        "classIds": ["0192a000-0000-7000-8000-000000000901"],
+        "contentAst": [{ "type": "text", "text": "A-classed page" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000908",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040600, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000922"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:40.600Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000922",
+        "isEmbedded": false,
+        "classIds": ["0192a000-0000-7000-8000-000000000903"],
+        "contentAst": [{ "type": "text", "text": "B-classed page (B extends A)" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000909",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000921"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:40.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000921",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "value": "science fiction",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000090a",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040800, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000922"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:40.800Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000922",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "value": "hard sci-fi",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000090b",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200040900, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000923"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:40.900Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000923",
+        "isEmbedded": false,
+        "contentAst": [{ "type": "text", "text": "Unclassed page" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000090c",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200041000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:41.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "scopeClassIds": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000090d",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200041100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000923"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:41.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000923",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "value": "authored while global",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000090e",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200041200, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:41.200Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000910",
+        "scopeClassIds": ["0192a000-0000-7000-8000-000000000901"]
+      }
+    }
+  ]
+}
