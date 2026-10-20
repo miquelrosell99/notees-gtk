@@ -154,7 +154,17 @@ _log = logging.getLogger(__name__)
 #: retires (the locality authority is the new ``scope_class_ids`` JSON
 #: column, NULL = global) and the schema gains ``icon`` +
 #: ``validation_rules``.
-SCHEMA_VERSION = 16
+#: v17 (owner ruling 2026-10-20, the property-definition surfaces batch —
+#: web schema v24→v25 parity): `required` retires outright and
+#: ``default_value`` MOVES from class_property to property_schema (one
+#: global default per property, the Logseq shape). The binding table
+#: REBUILDS without both columns (SQLite cannot drop a column on old
+#: builds); the schema gains ``default_value`` TEXT additively (NULL = no
+#: default). The moved values arrive from the live log rewrite (the
+#: monorepo's migrate-drop-binding-required.mts, Path B — appended
+#: propertySchema.update compensation per affected schema) + the epoch
+#: bump, so the backfill is deliberately NULL.
+SCHEMA_VERSION = 17
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -337,8 +347,8 @@ class EffectiveProperty:
     (owner review 2026-10-05): the render contracts ``readonly``/
     ``hide_when_empty``/``display`` are PROPERTY-level — SCHEMA-sourced and
     identical on authored and derived rows, unbound authored values
-    included; ``required`` is the per-CLASS exception — it stays
-    binding-sourced (``None`` when no active binding wins).
+    included. (owner ruling 2026-10-20): ``required`` retired outright from
+    the binding — there is no required field on effective rows anymore.
     """
 
     property_schema_id: str
@@ -349,7 +359,6 @@ class EffectiveProperty:
     metadata: dict[str, Any] | None
     source: str  # "authored" | "default"
     bound_by: str | None
-    required: bool | None
     readonly: bool | None
     hide_when_empty: bool | None
     sequence: int | None
@@ -645,11 +654,12 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
 
 
 def _is_valid_default_for_type(type_: str, value: Any) -> bool:
-    """PC2: a class-binding defaultValue must be typed per the schema type.
+    """PC2: a property SCHEMA defaultValue (owner ruling 2026-10-20 — moved
+    from the class binding to the schema) must be typed per the schema type.
     Node-typed schemas (datetime/object/asset) accept only JSON null —
     a default that links a node is meaningless. Returns False instead of
     throwing so the read model can drop silently; the write path
-    (class.property.set) fails loud. Mirrors isValidDefaultForType."""
+    (propertySchema.create/update) fails loud. Mirrors isValidDefaultForType."""
     if value is None:
         return True
     if type_ in ("text", "url", "email", "image", "select"):
@@ -2322,6 +2332,17 @@ class LocalStore:
     # ------------------------------------------------------- class.property.*
 
     def _apply_class_property_set(self, env: RelayEnvelope) -> bool:
+        """Binding upsert — the genuinely per-class mechanics ONLY
+        (sequence + the active soft-unbind flag; row LWW by envelope HLC).
+
+        (owner ruling 2026-10-20, the property-definition surfaces batch):
+        ``required`` and ``defaultValue`` left the binding entirely —
+        ``required`` retired outright, ``defaultValue`` moved to the
+        property schema (one global default per property, the Logseq shape;
+        the strict payload schema rejects both keys like any retired key).
+        On update the payload PATCHES the row — omitted fields keep their
+        existing values (COALESCE; explicit false is a real write).
+        """
         op_type = "class.property.set"
         payload = env.payload
         class_id = str(payload["classId"])
@@ -2351,58 +2372,24 @@ class LocalStore:
                     op_type,
                 )
 
-        # PC2: defaultValue is typed per the schema type — a
-        # wrong-typed default fails loud here instead of deriving silently on
-        # every read. Omitted defaultValue (patch keeps the stored one) skips
-        # the check; a stored default that drifts out of match (schema
-        # delete+recreate with a different type) is dropped defensively at
-        # the effective read instead. Unknown schema ids skip validation (no
-        # schema FK). A stale write dropped by the row LWW above never
-        # reaches the check — the TS parity.
-        if "defaultValue" in payload:
-            schema_type = self._property_schema_type(schema_id)
-            default_value = payload["defaultValue"]
-            if schema_type is not None and not _is_valid_default_for_type(schema_type, default_value):
-                if schema_type in ("datetime", "object", "asset"):
-                    detail = "must be null — node-typed defaults are not supported"
-                else:
-                    detail = f"must be typed {schema_type}"
-                raise PropertyValueShapeError(
-                    f"{op_type}: defaultValue for {schema_type} schema {detail} — got {_jsonish(default_value)}",
-                    op_type,
-                )
-
-        # Omitted (absent) fields keep the stored value via COALESCE; explicit
-        # false / JSON null are real writes (null default == JSON "null").
-        # The binding row carries ONLY the genuinely per-class
-        # mechanics (sequence, required, defaultValue, active) — the render
-        # contracts (readonly/hideWhenEmpty/display) are PROPERTY-level and
-        # live on property_schema.
-        def flag(name: str) -> int | None:
-            if name not in payload:
-                return None  # absent → COALESCE keeps the stored value
-            return 1 if payload[name] else 0  # explicit null (falsy) writes 0, as the TS port
-
-        # PC4: the soft-unbind flag rides the row LWW — an inactive
-        # binding stops contributing to the effective read (no default, no
-        # sequence) while the ROW survives (unlike class.property.unset).
-        # Absent payload = keep the stored flag (patch convention).
-        active = flag("active")
+        # Omitted (absent) fields keep the stored value via COALESCE; an
+        # explicit false is a real write. The binding row carries ONLY
+        # sequence + active — the render contracts (readonly/hideWhenEmpty/
+        # display) are PROPERTY-level and live on property_schema; the
+        # default value lives there too (owner ruling 2026-10-20).
+        active = None if "active" not in payload else (1 if payload["active"] else 0)
         sequence = int(payload["sequence"]) if payload.get("sequence") is not None else None
-        default_value = json.dumps(payload["defaultValue"]) if "defaultValue" in payload else None
         with self._conn:
             if existing is None:
                 self._conn.execute(
                     """INSERT INTO class_property
-                         (class_id, property_schema_id, sequence, required, default_value, active,
+                         (class_id, property_schema_id, sequence, active,
                           hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         class_id,
                         schema_id,
                         sequence if sequence is not None else 0,
-                        flag("required"),
-                        default_value,
                         active if active is not None else 1,
                         env.hlc.physical,
                         env.hlc.logical,
@@ -2413,15 +2400,11 @@ class LocalStore:
                 self._conn.execute(
                     """UPDATE class_property SET
                          sequence = COALESCE(?, sequence),
-                         required = COALESCE(?, required),
-                         default_value = COALESCE(?, default_value),
                          active = COALESCE(?, active),
                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
                        WHERE class_id = ? AND property_schema_id = ?""",
                     (
                         sequence,
-                        flag("required"),
-                        default_value,
                         active,
                         env.hlc.physical,
                         env.hlc.logical,
@@ -2446,16 +2429,36 @@ class LocalStore:
     # ------------------------------------------------------------- propertySchema.*
 
     def _apply_property_schema_create(self, env: RelayEnvelope) -> bool:
+        """Schema upsert (INSERT ... ON CONFLICT id — delete+recreate wins).
+
+        PC2 (moved from the binding, owner ruling 2026-10-20): the default
+        is typed per the schema's (payload) type — a wrong-typed default
+        fails loud here instead of deriving silently on every read.
+        Node-typed schemas (datetime/object/asset) accept only JSON null.
+        Absent = no default (NULL column).
+        """
         payload = env.payload
+        op_type = "propertySchema.create"
+        default_value = payload.get("defaultValue")
+        if default_value is not None and not _is_valid_default_for_type(str(payload["type"]), default_value):
+            schema_type = str(payload["type"])
+            if schema_type in ("datetime", "object", "asset"):
+                detail = "must be null — node-typed defaults are not supported"
+            else:
+                detail = f"must be typed {schema_type}"
+            raise PropertyValueShapeError(
+                f"{op_type}: defaultValue for {schema_type} schema {detail} — got {_jsonish(default_value)}",
+                op_type,
+            )
         ts = _envelope_ts(env)
         with self._conn:
             self._conn.execute(
                 """INSERT INTO property_schema
                      (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
                       date_precision, date_qualified, number_pad, number_decimals, number_rounding,
-                      display, readonly, hide_when_empty,
+                      display, readonly, hide_when_empty, default_value,
                       active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, type = excluded.type, multi = excluded.multi,
                      icon = excluded.icon, scope_class_ids = excluded.scope_class_ids,
@@ -2466,6 +2469,7 @@ class LocalStore:
                      number_rounding = excluded.number_rounding,
                      display = excluded.display, readonly = excluded.readonly,
                      hide_when_empty = excluded.hide_when_empty,
+                     default_value = excluded.default_value,
                      active = 1, updated_at = excluded.updated_at""",
                 (
                     str(payload["propertySchemaId"]),
@@ -2487,6 +2491,10 @@ class LocalStore:
                     payload.get("display"),
                     (None if payload.get("readonly") is None else (1 if payload.get("readonly") else 0)),
                     (None if payload.get("hideWhenEmpty") is None else (1 if payload.get("hideWhenEmpty") else 0)),
+                    # The schema's ONE global default (owner ruling
+                    # 2026-10-20): JSON-encoded; NULL = no default (absent or
+                    # an explicit JSON null both store NULL, the TS parity).
+                    json.dumps(default_value) if default_value is not None else None,
                     ts,
                     ts,
                 ),
@@ -2556,10 +2564,31 @@ class LocalStore:
             if "numberRounding" in payload:
                 sets.append("number_rounding = ?")
                 values.append(payload["numberRounding"])
+            # The default value (owner ruling 2026-10-20 — schema-level):
+            # absent keeps, present-null clears. PC2 runs against the
+            # schema's STORED type, exactly like validationRules
+            # applicability (a schema-less update stores unchecked).
+            if "defaultValue" in payload:
+                default_value = payload["defaultValue"]
+                if default_value is not None:
+                    schema_type = self._property_schema_type(str(payload["propertySchemaId"]))
+                    if schema_type is not None and not _is_valid_default_for_type(schema_type, default_value):
+                        if schema_type in ("datetime", "object", "asset"):
+                            detail = "must be null — node-typed defaults are not supported"
+                        else:
+                            detail = f"must be typed {schema_type}"
+                        raise PropertyValueShapeError(
+                            f"propertySchema.update: defaultValue for {schema_type} schema"
+                            f" {detail} — got {_jsonish(default_value)}",
+                            "propertySchema.update",
+                        )
+                sets.append("default_value = ?")
+                values.append(json.dumps(default_value) if default_value is not None else None)
             # Render contracts (PROPERTY-level): same key-presence
             # keep-vs-clear contract — absent keeps the stored value, a
-            # present null clears back to panel / unset. `required` is NOT
-            # here; it stays on the class binding.
+            # present null clears back to panel / unset. `required` retired
+            # from the binding under the owner ruling 2026-10-20; the default
+            # lives here.
             if "display" in payload:
                 sets.append("display = ?")
                 values.append(payload["display"])
@@ -2672,8 +2701,10 @@ class LocalStore:
         return self._class_closure_intersects_scope(carried, scope_class_ids)
 
     def _property_schema_type(self, schema_id: str) -> str | None:
-        """The schema type a class.property.set defaultValue validates
-        against (PC2), or None when the schema id is unknown."""
+        """The schema's STORED type the propertySchema.update validationRules
+        applicability and defaultValue PC2 check validate against (owner
+        ruling 2026-10-20), or None when the schema id is unknown (a
+        schema-less write stores unchecked)."""
         row = self._conn.execute("SELECT type FROM property_schema WHERE id = ?", (schema_id,)).fetchone()
         return None if row is None else str(row[0])
 
@@ -3300,9 +3331,9 @@ class LocalStore:
             )
             self._conn.execute(
                 """INSERT OR IGNORE INTO class_property
-                     (class_id, property_schema_id, sequence, required, default_value,
+                     (class_id, property_schema_id, sequence,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, NULL, NULL, 0, 0, NULL)""",
+                   VALUES (?, ?, ?, 0, 0, NULL)""",
                 (class_id, schema_id, entry.sequence),
             )
 
@@ -3541,12 +3572,16 @@ class LocalStore:
         """The effective-values read model (SCHEMA.md "Class properties")::
 
             effective(node, schema, idx) = authored property_value
-                                           ?? winning binding's defaultValue
+                                           ?? the SCHEMA's defaultValue
 
         Port of ``packages/store/src/effective.ts`` (PG5/PC4).
         Authored rows always win and survive class removal; derived defaults
         are computed HERE and never materialized (the applier writes no
-        property_value rows for them). Authored rows come through the PG5
+        property_value rows for them). The default is SCHEMA-level (owner
+        ruling 2026-10-20 — one global default per property, the Logseq
+        shape): a winning ACTIVE binding still decides WHICH properties a
+        class's nodes carry (and supplies sequence/boundBy), but the default
+        VALUE comes from the schema row. Authored rows come through the PG5
         visible-set derivation (:meth:`_visible_property_value_rows` — slot
         tombstones + element tombstones) and carry their stable element id.
         Binding conflicts across the node's classes resolve per the SCHEMA.md
@@ -3555,11 +3590,11 @@ class LocalStore:
         binding (distance 0) first, then inherited bindings by shortest
         extends-path, ties by the class's OR-Set membership add HLC (earliest
         first), then class id. ``bound_by`` names the ANCESTOR whose binding
-        row supplies the default + metadata (the winning class itself for an
-        own binding); with no extends edges this reduces exactly to
+        row supplies the metadata (the winning class itself for an own
+        binding); with no extends edges this reduces exactly to
         first-class-applied-wins over own bindings. Only ACTIVE binding rows
         are candidates (PC4: an inactive binding stops contributing defaults
-        AND binding metadata — required/sequence — while the ROW survives and
+        AND binding metadata — sequence — while the ROW survives and
         authored values read as unbound, ``bound_by`` None; the render
         contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
         they ride authored and derived rows alike, unbound values included).
@@ -3621,7 +3656,7 @@ class LocalStore:
             physical, logical = int(cls[1]), int(cls[2])
             for ancestor_id, distance in reach_of(class_id):
                 for binding in self._conn.execute(
-                    "SELECT property_schema_id, sequence, required, default_value"
+                    "SELECT property_schema_id, sequence"
                     " FROM class_property WHERE class_id = ? AND active = 1",
                     (ancestor_id,),
                 ).fetchall():
@@ -3646,21 +3681,34 @@ class LocalStore:
             # None, the properties-section default — the effective.ts parity).
             return value if value in ("bullet", "inline") else None
 
+        def parse_json(raw: Any) -> Any:
+            if not isinstance(raw, str):
+                return raw
+            try:
+                return json.loads(raw)
+            except ValueError:
+                return raw
+
         # Schema rows for everything referenced (authored rows survive schema
         # deletion: the row renders with schema=None). The schema
         # carries the PROPERTY-level render contracts — display (sanitized)
-        # and the readonly/hide-when-empty flags.
+        # and the readonly/hide-when-empty flags — and the ONE global default
+        # (owner ruling 2026-10-20: the value moved from the binding row to
+        # the schema).
         schema_ids = {str(row["property_schema_id"]) for row in authored_rows} | set(winner_by_schema)
         schemas: dict[str, EffectivePropertySchema] = {}
+        schema_default: dict[str, Any] = {}
         if schema_ids:
             placeholders = ", ".join("?" for _ in schema_ids)
             rows = self._conn.execute(
                 f"SELECT id, name, type, multi, display, readonly, hide_when_empty,"
-                f" icon, scope_class_ids, validation_rules"
+                f" icon, scope_class_ids, validation_rules, default_value"
                 f" FROM property_schema WHERE id IN ({placeholders})",
                 tuple(sorted(schema_ids)),
             ).fetchall()
             for row in rows:
+                if row[10] is not None:
+                    schema_default[str(row[0])] = parse_json(row[10])
                 schemas[str(row[0])] = EffectivePropertySchema(
                     id=str(row[0]),
                     name=str(row[1]),
@@ -3691,14 +3739,6 @@ class LocalStore:
             scope = schema.scope_class_ids
             return scope is None or any(class_id in node_class_closure for class_id in scope)
 
-        def parse_json(raw: Any) -> Any:
-            if not isinstance(raw, str):
-                return raw
-            try:
-                return json.loads(raw)
-            except ValueError:
-                return raw
-
         rows_out: dict[str, EffectiveProperty] = {}
         shadowed_default_schemas: set[str] = set()
         for authored in authored_rows:
@@ -3708,7 +3748,9 @@ class LocalStore:
             if idx == 0:
                 shadowed_default_schemas.add(schema_id)
             # PG5 merge key: rows at the same idx are distinct elements and
-            # all surface.
+            # all surface. Readonly/hideWhenEmpty/display are per-PROPERTY
+            # (the schema — unbound values included); sequence is per-CLASS
+            # (the winning binding).
             rows_out[f"{schema_id}:{idx}:{authored['id']}"] = EffectiveProperty(
                 property_schema_id=schema_id,
                 idx=idx,
@@ -3718,10 +3760,6 @@ class LocalStore:
                 metadata=parse_json(authored["metadata"]) if authored["metadata"] is not None else None,
                 source="authored",
                 bound_by=winner[0] if winner else None,
-                # Required is per-CLASS (the winning binding);
-                # readonly/hideWhenEmpty/display are per-PROPERTY (the
-                # schema — unbound values included).
-                required=flag(winner[1][2]) if winner else None,
                 readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 sequence=int(winner[1][1]) if winner else None,
@@ -3733,8 +3771,12 @@ class LocalStore:
             )
 
         for schema_id, (class_id, binding) in winner_by_schema.items():
-            if binding[3] is None:
-                continue  # bound without a default
+            # The default VALUE is schema-level (owner ruling 2026-10-20):
+            # the winning binding decides the property is present (and
+            # supplies sequence/boundBy), the schema row supplies the value.
+            if schema_id not in schema_default:
+                continue  # schema without a default
+            default_value = schema_default[schema_id]
             # R4 (owner ruling 2026-10-20): an ineligible node shows NEITHER
             # the property NOR a derived default from an out-of-scope
             # binding — a stray binding must not render a value for a
@@ -3746,7 +3788,7 @@ class LocalStore:
             # schema type (written before validation, or after a
             # delete+recreate changed the type) yields no default rather
             # than a wrong-typed value.
-            if schema is not None and not _is_valid_default_for_type(schema.type, parse_json(binding[3])):
+            if schema is not None and not _is_valid_default_for_type(schema.type, default_value):
                 continue
             if schema_id in shadowed_default_schemas:
                 continue  # authored value at idx 0 shadows the default
@@ -3755,11 +3797,10 @@ class LocalStore:
                 idx=0,
                 element_id=f"default:{schema_id}:0",
                 schema=schema,
-                value=parse_json(binding[3]),
+                value=default_value,
                 metadata=None,
                 source="default",
                 bound_by=class_id,
-                required=flag(binding[2]),
                 readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 sequence=int(binding[1]),
@@ -4114,12 +4155,18 @@ CREATE TABLE IF NOT EXISTS property_schema (
     number_pad INTEGER,
     number_decimals INTEGER,
     number_rounding TEXT,
+    -- The property's DEFAULT VALUE (owner ruling 2026-10-20, web schema v25
+    -- parity — moved from the class binding to the schema, the Logseq
+    -- shape): ONE global default per property. JSON-encoded; NULL = no
+    -- default. Typed per the schema type (PC2, validated at apply —
+    -- node-typed schemas (datetime/object/asset) accept only JSON null, "a
+    -- default that links a node is meaningless").
+    default_value TEXT,
     -- The render contracts are PROPERTY-level (owner review
     -- 2026-10-05) — display (panel|bullet|inline; NULL = panel) and the
     -- readonly/hide-when-empty tri-state flags, wherever the property
-    -- appears (class-bound or not). ('required' deliberately stays on the
-    -- class binding — a property may be mandatory for one class, optional
-    -- for another.)
+    -- appears (class-bound or not). ('required' retired outright under the
+    -- owner ruling 2026-10-20 — it was the binding-level exception.)
     display TEXT,
     readonly INTEGER,
     hide_when_empty INTEGER,
@@ -4254,25 +4301,27 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
 
 
 _CLASS_PROPERTY_DDL = """
--- Class -> property bindings (sequence, required, default), per SCHEMA.md
--- "Class properties — bindings, defaults, aggregation" (2026-09-27).
+-- Class -> property bindings (sequence + active only), per SCHEMA.md
+-- "Class properties — bindings, defaults, aggregation" (2026-09-27) and the
+-- owner ruling 2026-10-20 (the property-definition surfaces batch).
 -- Registry rows authored by class.property.set/unset; LWW on the row by
 -- (hlc, actor). Defaults are a DERIVED read model (get_effective_properties),
--- never materialized property_value rows.
--- (owner review 2026-10-05): the row carries ONLY the genuinely
--- per-class mechanics (sequence, required, default_value, active). The
--- render contracts (readonly/hide_when_empty, pre-v3.1.0, and display, the
--- v11 experiment) moved to property_schema — PROPERTY-level; the v12
--- rebuild dropped them here. 'active' (PC4): the soft-unbind flag —
--- an inactive row stops contributing to the effective read (no default, no
--- sequence) while the ROW survives; absent column means active, so existing
--- rows converge with zero migration.
+-- never materialized property_value rows — and the default VALUE is
+-- SCHEMA-level (one global default per property, the Logseq shape), read
+-- off the property_schema row.
+-- (owner ruling 2026-10-20): the row carries ONLY the genuinely per-class
+-- mechanics (sequence + active). 'required' retired outright (its only
+-- render effect — hiding the icon-button's "None" row — was mild
+-- enforcement, contradicting the render-contract law) and 'default_value'
+-- MOVED to property_schema; the strict payload schema rejects both keys
+-- like any retired key. 'active' (PC4): the soft-unbind flag — an inactive
+-- row stops contributing to the effective read (no default, no sequence)
+-- while the ROW survives; absent column means active, so existing rows
+-- converge with zero migration.
 CREATE TABLE IF NOT EXISTS class_property (
     class_id TEXT NOT NULL,
     property_schema_id TEXT NOT NULL,
     sequence INTEGER NOT NULL DEFAULT 0,
-    required INTEGER,
-    default_value TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
@@ -4499,8 +4548,14 @@ def _migrate_v11(conn: sqlite3.Connection) -> None:
     rows converge with zero backfill and a fresh v11 create is untouched.
 
     Kept in the chain for databases still below v11: v12 rebuilds the table
-    without the column the same open."""
-    LocalStore._add_column_if_missing(conn, "class_property", "display", "TEXT")
+    without the column the same open. The guard also requires the pre-v12
+    row shape (a ``required`` column): fresh chains create the current
+    binding shape (owner ruling 2026-10-20), where the v11 experiment never
+    existed — adding ``display`` there would only trip v12's rebuild into
+    copying retired columns."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(class_property)")}
+    if "required" in columns:
+        LocalStore._add_column_if_missing(conn, "class_property", "display", "TEXT")
 
 
 def _migrate_v12(conn: sqlite3.Connection) -> None:
@@ -4729,6 +4784,49 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v17(conn: sqlite3.Connection) -> None:
+    """v17 — the binding-flags v14 precedent again (owner ruling
+    2026-10-20, the property-definition surfaces batch; web schema v24→v25
+    parity): `required` retires outright and `default_value` MOVES from
+    class_property to property_schema (one global default per property, the
+    Logseq shape). The binding table REBUILDS without both columns (SQLite
+    cannot drop a column on old builds); the schema gains ``default_value``
+    additively (NULL = no default). The moved values arrive from the live
+    log rewrite (the monorepo's migrate-drop-binding-required.mts, Path B —
+    appended propertySchema.update compensation per affected schema) + the
+    epoch bump, so this backfill is deliberately NULL. Guarded on the old
+    columns so the step is a no-op for databases already carrying the new
+    shape (idempotent).
+    """
+    binding_columns = {row[1] for row in conn.execute("PRAGMA table_info(class_property)")}
+    if "required" in binding_columns or "default_value" in binding_columns:
+        conn.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE class_property_v17 (
+                class_id TEXT NOT NULL,
+                property_schema_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                hlc_physical INTEGER NOT NULL DEFAULT 0,
+                hlc_logical INTEGER NOT NULL DEFAULT 0,
+                actor_id TEXT,
+                PRIMARY KEY (class_id, property_schema_id)
+            );
+            INSERT INTO class_property_v17 (
+                class_id, property_schema_id, sequence, active, hlc_physical, hlc_logical, actor_id
+            )
+            SELECT class_id, property_schema_id, sequence, active, hlc_physical, hlc_logical, actor_id
+            FROM class_property;
+            DROP TABLE class_property;
+            ALTER TABLE class_property_v17 RENAME TO class_property;
+            CREATE INDEX IF NOT EXISTS idx_class_property_class ON class_property (class_id);
+            PRAGMA foreign_keys = ON;
+            """
+        )
+    LocalStore._add_column_if_missing(conn, "property_schema", "default_value", "TEXT")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -4747,4 +4845,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (14, _migrate_v14),
     (15, _migrate_v15),
     (16, _migrate_v16),
+    (17, _migrate_v17),
 )

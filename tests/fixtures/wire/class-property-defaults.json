@@ -1,5 +1,5 @@
 {
-  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27). A property schema 'priority' is bound on classes Task (default 'medium') and Project (default 'high'). A node created with Task reads Task's default; assigning Project too (the OR-Set add carrier is a re-issued object.create on the same id) aggregates both bindings — the conflict resolves first-class-applied-wins, so Task's 'medium' (earlier assignment HLC) beats Project's 'high'. Unsetting Task's binding removes it from the aggregation, so the node's effective priority becomes Project's 'high'. Defaults are a DERIVED read model: no property_value rows are ever written for them.",
+  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27; the default moved to the schema, owner ruling 2026-10-20). A property schema 'priority' carries ONE GLOBAL default 'medium' (the Logseq shape — defaults are schema-level, not per-class). Classes Task and Project BIND the schema (sequence only — a binding is just 'this class lists the property, in this order'). A node created with Task reads the schema default; assigning Project too aggregates both bindings — the default is still the schema's single 'medium' (per-class default conflicts no longer exist). Unsetting Task's binding leaves Project's, so the node STILL reads 'medium'; unsetting both removes the property from the node's effective list entirely (no binding, no derived default). Defaults are a DERIVED read model: no property_value rows are ever written for them.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000111",
@@ -20,6 +20,7 @@
         "name": "priority",
         "type": "select",
         "multi": false,
+        "defaultValue": "medium",
         "options": [
           {
             "id": "low",
@@ -137,8 +138,7 @@
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000302",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
-        "sequence": 0,
-        "defaultValue": "medium"
+        "sequence": 0
       }
     },
     {
@@ -160,8 +160,7 @@
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000303",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
-        "sequence": 0,
-        "defaultValue": "high"
+        "sequence": 0
       }
     },
     {
@@ -206,6 +205,27 @@
       "timestamp": "2026-09-24T12:00:11.700Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000302",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000119",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200011750,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000303"
+      ],
+      "opType": "class.property.unset",
+      "timestamp": "2026-09-24T12:00:11.750Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000303",
         "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
       }
     },

@@ -777,14 +777,45 @@ class TestPropertySchemaNumberFormats:
         assert cleared.number_pad is None
 
 
+class TestPropertySchemaDefaultValue:
+    """The property's ONE GLOBAL default (owner ruling 2026-10-20 — moved
+    from the class binding to the schema, the Logseq shape) rides
+    ``propertySchema.create/update`` as any JSON value, nullable-optional;
+    the update-side keep-vs-clear contract distinguishes absent (keeps the
+    stored value) from an explicit null (clears) via model_fields_set. The
+    PC2 type check itself is apply-time, against the payload type at create
+    and the schema's stored type at update (store tests)."""
+
+    def test_create_accepts_any_json_value(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.create"]
+        for value in ("low", 7, True, ["a", "b"], None):
+            payload = schema.model_validate(
+                {"propertySchemaId": UUID_1, "name": "slot", "type": "select", "defaultValue": value}
+            )
+            assert payload.default_value == value
+            assert "default_value" in payload.model_fields_set
+        minimal = schema.model_validate({"propertySchemaId": UUID_1, "name": "x", "type": "text"})
+        assert minimal.default_value is None
+        assert "default_value" not in minimal.model_fields_set
+
+    def test_update_keep_vs_clear_via_fields_set(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.update"]
+        kept = schema.model_validate({"propertySchemaId": UUID_1})
+        assert "default_value" not in kept.model_fields_set
+        cleared = schema.model_validate({"propertySchemaId": UUID_1, "defaultValue": None})
+        assert "default_value" in cleared.model_fields_set
+        assert cleared.default_value is None
+
+
 class TestPropertyDisplayPositions:
     """The render contracts ``display``/``readonly``/``hideWhenEmpty`` are
     PROPERTY-level (owner review, correcting the binding-level experiment) —
     they live on ``propertySchema.create/update``
     (nullable-optional; update-side absent keeps, null clears), and the
     strict ``class.property.set`` schema rejects all three like any retired
-    key. ``required`` is the deliberate per-class exception that stays on
-    the binding. The select option ``icon`` (MDI camelCase, max 64) stays on
+    key — as it does ``required`` and ``defaultValue`` (owner ruling
+    2026-10-20: ``required`` retired outright, the default moved to the
+    schema). The select option ``icon`` (MDI camelCase, max 64) stays on
     the deliberately NON-strict option record: unknown keys inside an option
     STRIP instead of rejecting, so icon-carrying envelopes sync through
     pre-batch parsers."""
@@ -818,11 +849,12 @@ class TestPropertyDisplayPositions:
         with pytest.raises(ValidationError, match="display"):
             validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "display": "sideways"})
 
-    @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty"])
+    @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty", "required", "defaultValue"])
     def test_class_property_set_render_contract_keys_rejected(self, key: str) -> None:
         """The binding payload carries ONLY the genuinely per-class
-        mechanics — display/readonly/hideWhenEmpty are retired keys there,
-        rejected outright by the strict schema (required stays)."""
+        mechanics (sequence + active) — display/readonly/hideWhenEmpty and
+        required/defaultValue are all retired keys there, rejected outright
+        by the strict schema (owner ruling 2026-10-20)."""
         with pytest.raises(ValidationError, match=key):
             validate_payload(
                 "class.property.set",
