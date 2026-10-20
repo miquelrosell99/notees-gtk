@@ -20,7 +20,6 @@
         "name": "priority",
         "type": "select",
         "multi": false,
-        "scope": "global",
         "options": [
           {
             "id": "low",
@@ -229,7 +228,6 @@
         "name": "Number format probe",
         "type": "number",
         "multi": false,
-        "scope": "global",
         "numberPad": 4,
         "numberDecimals": 1,
         "numberRounding": "floor"

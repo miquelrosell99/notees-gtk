@@ -22,7 +22,7 @@ import pytest
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
-from notees_gtk.data.errors import CycleError, MoveGuardError
+from notees_gtk.data.errors import CycleError, MoveGuardError, PropertyValueShapeError
 from notees_gtk.data.store import (
     EffectiveProperty,
     EffectivePropertySchema,
@@ -33,8 +33,16 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 
 #: Fixtures whose application must THROW — never part of the replay/determinism
 #: sets (class-extends-cycle closes a cycle; is-embedded-parent-page claims the
-#: standalone role under an embedded block, the parent-page condition).
-REPLAY_EXCLUDED = {"class-extends-cycle.json", "is-embedded-parent-page.json"}
+#: standalone role under an embedded block, the parent-page condition;
+#: property-validation-rules pins its reject tail — below-min/above-max,
+#: pattern rejects, one bad multi element, one uncompilable pattern — after
+#: an accepting prefix, all applied deliberately in their own tests — the
+#: store.test.ts REPLAY_EXCLUDED_FIXTURES parity).
+REPLAY_EXCLUDED = {
+    "class-extends-cycle.json",
+    "is-embedded-parent-page.json",
+    "property-validation-rules.json",
+}
 
 WS = "0192a000-0000-7000-8000-000000000001"
 NODE_PAGE = "0192a000-0000-7000-8000-000000000010"
@@ -473,18 +481,28 @@ class TestClassConvertFixture:
 
 class TestPropertyAssetTypeFixture:
     """Replay of property-asset-type.json (M38): asset-typed schemas land
-    (multi class-scoped + single object-scoped) and a name-only update
-    coexists on the single-value schema (mirrors the monorepo store test)."""
+    (multi scoped to the source class + single global) and a name-only
+    update coexists on the single-value schema (mirrors the monorepo store
+    test)."""
 
     def test_the_fixture_lands_asset_typed_schemas_and_the_update_coexists(self, store: LocalStore) -> None:
         for envelope in load_fixture("property-asset-type.json"):
             assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
         assert raw(
             store,
-            "SELECT id, type, multi, scope, name FROM property_schema ORDER BY id",
+            "SELECT id, type, multi, scope_class_ids, name FROM property_schema ORDER BY id",
         ) == [
-            ("0192a000-0000-7000-8000-000000000541", "asset", 1, "class", "Attachment"),
-            ("0192a000-0000-7000-8000-000000000542", "asset", 0, "object", "Cover file (renamed)"),
+            # Scoped to the source class (the sole locality authority, owner
+            # ruling 2026-10-20) — the retired "class" scope's one-element case.
+            (
+                "0192a000-0000-7000-8000-000000000541",
+                "asset",
+                1,
+                json.dumps(["00000000-0000-0000-0001-000000000023"]),
+                "Attachment",
+            ),
+            # The retired "object" scope had no consumer — it converges to global.
+            ("0192a000-0000-7000-8000-000000000542", "asset", 0, None, "Cover file (renamed)"),
         ]
 
 
@@ -896,10 +914,10 @@ class TestPropertyDatetimeFixture:
             assert store.apply_remote(envelope) is True
         assert raw(
             store,
-            "SELECT id, type, name, date_precision, multi, scope FROM property_schema ORDER BY id",
+            "SELECT id, type, name, date_precision, multi, scope_class_ids FROM property_schema ORDER BY id",
         ) == [
-            (self.WHEN, "datetime", "When", None, 0, "global"),
-            (self.YEAR, "datetime", "Year", "year", 0, "global"),
+            (self.WHEN, "datetime", "When", None, 0, None),
+            (self.YEAR, "datetime", "Year", "year", 0, None),
         ]
 
     def test_the_value_union_replays_end_to_end_with_lww_winners(self, store: LocalStore) -> None:
@@ -1077,3 +1095,165 @@ class TestReplayIdempotence:
         assert [store.apply_remote(envelope) for envelope in envelopes] == [False] * len(envelopes)
         assert raw(store, "SELECT id, content, class_ids, name FROM nodes ORDER BY id") == before
         assert raw(store, "SELECT COUNT(*) FROM relay_operations") == [(len(envelopes),)]
+
+
+class TestObjectListStyleFixture:
+    """Replay of object-list-style.json (the listStyle wire node field,
+    web schema v22→v23 parity): create-with-style, update set, and
+    present-null clear — mirroring the monorepo store test."""
+
+    PAGE = "0192a000-0000-7000-8000-00000000056a"
+    BLOCK = "0192a000-0000-7000-8000-00000000056b"
+
+    def test_the_fixture_lands_create_with_style_set_and_null_clear(self, store: LocalStore) -> None:
+        create_page, create_block, set_alpha, clear, set_roman = (
+            RelayEnvelope.model_validate(item) for item in load_fixture("object-list-style.json")
+        )
+        assert store.apply_remote(create_page) is True
+        assert store.apply_remote(create_block) is True
+        assert store.node(WS, self.BLOCK).list_style == "numbered"
+        assert store.apply_remote(set_alpha) is True
+        assert store.node(WS, self.BLOCK).list_style == "alpha"
+        assert store.apply_remote(clear) is True
+        assert store.node(WS, self.BLOCK).list_style is None
+        assert store.apply_remote(set_roman) is True
+        assert store.node(WS, self.PAGE).list_style == "roman"
+
+
+class TestPropertySchemaScopeFixture:
+    """Replay of property-schema-scope.json (owner ruling 2026-10-20):
+    extends-aware eligibility and authored-row survival under scope
+    narrowing — the R3/R4 read-side arms."""
+
+    A = "0192a000-0000-7000-8000-000000000901"
+    SCHEMA = "0192a000-0000-7000-8000-000000000910"
+    NA = "0192a000-0000-7000-8000-000000000921"
+    NB = "0192a000-0000-7000-8000-000000000922"
+    NX = "0192a000-0000-7000-8000-000000000923"
+
+    def _replay(self, store: LocalStore) -> None:
+        for envelope in load_fixture("property-schema-scope.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+
+    def rows_of(self, store: LocalStore, node_id: str) -> list[tuple[Any, bool]]:
+        return [
+            (row.value, row.eligible)
+            for row in store.get_effective_properties(node_id)
+            if row.property_schema_id == self.SCHEMA
+        ]
+
+    def test_the_fixture_pins_extends_aware_eligibility_and_survival_under_narrowing(
+        self, store: LocalStore
+    ) -> None:
+        self._replay(store)
+        # The scope list and the icon ride the schema row.
+        schema_row = raw(
+            store, "SELECT icon, scope_class_ids FROM property_schema WHERE id = ?", (self.SCHEMA,)
+        )
+        assert schema_row == [("mdiTagOutline", json.dumps([self.A]))]
+        # A-member and B-member (via the extends ancestor) are eligible.
+        assert self.rows_of(store, self.NA) == [("science fiction", True)]
+        assert self.rows_of(store, self.NB) == [("hard sci-fi", True)]
+        # The unclassed node's authored row SURVIVES the narrowing (never
+        # retroactive) and reads tagged eligible=false (R3 read-side arm).
+        assert self.rows_of(store, self.NX) == [("authored while global", False)]
+        # The binding row authored while the schema was scoped to A survives too.
+        assert raw(
+            store,
+            "SELECT COUNT(*) FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.A, self.SCHEMA),
+        ) == [(1,)]
+
+
+class TestPropertySchemaUpdateFieldsFixture:
+    """Replay of property-schema-update-fields.json: the update keep/clear
+    contract for icon/scopeClassIds/targetClassFilter/multi/validationRules
+    (absent keeps, present-null clears) — mirroring the monorepo store test."""
+
+    SCORE = "0192a000-0000-7000-8000-000000000960"
+    RELATED = "0192a000-0000-7000-8000-000000000961"
+    FILTER_TARGET = "0192a000-0000-7000-8000-000000000951"
+
+    def test_update_keep_clear_for_icon_scope_filter_multi_and_validation_rules(
+        self, store: LocalStore
+    ) -> None:
+        for envelope in load_fixture("property-schema-update-fields.json"):
+            assert store.apply_remote(RelayEnvelope.model_validate(envelope)) is True
+        # Cleared at the end of the Score lifecycle: icon/multi/rules back to
+        # defaults, the keep-riding name landed.
+        assert raw(
+            store,
+            "SELECT icon, multi, scope_class_ids, target_class_filter, validation_rules"
+            " FROM property_schema WHERE id = ?",
+            (self.SCORE,),
+        ) == [(None, 0, None, None, None)]
+        assert raw(store, "SELECT name FROM property_schema WHERE id = ?", (self.SCORE,)) == [
+            ("Score (kept fields ride)",)
+        ]
+        # Related: filter + scope set then cleared (the intermediate values
+        # were the set arms of the same contract).
+        assert raw(
+            store,
+            "SELECT scope_class_ids, target_class_filter FROM property_schema WHERE id = ?",
+            (self.RELATED,),
+        ) == [(None, None)]
+
+
+class TestPropertyValidationRulesFixture:
+    """Replay of property-validation-rules.json (R2 value enforcement): the
+    first 24 envelopes are the accepting prefix (boundaries, the normalized
+    numeric string, min-only/max-only, rule-free, schema-less); the tail of
+    6 pins the rejects — mirroring the monorepo property-validation test."""
+
+    OWNER = "0192a000-0000-7000-8000-000000001001"
+    RATING = "0192a000-0000-7000-8000-000000001010"
+    KEYWORDS = "0192a000-0000-7000-8000-000000001013"
+    GOOD_ELEMENT = "0192a000-0000-7000-8000-000000001020"
+
+    def _accepts_rejects(self) -> tuple[list[RelayEnvelope], list[RelayEnvelope]]:
+        envelopes = [RelayEnvelope.model_validate(item) for item in load_fixture("property-validation-rules.json")]
+        return envelopes[:24], envelopes[24:]
+
+    def test_accepting_prefix_replays_cleanly_and_idempotently(self, store: LocalStore) -> None:
+        accepts, _ = self._accepts_rejects()
+        for envelope in accepts:
+            assert store.apply_remote(envelope) is True
+        # A second pass dedupes to False on every envelope.
+        assert [store.apply_remote(envelope) for envelope in accepts] == [False] * len(accepts)
+        assert raw(store, "SELECT COUNT(*) FROM property_value") != [(0,)]
+
+    def test_reject_tail_throws_on_apply_each_leaving_the_accepted_state_intact(
+        self, store: LocalStore
+    ) -> None:
+        accepts, rejects = self._accepts_rejects()
+        for envelope in accepts:
+            assert store.apply_remote(envelope) is True
+        # Below min / above max on Rating.
+        with pytest.raises(PropertyValueShapeError, match="below the schema's validationRules min 1"):
+            store.apply_remote(rejects[0])
+        with pytest.raises(PropertyValueShapeError, match="above the schema's validationRules max 5"):
+            store.apply_remote(rejects[1])
+        # Pattern rejects on text + url.
+        with pytest.raises(PropertyValueShapeError, match="does not match the schema's validationRules pattern"):
+            store.apply_remote(rejects[2])
+        with pytest.raises(PropertyValueShapeError, match="does not match the schema's validationRules pattern"):
+            store.apply_remote(rejects[3])
+        # One bad multi element: the op rejects, the good element survives.
+        with pytest.raises(PropertyValueShapeError, match="does not match the schema's validationRules pattern"):
+            store.apply_remote(rejects[4])
+        # Uncompilable pattern at the rule write.
+        with pytest.raises(PropertyValueShapeError, match="not a compilable regex"):
+            store.apply_remote(rejects[5])
+        # Rating holds the last accepted value (the normalized "4").
+        assert raw(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? AND idx = 0",
+            (self.OWNER, self.RATING),
+        ) == [("4",)]
+        # Keywords holds the good element; the BAD1 reject wrote nothing.
+        # (property_value.value is the JSON encoding — '"good"'.)
+        assert raw(
+            store,
+            "SELECT value, id FROM property_value WHERE node_id = ? AND property_schema_id = ? ORDER BY rowid",
+            (self.OWNER, self.KEYWORDS),
+        ) == [(json.dumps("good"), self.GOOD_ELEMENT)]

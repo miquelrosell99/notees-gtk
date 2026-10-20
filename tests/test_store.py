@@ -673,6 +673,7 @@ class TestObjectCreate:
             banner_asset_id=None,
             aliased_node_id=None,
             description=None,
+            list_style=None,
             is_active=True,
             content=json.dumps([{"type": "text", "text": "My Page"}]),
             content_plain="My Page",
@@ -2087,7 +2088,7 @@ class TestPropertySchema:
                     "name": "Status",
                     "type": "select",
                     "multi": False,
-                    "scope": "class",
+                    "scopeClassIds": [uid("c-a")],
                     "options": [{"id": "o1", "label": "Open"}],
                 },
                 hlc=(1, 0),
@@ -2095,8 +2096,8 @@ class TestPropertySchema:
         )
         assert raw_rows(
             store,
-            f"SELECT name, type, multi, scope, options, active FROM property_schema WHERE id = '{uid('ps-1')}'",
-        ) == [("Status", "select", 0, "class", json.dumps([{"id": "o1", "label": "Open"}]), 1)]
+            f"SELECT name, type, multi, scope_class_ids, options, active FROM property_schema WHERE id = '{uid('ps-1')}'",
+        ) == [("Status", "select", 0, json.dumps([uid("c-a")]), json.dumps([{"id": "o1", "label": "Open"}]), 1)]
         store.apply_remote(
             make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "name": "State"}, hlc=(2, 0))
         )
@@ -3928,7 +3929,7 @@ class TestAssetPropertyType:
         self, store: LocalStore
     ) -> None:
         self._world(store)
-        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True, scope="class")) is True
+        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True)) is True
         assert (
             store.apply_remote(
                 class_env(
@@ -3966,7 +3967,7 @@ class TestAssetPropertyType:
 
     def test_node_typed_defaults_stay_unsupported(self, store: LocalStore) -> None:
         self._world(store)
-        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True, scope="class")) is True
+        assert store.apply_remote(self._schema_env(self.SCHEMA, (5, 0), multi=True)) is True
         with pytest.raises(PropertyValueShapeError, match="must be null"):
             store.apply_remote(
                 class_env(
@@ -3991,7 +3992,6 @@ class TestAssetPropertyType:
                         "name": "Attachments",
                         "type": "object",
                         "multi": True,
-                        "scope": "class",
                         "targetClassFilter": [self.ASSET_CLASS],
                     },
                     hlc=(5, 0),
@@ -4030,7 +4030,6 @@ class TestAssetPropertyType:
                     self.ATTACHMENTS,
                     (9, 0),
                     multi=True,
-                    scope="class",
                     options=[],
                     display="inline",
                 )
@@ -4093,3 +4092,654 @@ class TestClassCreateConversion:
 def _db_path(store: LocalStore) -> Path:
     """Recover the db path for raw assertions (tests only)."""
     return Path(str(store._conn.execute("PRAGMA database_list").fetchone()[2]))  # noqa: SLF001
+
+
+class TestMigrationsV16:
+    """v15→v16 (web schema v22→v24 parity): the per-block list style lands
+    as a nullable node column and the property_schema table rebuilds (the
+    display-only ``scope`` column retires; ``icon``/``scope_class_ids``/
+    ``validation_rules`` land) — guarded, idempotent, exactly like a fresh
+    v16 create."""
+
+    def test_v15_database_upgrades_in_place(self, tmp_path: Path) -> None:
+        path = tmp_path / "v15.db"
+        instance = LocalStore(path)
+        instance.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-old"), "name": "Legacy", "type": "text", "scopeClassIds": [uid("c-a")]},
+                hlc=(1, 0),
+            )
+        )
+        instance.close()
+        # Downgrade the on-disk shape to v15: drop list_style from nodes and
+        # rebuild property_schema with the retired scope column (no icon /
+        # scope_class_ids / validation_rules).
+        with sqlite3.connect(path) as raw:
+            raw.execute("ALTER TABLE nodes DROP COLUMN list_style")
+            raw.execute("ALTER TABLE property_schema RENAME TO property_schema_v16")
+            raw.execute(
+                """
+                CREATE TABLE property_schema (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    multi INTEGER NOT NULL DEFAULT 0,
+                    scope TEXT NOT NULL DEFAULT 'global',
+                    options TEXT NOT NULL DEFAULT '[]',
+                    target_class_filter TEXT,
+                    date_precision TEXT,
+                    date_qualified INTEGER,
+                    number_pad INTEGER,
+                    number_decimals INTEGER,
+                    number_rounding TEXT,
+                    display TEXT,
+                    readonly INTEGER,
+                    hide_when_empty INTEGER,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            raw.execute(
+                """INSERT INTO property_schema (
+                       id, workspace_id, name, type, multi, scope, options, target_class_filter,
+                       date_precision, date_qualified, number_pad, number_decimals, number_rounding,
+                       display, readonly, hide_when_empty, active, created_at, updated_at
+                   )
+                   SELECT id, workspace_id, name, type, multi,
+                       CASE WHEN scope_class_ids IS NOT NULL THEN 'class' ELSE 'global' END,
+                       options, target_class_filter, date_precision, date_qualified,
+                       number_pad, number_decimals, number_rounding,
+                       display, readonly, hide_when_empty, active, created_at, updated_at
+                   FROM property_schema_v16"""
+            )
+            raw.execute("DROP TABLE property_schema_v16")
+            raw.execute("PRAGMA user_version = 15")
+        upgraded = LocalStore(path)
+        with sqlite3.connect(path) as raw:
+            node_columns = {row[1] for row in raw.execute("PRAGMA table_info(nodes)")}
+            schema_columns = {row[1] for row in raw.execute("PRAGMA table_info(property_schema)")}
+            version = raw.execute("PRAGMA user_version").fetchone()[0]
+            legacy = raw.execute(
+                "SELECT name, type, multi, scope_class_ids FROM property_schema WHERE id = ?",
+                (uid("ps-old"),),
+            ).fetchall()
+        assert version == SCHEMA_VERSION
+        assert "list_style" in node_columns
+        assert "scope" not in schema_columns
+        assert {"icon", "scope_class_ids", "validation_rules"} <= schema_columns
+        # Rows copy through with the new columns NULL (the live log rewrite
+        # re-derives scope; the migration never backfills).
+        assert legacy == [("Legacy", "text", 0, None)]
+        # The migrated store maps the new fields like a fresh v16 one.
+        assert upgraded.apply_remote(create_env(name="Page", hlc=(1, 1))) is True
+        assert upgraded.apply_remote(update_env(NODE, hlc=(2, 0), listStyle="roman")) is True
+        node = upgraded.node(WS_A, NODE)
+        assert node is not None and node.list_style == "roman"
+        assert (
+            upgraded.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {
+                        "propertySchemaId": uid("ps-new"),
+                        "name": "Fresh",
+                        "type": "number",
+                        "icon": "mdiStar",
+                        "scopeClassIds": [uid("c-a")],
+                    },
+                    hlc=(3, 0),
+                )
+            )
+            is True
+        )
+        assert raw_rows(
+            upgraded,
+            f"SELECT icon, scope_class_ids, validation_rules FROM property_schema WHERE id = '{uid('ps-new')}'",
+        ) == [("mdiStar", json.dumps([uid("c-a")]), None)]
+        upgraded.close()
+        # Idempotent: a second open is a no-op that stays current.
+        reopened = LocalStore(path)
+        assert raw_rows(reopened, "PRAGMA user_version") == [(SCHEMA_VERSION,)]
+        reopened.close()
+
+
+class TestListStyle:
+    """The per-block list style wire node field (owner 2026-10-16, web
+    schema v22→v23 parity): absent/null = bullet, presence writes,
+    present-null clears (the icon/color precedent), the column rides the
+    row LWW."""
+
+    def test_create_set_clear_and_absent_preserves(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(name="Page", hlc=(1, 0)))
+        assert store.node(WS_A, NODE).list_style is None
+        assert store.apply_remote(update_env(NODE, hlc=(2, 0), listStyle="numbered")) is True
+        assert store.node(WS_A, NODE).list_style == "numbered"
+        # An absent field is not a write: an icon-only update keeps the style.
+        assert store.apply_remote(update_env(NODE, hlc=(3, 0), icon="mdiStar")) is True
+        row = store.node(WS_A, NODE)
+        assert (row.icon, row.list_style) == ("mdiStar", "numbered")
+        # A stale-HLC update loses the row LWW race: nothing changes.
+        assert store.apply_remote(update_env(NODE, hlc=(2, 1), listStyle=None, actor_id=ACTOR_OTHER)) is False
+        assert store.node(WS_A, NODE).list_style == "numbered"
+        # The winning clear.
+        assert store.apply_remote(update_env(NODE, hlc=(4, 0), listStyle=None)) is True
+        assert store.node(WS_A, NODE).list_style is None
+
+    def test_create_carries_the_initial_style(self, store: LocalStore) -> None:
+        store.apply_remote(
+            make_env(
+                "object.create",
+                {
+                    "objectId": NODE,
+                    "parentId": None,
+                    "isEmbedded": False,
+                    "contentAst": [{"type": "text", "text": "Page"}],
+                    "listStyle": "alpha",
+                },
+                hlc=(1, 0),
+            )
+        )
+        assert store.node(WS_A, NODE).list_style == "alpha"
+
+
+class TestPropertyScope:
+    """The property-scope batch (owner ruling 2026-10-20, TS b8548e0e +
+    19baac4b): scopeClassIds is the sole locality authority — property.set
+    on an ineligible node fails loud (R3), class.property.set outside the
+    scope fails loud (R5, dead config), and the effective read tags
+    ineligible authored rows while never deriving defaults for an ineligible
+    node (R4). Narrowing a scope is never retroactive."""
+
+    CLASS_A = uid("scope-a")
+    CLASS_B = uid("scope-b")
+    SCHEMA = uid("scope-schema")
+    NODE_A = uid("scope-node-a")
+    NODE_B = uid("scope-node-b")
+    NODE_X = uid("scope-node-x")
+
+    def _scoped_world(self, store: LocalStore) -> None:
+        store.apply_remote(
+            make_env(
+                "class.create",
+                {"classId": self.CLASS_A, "contentAst": [{"type": "text", "text": "A"}]},
+                hlc=(1, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.create",
+                {"classId": self.CLASS_B, "contentAst": [{"type": "text", "text": "B"}]},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.setExtends", {"classId": self.CLASS_B, "parentClassIds": [self.CLASS_A]}, hlc=(3, 0)
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": self.SCHEMA,
+                    "name": "Genre",
+                    "type": "text",
+                    "scopeClassIds": [self.CLASS_A],
+                },
+                hlc=(4, 0),
+            )
+        )
+        store.apply_remote(create_env(self.NODE_A, class_ids=(self.CLASS_A,), hlc=(5, 0)))
+        store.apply_remote(create_env(self.NODE_B, class_ids=(self.CLASS_B,), hlc=(6, 0)))
+        store.apply_remote(create_env(self.NODE_X, hlc=(7, 0)))
+
+    def _rows(self, store: LocalStore, node_id: str) -> list[tuple[str, Any, bool]]:
+        return [
+            (row.source, row.value, row.eligible)
+            for row in store.get_effective_properties(node_id)
+            if row.property_schema_id == self.SCHEMA
+        ]
+
+    def test_r3_property_set_on_an_ineligible_node_fails_loud_schema_less_stay_unchecked(
+        self, store: LocalStore
+    ) -> None:
+        self._scoped_world(store)
+        with pytest.raises(MoveGuardError, match="not eligible"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": self.NODE_X, "propertySchemaId": self.SCHEMA, "value": "nope", "idx": 0},
+                    hlc=(8, 0),
+                )
+            )
+        # An eligible node (own class) writes fine; an extends-aware node
+        # (B extends A, in scope) writes fine.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": self.NODE_A, "propertySchemaId": self.SCHEMA, "value": "a", "idx": 0},
+                    hlc=(9, 0),
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": self.NODE_B, "propertySchemaId": self.SCHEMA, "value": "b", "idx": 0},
+                    hlc=(10, 0),
+                )
+            )
+            is True
+        )
+        # Unknown schema id: no schema row, no eligibility check (PG6 precedent).
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {
+                        "objectId": self.NODE_X,
+                        "propertySchemaId": uid("scope-unknown"),
+                        "value": "free",
+                        "idx": 0,
+                    },
+                    hlc=(11, 0),
+                )
+            )
+            is True
+        )
+
+    def test_r5_class_property_set_outside_the_scope_fails_loud_a_subclass_binds(
+        self, store: LocalStore
+    ) -> None:
+        self._scoped_world(store)
+        foreign = uid("scope-foreign")
+        store.apply_remote(
+            make_env(
+                "class.create",
+                {"classId": foreign, "contentAst": [{"type": "text", "text": "Foreign"}]},
+                hlc=(8, 0),
+            )
+        )
+        with pytest.raises(MoveGuardError, match="would be inert"):
+            store.apply_remote(
+                make_env(
+                    "class.property.set",
+                    {"classId": foreign, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                    hlc=(9, 0),
+                )
+            )
+        # B extends A (in scope): the binding is live — it must be accepted.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "class.property.set",
+                    {
+                        "classId": self.CLASS_B,
+                        "propertySchemaId": self.SCHEMA,
+                        "sequence": 0,
+                        "defaultValue": "inherited",
+                    },
+                    hlc=(10, 0),
+                )
+            )
+            is True
+        )
+        # R4 arm: NODE_X carries no scope class — B's binding with a default
+        # derives NOTHING for it; NODE_B (via the A ancestor) reads the default.
+        assert [row for row in self._rows(store, self.NODE_X) if row[0] == "default"] == []
+        assert ("default", "inherited", True) in self._rows(store, self.NODE_B)
+
+    def test_r4_an_ineligible_node_reads_neither_the_property_nor_a_derived_default(
+        self, store: LocalStore
+    ) -> None:
+        self._scoped_world(store)
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {
+                    "classId": self.CLASS_A,
+                    "propertySchemaId": self.SCHEMA,
+                    "sequence": 0,
+                    "defaultValue": "defaulted",
+                },
+                hlc=(8, 0),
+            )
+        )
+        # NODE_X: no authored rows, no derived default (the stray binding is inert).
+        assert self._rows(store, self.NODE_X) == []
+        # NODE_A: the derived default materializes, eligible.
+        assert self._rows(store, self.NODE_A) == [("default", "defaulted", True)]
+
+    def test_narrowing_a_scope_is_never_retroactive_authored_rows_survive_tagged(
+        self, store: LocalStore
+    ) -> None:
+        self._scoped_world(store)
+        # Authored while global, then narrowed out.
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": self.SCHEMA, "scopeClassIds": None},
+                hlc=(8, 0),
+            )
+        )
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": self.NODE_X, "propertySchemaId": self.SCHEMA, "value": "vintage", "idx": 0},
+                    hlc=(9, 0),
+                )
+            )
+            is True
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": self.SCHEMA, "scopeClassIds": [self.CLASS_A]},
+                hlc=(10, 0),
+            )
+        )
+        # The authored row survives, tagged eligible=False.
+        assert self._rows(store, self.NODE_X) == [("authored", "vintage", False)]
+
+    def test_the_retired_scope_key_fails_loud_at_the_envelope_gate(self, store: LocalStore) -> None:
+        for scope in ("global", "class", "object"):
+            with pytest.raises(EnvelopeValidationError, match="invalid propertySchema.create payload"):
+                store.apply_remote(
+                    make_env(
+                        "propertySchema.create",
+                        {"propertySchemaId": self.SCHEMA, "name": "x", "type": "text", "scope": scope},
+                        hlc=(1, 0),
+                    )
+                )
+        with pytest.raises(EnvelopeValidationError, match="invalid propertySchema.update payload"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": self.SCHEMA, "scope": "global"},
+                    hlc=(1, 0),
+                )
+            )
+        # An empty scopeClassIds is likewise rejected at the gate.
+        with pytest.raises(EnvelopeValidationError, match="invalid propertySchema.create payload"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {
+                        "propertySchemaId": self.SCHEMA,
+                        "name": "x",
+                        "type": "text",
+                        "scopeClassIds": [],
+                    },
+                    hlc=(1, 0),
+                )
+            )
+
+    def test_update_keep_clear_and_r2_applicability_against_the_stored_type(
+        self, store: LocalStore
+    ) -> None:
+        text_schema, number_schema = uid("scope-text"), uid("scope-number")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": text_schema, "name": "t", "type": "text"},
+                hlc=(1, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": number_schema, "name": "n", "type": "number"},
+                hlc=(2, 0),
+            )
+        )
+        # min/max on a text schema: fail loud (R2 applicability).
+        with pytest.raises(PropertyValueShapeError, match="min/max apply to number schemas only"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": text_schema, "validationRules": {"min": 0}},
+                    hlc=(3, 0),
+                )
+            )
+        # pattern on a number schema: fail loud.
+        with pytest.raises(PropertyValueShapeError, match="pattern applies to text/url/email schemas only"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": number_schema, "validationRules": {"pattern": "^a"}},
+                    hlc=(4, 0),
+                )
+            )
+        # min > max fails at the payload gate.
+        with pytest.raises(EnvelopeValidationError, match="invalid propertySchema.update payload"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": number_schema, "validationRules": {"min": 5, "max": 1}},
+                    hlc=(5, 0),
+                )
+            )
+        # Legal arms: min/max on number, pattern on text; the non-compilable
+        # pattern fails at the rule write.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": number_schema, "validationRules": {"min": 0, "max": 10}},
+                    hlc=(6, 0),
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": text_schema, "validationRules": {"pattern": "^#"}},
+                    hlc=(7, 0),
+                )
+            )
+            is True
+        )
+        with pytest.raises(PropertyValueShapeError, match="not a compilable regex"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": text_schema, "validationRules": {"pattern": "([a-z"}},
+                    hlc=(8, 0),
+                )
+            )
+        assert raw_rows(
+            store,
+            f"SELECT validation_rules FROM property_schema WHERE id = '{number_schema}'",
+        ) == [(json.dumps({"min": 0, "max": 10}),)]
+        # Null clears.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "propertySchema.update",
+                    {"propertySchemaId": number_schema, "validationRules": None},
+                    hlc=(9, 0),
+                )
+            )
+            is True
+        )
+        assert raw_rows(
+            store, f"SELECT validation_rules FROM property_schema WHERE id = '{number_schema}'"
+        ) == [(None,)]
+
+    def test_r2_value_enforcement_min_max_and_full_string_pattern(self, store: LocalStore) -> None:
+        number_schema, text_schema = uid("rules-number"), uid("rules-text")
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": number_schema, "name": "n", "type": "number"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": number_schema, "validationRules": {"min": 1, "max": 5}},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": text_schema, "name": "t", "type": "text"},
+                hlc=(4, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": text_schema, "validationRules": {"pattern": "[a-z0-9-]+"}},
+                hlc=(5, 0),
+            )
+        )
+        # A legacy numeric string normalizes, then bounds-checks (4 is fine).
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": number_schema, "value": "4", "idx": 0},
+                    hlc=(6, 0),
+                )
+            )
+            is True
+        )
+        with pytest.raises(PropertyValueShapeError, match="below the schema's validationRules min 1"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": number_schema, "value": 0, "idx": 0},
+                    hlc=(7, 0),
+                )
+            )
+        with pytest.raises(PropertyValueShapeError, match="above the schema's validationRules max 5"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": number_schema, "value": 6, "idx": 0},
+                    hlc=(8, 0),
+                )
+            )
+        # Full-string semantics: "ab" passes, "a b" and "AB" do not.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": text_schema, "value": "ab", "idx": 0},
+                    hlc=(9, 0),
+                )
+            )
+            is True
+        )
+        with pytest.raises(PropertyValueShapeError, match="full-string match"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": text_schema, "value": "a b", "idx": 0},
+                    hlc=(10, 0),
+                )
+            )
+        with pytest.raises(PropertyValueShapeError, match="full-string match"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": text_schema, "value": "AB", "idx": 0},
+                    hlc=(11, 0),
+                )
+            )
+        # A text carrier ref rides the pattern unchecked; a null value bypasses.
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {
+                        "objectId": NODE,
+                        "propertySchemaId": text_schema,
+                        "value": {"nodeId": uid("rules-carrier")},
+                        "idx": 0,
+                    },
+                    hlc=(12, 0),
+                )
+            )
+            is True
+        )
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {"objectId": NODE, "propertySchemaId": text_schema, "value": None, "idx": 0},
+                    hlc=(13, 0),
+                )
+            )
+            is True
+        )
+
+    def test_r2_multi_validates_per_element_one_bad_element_rejects_its_own_write(
+        self, store: LocalStore
+    ) -> None:
+        multi_schema = uid("rules-multi")
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": multi_schema, "name": "m", "type": "text", "multi": True},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": multi_schema, "validationRules": {"pattern": "[a-z]+"}},
+                hlc=(3, 0),
+            )
+        )
+        element_bad = uid("rules-element-bad")
+        assert (
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {
+                        "objectId": NODE,
+                        "propertySchemaId": multi_schema,
+                        "value": "good",
+                        "idx": 0,
+                        "elementId": uid("rules-element-good"),
+                    },
+                    hlc=(4, 0),
+                )
+            )
+            is True
+        )
+        with pytest.raises(PropertyValueShapeError, match="full-string match"):
+            store.apply_remote(
+                make_env(
+                    "property.set",
+                    {
+                        "objectId": NODE,
+                        "propertySchemaId": multi_schema,
+                        "value": "BAD1",
+                        "idx": 1,
+                        "elementId": element_bad,
+                    },
+                    hlc=(5, 0),
+                )
+            )
+        # The good element survives; the bad one never landed.
+        assert raw_rows(
+            store,
+            "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? ORDER BY idx",
+            (NODE, multi_schema),
+        ) == [(json.dumps("good"),)]

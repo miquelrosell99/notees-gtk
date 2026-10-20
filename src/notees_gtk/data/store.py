@@ -144,7 +144,17 @@ _log = logging.getLogger(__name__)
 #: plain text max 512 chars — lands as a nullable node column mapped by
 #: object.update (presence writes, present-null clears — the color
 #: convention); object.create carries none.
-SCHEMA_VERSION = 15
+#: v15 (owner 2026-10-16, web schema v21 parity): the Revision-12
+#: embedding model — ``present_as_main`` renamed to ``is_embedded`` WITH
+#: POLARITY INVERSION (the nodes table rebuild).
+#: v16 (owner 2026-10-16 + ruling 2026-10-20, web schema v22→v24 parity):
+#: the per-block list style lands as a nullable ``list_style`` node column
+#: (the listStyle wire node field; NULL = bullet); the property_schema
+#: table REBUILDS (the v12 precedent) — the display-only ``scope`` column
+#: retires (the locality authority is the new ``scope_class_ids`` JSON
+#: column, NULL = global) and the schema gains ``icon`` +
+#: ``validation_rules``.
+SCHEMA_VERSION = 16
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -183,6 +193,10 @@ _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "banner_asset_id": "banner_asset_id",
     "aliased_node_id": "aliased_node_id",
     "description": "description",
+    # Per-block list style (web schema v23): rides along when the snapshot
+    # was taken from a post-list-style store; older snapshots lack the
+    # column and the mapping skips them (the cache default NULL wins).
+    "list_style": "list_style",
     "content": "content",
     "created_at": "created_at",
     "is_active": "is_active",
@@ -271,6 +285,9 @@ class NodeRow:
     banner_asset_id: str | None
     aliased_node_id: str | None
     description: str | None
+    # Per-block list style (the listStyle wire node field): "numbered" |
+    # "alpha" | "roman", or ``None`` = the bullet default.
+    list_style: str | None
     is_active: bool
     content: str | None
     content_plain: str
@@ -288,7 +305,10 @@ class EffectivePropertySchema:
     Carries the PROPERTY-level render contracts (``display``
     sanitized — ``"bullet"``/``"inline"`` or ``None`` for NULL/"panel";
     ``readonly``/``hide_when_empty`` tri-state flags) — the same for every
-    carrier, class-bound or not."""
+    carrier, class-bound or not. The R3 locality authority rides too:
+    ``scope_class_ids`` (None = global — eligibility walks the node's class
+    closure against this list), the ``icon`` (None = none), and the R2
+    ``validation_rules`` (None = none)."""
 
     id: str
     name: str
@@ -297,6 +317,9 @@ class EffectivePropertySchema:
     display: str | None = None
     readonly: bool | None = None
     hide_when_empty: bool | None = None
+    icon: str | None = None
+    scope_class_ids: tuple[str, ...] | None = None
+    validation_rules: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +354,14 @@ class EffectiveProperty:
     hide_when_empty: bool | None
     sequence: int | None
     display: str | None = None
+    # R3 eligibility (owner ruling 2026-10-20): False when the schema's
+    # scopeClassIds excludes the node (its class closure misses the list) —
+    # the row survives (authored values always survive; narrowing a scope is
+    # never retroactive) but callers know it is out of scope; derived
+    # defaults never materialize for ineligible nodes (R4), so only authored
+    # rows can carry eligible=False. Schema-less rows (schema deleted) read
+    # True.
+    eligible: bool = True
 
 
 def _content_class_link_ids(tokens: Any) -> list[str]:
@@ -397,7 +428,7 @@ _ALIAS_CHAIN_DEPTH_CAP = 32
 #: legitimate envelope, while a null on any other field (icon/contentAst
 #: are optional, not nullish) would 422.
 _NULLISH_OBJECT_UPDATE_FIELDS = frozenset(
-    {"color", "coverAssetId", "bannerAssetId", "aliasedNodeId", "description"}
+    {"color", "coverAssetId", "bannerAssetId", "aliasedNodeId", "description", "listStyle"}
 )
 
 
@@ -632,6 +663,137 @@ def _is_valid_default_for_type(type_: str, value: Any) -> bool:
     # datetime/object/asset accept only JSON null (handled above);
     # unknown future types ride unchecked.
     return type_ not in ("datetime", "object", "asset")
+
+
+def _json_array_of_row(raw: Any) -> list[str] | None:
+    """A stored JSON array column as a string array (NULL/malformed → None —
+    a corrupt column reads as "no list", never a crash; the effective.ts
+    ``parseJsonArray`` parity)."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [str(item) for item in parsed if isinstance(item, str)]
+
+
+def _validation_rules_of_row(raw: Any) -> dict[str, Any] | None:
+    """The stored validation_rules column parsed to the rule object (None on
+    NULL or unparseable — a corrupt column reads as "no rules", never a
+    crash; the property-values.ts ``validationRulesOfRow`` parity)."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None or not isinstance(parsed, dict):
+        return None
+    rules: dict[str, Any] = {}
+    minimum = parsed.get("min")
+    if isinstance(minimum, (int, float)) and not isinstance(minimum, bool) and math.isfinite(minimum):
+        rules["min"] = minimum
+    maximum = parsed.get("max")
+    if isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and math.isfinite(maximum):
+        rules["max"] = maximum
+    pattern = parsed.get("pattern")
+    if isinstance(pattern, str):
+        rules["pattern"] = pattern
+    return rules
+
+
+def _assert_validation_rules_applicable(schema_type: str, rules: dict[str, Any], op_type: str) -> None:
+    """R2 applicability (owner ruling 2026-10-20): the update payload is a
+    patch carrying no type, so validationRules applicability is enforced
+    against the schema's STORED type — min/max only on ``number`` schemas,
+    pattern only on ``text``/``url``/``email``. (min <= max is a parse-time
+    rule.) Fail loud — the rules would be provably inert or wrong-typed."""
+    if (rules.get("min") is not None or rules.get("max") is not None) and schema_type != "number":
+        raise PropertyValueShapeError(
+            f"{op_type}: validationRules min/max apply to number schemas only"
+            f" — schema type is {schema_type}",
+            op_type,
+        )
+    if rules.get("pattern") is not None and schema_type not in ("text", "url", "email"):
+        raise PropertyValueShapeError(
+            f"{op_type}: validationRules pattern applies to text/url/email schemas only"
+            f" — schema type is {schema_type}",
+            op_type,
+        )
+
+
+def _assert_validation_pattern_compilable(rules: dict[str, Any], op_type: str) -> None:
+    """A pattern that does not compile would throw at value-check time (an
+    applier crash is never acceptable) — the rule write itself fails loud
+    instead. The pattern is stored as authored (no anchoring rewrite: the
+    value check adds the full-string anchors around the source)."""
+    pattern = rules.get("pattern")
+    if pattern is None:
+        return
+    try:
+        re.compile(pattern)
+    except re.error:
+        raise PropertyValueShapeError(
+            f"{op_type}: validationRules pattern is not a compilable regex — got {_jsonish(pattern)}",
+            op_type,
+        ) from None
+
+
+def _assert_validation_rules_for_value(schema: dict[str, Any], typed: Any, op_type: str) -> None:
+    """The stored validationRules applied to a NORMALIZED value (the R2 value
+    enforcement, owner ruling 2026-10-20 — SCHEMA.md "Class properties"):
+    min/max bound a number schema's value (the legacy numeric string already
+    normalized to a finite number upstream), pattern full-string-tests a
+    text/url/email schema's SCALAR strings (a text carrier ref {nodeId} is
+    not a string and rides unchecked — the shape family owns refs). A multi
+    batch is a property.set per element (PG5), so every element is validated
+    at its own write and one bad element rejects its op while the surviving
+    elements stay. Types outside applicability never reach here — rule
+    writes on them are rejected at the schema-update path. A stored pattern
+    that does not compile is corrupt config: fail loud
+    (PropertyValueShapeError), never an applier crash."""
+    rules = _validation_rules_of_row(schema.get("validation_rules"))
+    if rules is None:
+        return
+    schema_type = str(schema.get("type"))
+    if schema_type == "number":
+        if not isinstance(typed, (int, float)) or isinstance(typed, bool):
+            return  # the shape check owns non-numbers.
+        minimum = rules.get("min")
+        if minimum is not None and typed < minimum:
+            raise PropertyValueShapeError(
+                f"{op_type}: value {_jsonish(typed)} is below the schema's validationRules min {minimum}",
+                op_type,
+            )
+        maximum = rules.get("max")
+        if maximum is not None and typed > maximum:
+            raise PropertyValueShapeError(
+                f"{op_type}: value {_jsonish(typed)} is above the schema's validationRules max {maximum}",
+                op_type,
+            )
+        return
+    if schema_type in ("text", "url", "email"):
+        pattern = rules.get("pattern")
+        if pattern is None or not isinstance(typed, str):
+            return
+        try:
+            compiled = re.compile(f"^(?:{pattern})$")
+        except re.error:
+            raise PropertyValueShapeError(
+                f"{op_type}: schema {schema.get('id')} carries a validationRules pattern that is not"
+                " a compilable regex — stored config is corrupt (rewrite the schema's rules"
+                " via propertySchema.update)",
+                op_type,
+            ) from None
+        if compiled.match(typed) is None:
+            raise PropertyValueShapeError(
+                f"{op_type}: value {_jsonish(typed)} does not match the schema's validationRules pattern"
+                f" {_jsonish(pattern)} (full-string match)",
+                op_type,
+            )
 
 
 def _synchronized[**P, R](method: Callable[Concatenate[LocalStore, P], R]) -> Callable[Concatenate[LocalStore, P], R]:
@@ -932,12 +1094,13 @@ class LocalStore:
     def _node_row(self, workspace_id: str, node_id: str) -> tuple[Any, ...] | None:
         # Column order is the contract: is_class/is_embedded sit at 3/4
         # (the LWW appliers read them positionally) and the row-LWW triple at
-        # 12/13/14; the wire node fields ride at 15/16/17 and the page
-        # subtitle at 18 (appended, so every existing position is stable).
+        # 12/13/14; the wire node fields ride at 15/16/17, the page subtitle
+        # at 18 and the per-block list style at 19 (appended, so every
+        # existing position is stable).
         row: tuple[Any, ...] | None = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, icon, color,"
             " is_active, content, content_plain, hlc_physical, hlc_logical, actor_id,"
-            " cover_asset_id, banner_asset_id, aliased_node_id, description"
+            " cover_asset_id, banner_asset_id, aliased_node_id, description, list_style"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -1145,9 +1308,9 @@ class LocalStore:
             self._conn.execute(
                 """INSERT INTO nodes
                      (workspace_id, id, is_class, is_embedded, parent_id, name, class_ids, content, content_plain,
-                      icon, color, is_active, created_at, updated_at, created_by, updated_by,
+                      icon, color, list_style, is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, 0, ?, ?, NULL, '[]', ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 0, ?, ?, NULL, '[]', ?, ?, NULL, NULL, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     object_id,
@@ -1155,6 +1318,7 @@ class LocalStore:
                     parent_id,
                     content,
                     content_plain,
+                    payload.get("listStyle"),
                     ts,
                     ts,
                     env.actor_id,
@@ -1270,6 +1434,12 @@ class LocalStore:
         if "description" in payload:
             sets.append("description = ?")
             values.append(payload["description"])
+        # Per-block list style (the listStyle wire node field, web schema
+        # v22→v23 parity): presence writes, present-null clears back to the
+        # bullet default — the same keep/clear contract as `color`.
+        if "listStyle" in payload:
+            sets.append("list_style = ?")
+            values.append(payload["listStyle"])
         if payload.get("contentAst") is not None:
             # Class content stays text-only; every other node keeps the rich
             # token stream it was sent. A page's own content may carry inline
@@ -2164,6 +2334,23 @@ class LocalStore:
         if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
             return False
 
+        # R5 (owner ruling 2026-10-20): dead config is rejected — a binding
+        # on a schema whose scope EXCLUDES the class is provably inert (the
+        # effective read suppresses its default under R4), so the write fails
+        # loud. The class's own extends closure counts: a class scoped to an
+        # ANCESTOR of the binding class still binds (subclass instances are
+        # eligible via the ancestor). Schema-less writes (unknown schema id)
+        # stay unchecked.
+        schema_row = self._property_schema_row(schema_id)
+        if schema_row is not None:
+            scope = schema_row.get("scope_class_ids")
+            if not self._class_closure_intersects_scope([class_id], scope):
+                raise MoveGuardError(
+                    f"{op_type}: schema {schema_id} is scoped to classes that exclude {class_id} —"
+                    " the binding would be inert (scope is the sole locality authority)",
+                    op_type,
+                )
+
         # PC2: defaultValue is typed per the schema type — a
         # wrong-typed default fails loud here instead of deriving silently on
         # every read. Omitted defaultValue (patch keeps the stored one) skips
@@ -2264,14 +2451,15 @@ class LocalStore:
         with self._conn:
             self._conn.execute(
                 """INSERT INTO property_schema
-                     (id, workspace_id, name, type, multi, scope, options, target_class_filter,
+                     (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
                       date_precision, date_qualified, number_pad, number_decimals, number_rounding,
                       display, readonly, hide_when_empty,
                       active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, type = excluded.type, multi = excluded.multi,
-                     scope = excluded.scope, options = excluded.options,
+                     icon = excluded.icon, scope_class_ids = excluded.scope_class_ids,
+                     options = excluded.options,
                      target_class_filter = excluded.target_class_filter,
                      date_precision = excluded.date_precision, date_qualified = excluded.date_qualified,
                      number_pad = excluded.number_pad, number_decimals = excluded.number_decimals,
@@ -2285,7 +2473,8 @@ class LocalStore:
                     payload.get("name"),
                     payload.get("type"),
                     1 if payload.get("multi") else 0,
-                    payload.get("scope") or "global",
+                    payload.get("icon"),
+                    (json.dumps([str(c) for c in payload["scopeClassIds"]]) if payload.get("scopeClassIds") is not None else None),
                     json.dumps(payload.get("options") or []),
                     json.dumps(payload["targetClassFilter"]) if payload.get("targetClassFilter") is not None else None,
                     payload.get("datePrecision"),
@@ -2312,6 +2501,41 @@ class LocalStore:
             if payload.get("name") is not None:
                 sets.append("name = ?")
                 values.append(payload["name"])
+            # icon / scope / validation rules: the keep/clear contract (absent
+            # keeps the stored value, present-null clears back to
+            # NULL/global/none) — the same key-presence shape as the number
+            # formats below.
+            if "icon" in payload:
+                sets.append("icon = ?")
+                values.append(payload["icon"])
+            if "scopeClassIds" in payload:
+                sets.append("scope_class_ids = ?")
+                scope = payload["scopeClassIds"]
+                values.append(json.dumps([str(c) for c in scope]) if scope is not None else None)
+            if "targetClassFilter" in payload:
+                sets.append("target_class_filter = ?")
+                target_filter = payload["targetClassFilter"]
+                values.append(json.dumps([str(c) for c in target_filter]) if target_filter is not None else None)
+            if "multi" in payload:
+                # The column is NOT NULL — "clear" is the single-value
+                # default (0), not SQL NULL.
+                sets.append("multi = ?")
+                values.append(0 if payload["multi"] is None else (1 if payload["multi"] else 0))
+            if "validationRules" in payload:
+                rules = payload["validationRules"]
+                if rules is not None:
+                    schema_type = self._property_schema_type(str(payload["propertySchemaId"]))
+                    # A schema-less update (unknown id — no schema FK here
+                    # either) stores unchecked, exactly like property.set; a
+                    # known schema enforces.
+                    if schema_type is not None:
+                        _assert_validation_rules_applicable(schema_type, rules, "propertySchema.update")
+                    # Applicable to every write carrying a pattern: a stored
+                    # pattern that throws at value-check time would be an
+                    # applier crash.
+                    _assert_validation_pattern_compilable(rules, "propertySchema.update")
+                sets.append("validation_rules = ?")
+                values.append(json.dumps(rules) if rules is not None else None)
             if payload.get("options") is not None:
                 sets.append("options = ?")
                 values.append(json.dumps(payload["options"]))
@@ -2397,9 +2621,11 @@ class LocalStore:
         when the schema id is unknown (property.set has no schema FK —
         arbitrary ids store unchecked, the TS parity). Carries every column
         the validators read: type, multi, the target filter, the date
-        precision ceiling, and the PC6 qualifier flag."""
+        precision ceiling, the PC6 qualifier flag, the R3 scope list and the
+        R2 validation rules."""
         row = self._conn.execute(
-            "SELECT id, type, multi, target_class_filter, date_precision, date_qualified"
+            "SELECT id, type, multi, target_class_filter, date_precision, date_qualified,"
+            " scope_class_ids, validation_rules"
             " FROM property_schema WHERE id = ?",
             (schema_id,),
         ).fetchone()
@@ -2412,7 +2638,38 @@ class LocalStore:
             "target_class_filter": row[3],
             "date_precision": row[4],
             "date_qualified": row[5],
+            "scope_class_ids": _json_array_of_row(row[6]),
+            "validation_rules": row[7],
         }
+
+    def _class_closure_intersects_scope(self, carried_class_ids: list[str], scope_class_ids: list[str] | None) -> bool:
+        """R3/R5 eligibility (owner ruling 2026-10-20): the scope list vs a
+        candidate class set's EXTENDS-AWARE closure — carried classes plus
+        their class_hierarchy ancestors (the same closure walk
+        _assert_ref_target_for_schema uses for targetClassFilter, and the
+        effective read's reach_of for bindings). An empty scope list never
+        occurs (the wire rejects it); None means global."""
+        if scope_class_ids is None or len(scope_class_ids) == 0:
+            return True  # global (or the defensive no-stored-empty-list).
+        allowed = set(carried_class_ids)
+        if carried_class_ids:
+            placeholders = ", ".join("?" for _ in carried_class_ids)
+            for (ancestor,) in self._conn.execute(
+                f"SELECT ancestor_id FROM class_hierarchy WHERE class_id IN ({placeholders})", carried_class_ids
+            ):
+                allowed.add(str(ancestor))
+        return any(class_id in allowed for class_id in scope_class_ids)
+
+    def _node_eligible_for_schema(self, node_class_ids_raw: Any, scope_class_ids: list[str] | None) -> bool:
+        """R3 (owner ruling 2026-10-20): a node is eligible for a schema when
+        the schema is global or the node's class closure (its classes +
+        extends ancestors) intersects the scope list. The node's classes
+        come from the derived class_ids projection (already
+        assignment-order; eligibility is a pure set test)."""
+        if scope_class_ids is None:
+            return True
+        carried = _json_array_of_row(node_class_ids_raw) or []
+        return self._class_closure_intersects_scope(carried, scope_class_ids)
 
     def _property_schema_type(self, schema_id: str) -> str | None:
         """The schema type a class.property.set defaultValue validates
@@ -2480,14 +2737,16 @@ class LocalStore:
 
     def _assert_value_for_schema(self, workspace_id: str, schema: dict[str, Any], value: Any, op_type: str) -> Any:
         """PG6: the full apply-time validation for a property.set against a
-        KNOWN schema row — shape/scalar typing, then the graph checks
-        (existence / class filter / date precision) for the node-typed link
-        family. ``None`` means "no value" and bypasses everything. Returns
-        the normalized value to store."""
+        KNOWN schema row — shape/scalar typing, the stored validationRules
+        (R2 value enforcement), then the graph checks (existence / class
+        filter / date precision) for the node-typed link family. ``None``
+        means "no value" and bypasses everything. Returns the normalized
+        value to store."""
         shaped = _assert_value_shape_for_type(schema["type"], value, op_type)
         typed = _assert_scalar_shape_for_type(schema["type"], shaped, op_type)
         if typed is None:
             return typed
+        _assert_validation_rules_for_value(schema, typed, op_type)
         if schema["type"] in ("object", "asset"):
             ref = _node_ref_of_value(typed)
             if ref is not None:
@@ -2521,6 +2780,32 @@ class LocalStore:
         # a stale write that would be dropped still rejects an invalid value,
         # deterministically on every replica. Unknown schema ids store
         # unchecked.
+        # R3 (owner ruling 2026-10-20): the write fails loud when the target
+        # node is INELIGIBLE for the schema — scopeClassIds set and the
+        # node's class closure (its classes + extends ancestors) misses the
+        # list. Schema-less writes (unknown schema id) stay unchecked,
+        # exactly like the shape checks below. Narrowing a scope later never
+        # orphans history: pre-existing authored rows survive in the log and
+        # the effective read returns them tagged eligible=false — enforcement
+        # is never retroactive. A schema carrying validationRules validates
+        # the value before the write too (R2 value enforcement — min/max on
+        # numbers, pattern full-string on text/url/email scalars, each multi
+        # element at its own add).
+        schema = self._property_schema_row(schema_id)
+        if schema is not None:
+            scope = schema.get("scope_class_ids")
+            if scope is not None:
+                node_row = self._conn.execute(
+                    "SELECT class_ids FROM nodes WHERE workspace_id = ? AND id = ?",
+                    (env.workspace_id, node_id),
+                ).fetchone()
+                carried = node_row[0] if node_row is not None else None
+                if not self._node_eligible_for_schema(carried, scope):
+                    raise MoveGuardError(
+                        f"{op_type}: node {node_id} is not eligible for schema {schema_id}"
+                        " (its classes — extends-aware — do not intersect the schema's scopeClassIds)",
+                        op_type,
+                    )
         value = (
             self._assert_value_for_schema(env.workspace_id, schema, payload.get("value"), op_type)
             if schema is not None
@@ -2993,14 +3278,20 @@ class LocalStore:
                 designed_options.append(designed)
             self._conn.execute(
                 """INSERT OR IGNORE INTO property_schema
-                     (id, workspace_id, name, type, multi, scope, options, target_class_filter,
+                     (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
                       date_precision, date_qualified, display, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 0, 'class', ?, NULL, NULL, NULL, ?, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, ?, 1, ?, ?)""",
                 (
                     schema_id,
                     env.workspace_id,
                     entry.name,
                     entry.type,
+                    # Global scope (owner ruling 2026-10-20, the seed-scope
+                    # audit — the whole task family is reusable, Status
+                    # explicitly so): NULL scope_class_ids; the family binds
+                    # the task class below (bindings are per-class config,
+                    # zero availability semantics).
+                    None,
                     json.dumps(designed_options),
                     entry.display,
                     ts,
@@ -3059,7 +3350,7 @@ class LocalStore:
         """
         sql = (
             "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style"
             " FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
@@ -3077,7 +3368,7 @@ class LocalStore:
         rows = self._conn.execute(
             """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.is_embedded, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain,
-                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description
+                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description, n.list_style
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
                WHERE n.workspace_id = ? AND o.parent_id = ?
@@ -3091,7 +3382,7 @@ class LocalStore:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -3127,6 +3418,7 @@ class LocalStore:
             banner_asset_id=row[14],
             aliased_node_id=row[15],
             description=row[16],
+            list_style=row[17],
         )
 
     @_synchronized
@@ -3272,7 +3564,13 @@ class LocalStore:
         contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
         they ride authored and derived rows alike, unbound values included).
         A stored default that no longer matches the schema type yields no
-        default (PC2 read-side). A pure read over derived tables —
+        default (PC2 read-side). R3/R4 (owner ruling 2026-10-20): every row
+        carries the eligibility tag — the schema's scopeClassIds (None =
+        global) against the node's extends-aware class closure; an
+        ineligible node reads neither the property nor a derived default,
+        while authored rows survive scope narrowing tagged
+        ``eligible=False`` (never retroactive).
+        A pure read over derived tables —
         deterministic on every replica, no writes, no clocks.
         """
         authored_rows = self._visible_property_value_rows(node_id)
@@ -3357,7 +3655,8 @@ class LocalStore:
         if schema_ids:
             placeholders = ", ".join("?" for _ in schema_ids)
             rows = self._conn.execute(
-                f"SELECT id, name, type, multi, display, readonly, hide_when_empty"
+                f"SELECT id, name, type, multi, display, readonly, hide_when_empty,"
+                f" icon, scope_class_ids, validation_rules"
                 f" FROM property_schema WHERE id IN ({placeholders})",
                 tuple(sorted(schema_ids)),
             ).fetchall()
@@ -3370,7 +3669,27 @@ class LocalStore:
                     display=display_of(row[4]),
                     readonly=flag(row[5]),
                     hide_when_empty=flag(row[6]),
+                    icon=row[7],
+                    scope_class_ids=(tuple(scope) if (scope := _json_array_of_row(row[8])) is not None else None),
+                    validation_rules=_validation_rules_of_row(row[9]),
                 )
+
+        # 4b. R3 eligibility (owner ruling 2026-10-20): the node's
+        # EXTENDS-AWARE class closure (its classes + all ancestors via
+        # reach_of — the same walk binding resolution uses) against each
+        # schema's scopeClassIds. A schema is eligible for the node when
+        # global (None list) or the closure intersects the list. The closure
+        # set is computed once.
+        node_class_closure: set[str] = set()
+        for cls in classes:
+            for ancestor_id, _distance in reach_of(str(cls[0])):
+                node_class_closure.add(ancestor_id)
+
+        def eligible_of(schema_id: str, schema: EffectivePropertySchema | None) -> bool:
+            if schema is None:
+                return True  # schema-less rows (schema deleted) read True.
+            scope = schema.scope_class_ids
+            return scope is None or any(class_id in node_class_closure for class_id in scope)
 
         def parse_json(raw: Any) -> Any:
             if not isinstance(raw, str):
@@ -3407,16 +3726,26 @@ class LocalStore:
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 sequence=int(winner[1][1]) if winner else None,
                 display=schema.display if schema is not None else None,
+                # Authored rows SURVIVE scope narrowing (never retroactive) —
+                # the read tags them; callers decide how an ineligible row
+                # renders.
+                eligible=eligible_of(schema_id, schema),
             )
 
         for schema_id, (class_id, binding) in winner_by_schema.items():
             if binding[3] is None:
                 continue  # bound without a default
+            # R4 (owner ruling 2026-10-20): an ineligible node shows NEITHER
+            # the property NOR a derived default from an out-of-scope
+            # binding — a stray binding must not render a value for a
+            # property the node can't have.
+            schema = schemas.get(schema_id)
+            if not eligible_of(schema_id, schema):
+                continue
             # PC2 read-side: a stored default that no longer matches the
             # schema type (written before validation, or after a
             # delete+recreate changed the type) yields no default rather
             # than a wrong-typed value.
-            schema = schemas.get(schema_id)
             if schema is not None and not _is_valid_default_for_type(schema.type, parse_json(binding[3])):
                 continue
             if schema_id in shadowed_default_schemas:
@@ -3435,6 +3764,7 @@ class LocalStore:
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 sequence=int(binding[1]),
                 display=schema.display if schema is not None else None,
+                eligible=True,
             )
 
         # Deterministic presentation order: bound rows by binding sequence,
@@ -3661,6 +3991,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- v17→v18 parity — the Capacities header precedent): plain text,
     -- max 512 chars, object.update-only. NULL = unset; present-null CLEARS.
     description TEXT,
+    -- Per-block list style (owner 2026-10-16, web schema v22→v23 parity —
+    -- the listStyle wire node field): the bullet dot's replacement —
+    -- "numbered" | "alpha" | "roman". NULL = bullet (the default); the
+    -- NUMBER is never stored — clients derive it at render time from the
+    -- contiguous run of same-style siblings.
+    list_style TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     content TEXT,
     content_plain TEXT NOT NULL DEFAULT '',
@@ -3748,7 +4084,22 @@ CREATE TABLE IF NOT EXISTS property_schema (
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     multi INTEGER NOT NULL DEFAULT 0,
-    scope TEXT NOT NULL DEFAULT 'global',
+    -- The schema's icon (owner 2026-10-20): an MDI icon name; NULL = none.
+    icon TEXT,
+    -- The SOLE locality authority (owner ruling 2026-10-20, R1; web schema
+    -- v24 parity): a JSON array of class ids, NULL = GLOBAL (any node may
+    -- carry the property). A non-empty list is LOCAL to those classes and
+    -- their extends-ancestors (eligibility walks class_hierarchy, the same
+    -- closure binding resolution uses). RETIRES the display-only ``scope``
+    -- TEXT column (rebuilt away at v16; the live log rewrite is the
+    -- monorepo's migrate-property-scope.mts). Bindings (class_property
+    -- rows) carry ZERO availability semantics — scope says who MAY carry
+    -- the property; a binding says what a class DOES WITH it.
+    scope_class_ids TEXT,
+    -- Value validation rules (owner 2026-10-20), JSON {min?, max?, pattern?};
+    -- NULL = none. min/max apply to number schemas, pattern to
+    -- text/url/email (apply-time enforcement against the stored type).
+    validation_rules TEXT,
     options TEXT NOT NULL DEFAULT '[]',
     target_class_filter TEXT,
     -- SCHEMA.md "Datetime": finest granularity a date value may claim
@@ -4304,6 +4655,80 @@ def _migrate_v15(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v16(conn: sqlite3.Connection) -> None:
+    """v16 — two guarded blocks (web schema v22→v24 parity):
+
+    1. The per-block list style (owner 2026-10-16): ``list_style`` lands as
+       a nullable node column mapped by object.create/update. Purely
+       additive — the column guard keeps the ALTER idempotent for fresh
+       v16 creates (the v14 precedent), and it runs after every node-table
+       rebuild above so pre-v15 databases arrive at the current shape
+       through the same path.
+    2. The property-scope batch (owner ruling 2026-10-20): the
+       property_schema table REBUILDS (the v12 precedent — SQLite cannot
+       drop a column on old builds): the display-only ``scope`` TEXT column
+       retires (the locality authority is the new ``scope_class_ids`` JSON
+       column, NULL = global), and the schema gains ``icon`` +
+       ``validation_rules`` (both NULL = unset). Rows copy through with
+       the new columns NULL — the live log rewrite (the monorepo's
+       migrate-property-scope.mts, Path B) sets scope_class_ids from the
+       retired enum and the epoch bump makes every replica wipe + resync,
+       so converged bytes never depend on this backfill. Guarded on the old
+       column so the step is a no-op for databases that already carry the
+       new shape (idempotent)."""
+    LocalStore._add_column_if_missing(conn, "nodes", "list_style", "TEXT")
+    schema_columns = {row[1] for row in conn.execute("PRAGMA table_info(property_schema)")}
+    if "scope" not in schema_columns:
+        # Fresh v16 creates (and databases already carrying the new shape)
+        # still gain the columns additively when missing.
+        LocalStore._add_column_if_missing(conn, "property_schema", "icon", "TEXT")
+        LocalStore._add_column_if_missing(conn, "property_schema", "scope_class_ids", "TEXT")
+        LocalStore._add_column_if_missing(conn, "property_schema", "validation_rules", "TEXT")
+        return
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE property_schema_v16 (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            multi INTEGER NOT NULL DEFAULT 0,
+            icon TEXT,
+            scope_class_ids TEXT,
+            validation_rules TEXT,
+            options TEXT NOT NULL DEFAULT '[]',
+            target_class_filter TEXT,
+            date_precision TEXT,
+            date_qualified INTEGER,
+            number_pad INTEGER,
+            number_decimals INTEGER,
+            number_rounding TEXT,
+            display TEXT,
+            readonly INTEGER,
+            hide_when_empty INTEGER,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        INSERT INTO property_schema_v16 (
+            id, workspace_id, name, type, multi, icon, scope_class_ids, validation_rules,
+            options, target_class_filter, date_precision, date_qualified,
+            number_pad, number_decimals, number_rounding,
+            display, readonly, hide_when_empty, active, created_at, updated_at
+        )
+        SELECT id, workspace_id, name, type, multi, NULL, NULL, NULL,
+               options, target_class_filter, date_precision, date_qualified,
+               number_pad, number_decimals, number_rounding,
+               display, readonly, hide_when_empty, active, created_at, updated_at
+        FROM property_schema;
+        DROP TABLE property_schema;
+        ALTER TABLE property_schema_v16 RENAME TO property_schema;
+        PRAGMA foreign_keys = ON;
+        """
+    )
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -4321,4 +4746,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (13, _migrate_v13),
     (14, _migrate_v14),
     (15, _migrate_v15),
+    (16, _migrate_v16),
 )

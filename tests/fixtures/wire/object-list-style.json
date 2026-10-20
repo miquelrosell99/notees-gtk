@@ -1,0 +1,91 @@
+{
+  "comment": "Per-block list style (owner 2026-10-16): object.create/update carry the optional nullable listStyle node field (\"numbered\" | \"alpha\" | \"roman\"; absent/null = the bullet default, present-null clears — the icon/color precedent). The stored column carries ONLY the style; the marker NUMBER is derived at render time from the contiguous run of same-style siblings, never stored. Envelopes 1-2 create a plain page and a numbered block under it; envelope 3 re-styles the block (set); envelope 4 clears back to bullet; envelope 5 styles the page itself (the field is per-node, applier-unrestricted). Additive payload on strict schemas — pre-batch clients reject the new key, so LOCKSTEP-PENDING: the GTK/Flutter ports accept it before the marker clears (docs/developers/development.md §3).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000560",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200010000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000056a"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:10.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000056a",
+        "isEmbedded": false,
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "List style probe" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000561",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200010100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000056b"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:10.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000056b",
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "First numbered block" }],
+        "parentId": "0192a000-0000-7000-8000-00000000056a",
+        "listStyle": "numbered"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000562",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200010200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000056b"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:10.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000056b",
+        "listStyle": "alpha"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000563",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200010300, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000056b"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:10.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000056b",
+        "listStyle": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000564",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200010400, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000056a"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:10.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000056a",
+        "listStyle": "roman"
+      }
+    }
+  ]
+}

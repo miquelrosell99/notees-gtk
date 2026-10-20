@@ -263,7 +263,13 @@ class TestAssetPropertyType:
     def test_property_schema_create_accepts_asset(self) -> None:
         validate_payload(
             "propertySchema.create",
-            {"propertySchemaId": UUID_1, "name": "Attachment", "type": "asset", "multi": True, "scope": "class"},
+            {
+                "propertySchemaId": UUID_1,
+                "name": "Attachment",
+                "type": "asset",
+                "multi": True,
+                "scopeClassIds": [UUID_2],
+            },
         )
 
     def test_property_schema_create_rejects_unknown_types(self) -> None:
@@ -559,6 +565,175 @@ class TestPropertyWirePayloads:
         kept = PAYLOAD_SCHEMAS["class.property.set"].model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
         assert kept.active is None
         assert "active" not in kept.model_fields_set
+
+
+class TestListStylePayload:
+    """The per-block list style wire node field (owner 2026-10-16, web
+    schema v22→v23 parity): object.create/update accept the optional
+    nullable ``listStyle`` ("numbered"|"alpha"|"roman" — the strict enum);
+    absent/null = bullet, a present null on update CLEARS (the
+    icon/color precedent)."""
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
+    @pytest.mark.parametrize("style", ["numbered", "alpha", "roman"])
+    def test_the_enum_values_parse(self, op_type: str, style: str) -> None:
+        payload: dict[str, Any] = {"objectId": UUID_1, "listStyle": style}
+        if op_type == "object.create":
+            payload = {"objectId": UUID_1, "listStyle": style}
+        validate_payload(op_type, payload)
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
+    def test_null_and_absence_parse(self, op_type: str) -> None:
+        schema = PAYLOAD_SCHEMAS[op_type]
+        base = {"objectId": UUID_1} if op_type == "object.create" else {"objectId": UUID_1, "icon": "mdiStar"}
+        nulled = schema.model_validate({**base, "listStyle": None})
+        assert nulled.list_style is None
+        assert "list_style" in nulled.model_fields_set
+        absent = schema.model_validate(base)
+        assert absent.list_style is None
+        assert "list_style" not in absent.model_fields_set
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update"])
+    def test_unknown_styles_rejected(self, op_type: str) -> None:
+        payload: dict[str, Any] = {"objectId": UUID_1, "listStyle": "bullet"}
+        if op_type == "object.update":
+            payload["icon"] = "mdiStar"  # satisfy the at-least-one-field refine
+        with pytest.raises(ValidationError, match="listStyle"):
+            validate_payload(op_type, payload)
+
+    def test_update_list_style_alone_is_a_writable_field(self) -> None:
+        assert build_object_update(UUID_1, list_style="roman") == {"objectId": UUID_1, "listStyle": "roman"}
+        assert build_object_update(UUID_1, list_style=None) == {"objectId": UUID_1, "listStyle": None}
+        assert "listStyle" not in build_object_update(UUID_1, icon="mdiStar")
+        assert build_object_create(UUID_1, list_style="alpha") == {"objectId": UUID_1, "listStyle": "alpha"}
+
+
+class TestPropertySchemaScopePayload:
+    """The property-scope batch (owner ruling 2026-10-20): the display-only
+    ``scope`` enum is RETIRED — the strict schemas reject it outright (the
+    zod ``.strict()`` parity, verified here explicitly) — and
+    ``scopeClassIds`` (the sole locality authority; absent/null = global,
+    the empty array rejected) plus ``icon`` ride the create payload; the
+    update payload gains the keep-vs-clear nullable ``icon`` /
+    ``scopeClassIds`` / ``targetClassFilter`` / ``multi`` /
+    ``validationRules``."""
+
+    def test_create_rejects_the_retired_scope_enum_outright(self) -> None:
+        for scope in ("global", "class", "object"):
+            with pytest.raises(ValidationError) as excinfo:
+                validate_payload(
+                    "propertySchema.create",
+                    {"propertySchemaId": UUID_1, "name": "x", "type": "text", "scope": scope},
+                )
+            assert "scope" in str(excinfo.value)
+
+    def test_update_rejects_the_retired_scope_enum_outright(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "scope": "global"})
+        assert "scope" in str(excinfo.value)
+
+    def test_create_scope_class_ids_and_icon(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.create"]
+        payload = schema.model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "name": "Genre",
+                "type": "text",
+                "icon": "mdiTagOutline",
+                "scopeClassIds": [UUID_2],
+            }
+        )
+        assert payload.icon == "mdiTagOutline"
+        assert [str(class_id) for class_id in payload.scope_class_ids or ()] == [UUID_2]
+        # Absent/null = global (no icon, no list).
+        minimal = schema.model_validate({"propertySchemaId": UUID_1, "name": "x", "type": "text"})
+        assert minimal.icon is None and minimal.scope_class_ids is None
+
+    @pytest.mark.parametrize("op_type", ["propertySchema.create", "propertySchema.update"])
+    def test_the_empty_scope_class_ids_is_rejected(self, op_type: str) -> None:
+        payload: dict[str, Any] = {"propertySchemaId": UUID_1, "scopeClassIds": []}
+        if op_type == "propertySchema.create":
+            payload.update({"name": "x", "type": "text"})
+        with pytest.raises(ValidationError, match="scopeClassIds"):
+            validate_payload(op_type, payload)
+
+    def test_update_new_fields_keep_vs_clear_via_fields_set(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.update"]
+        base = {"propertySchemaId": UUID_1, "icon": "mdiStar", "scopeClassIds": [UUID_2]}
+        kept = schema.model_validate(base)
+        for field in ("icon", "scope_class_ids", "target_class_filter", "multi", "validation_rules"):
+            assert field not in kept.model_fields_set or getattr(kept, field) is not None
+        cleared = schema.model_validate(
+            {
+                "propertySchemaId": UUID_1,
+                "icon": None,
+                "scopeClassIds": None,
+                "targetClassFilter": None,
+                "multi": None,
+                "validationRules": None,
+            }
+        )
+        assert cleared.icon is None
+        assert cleared.scope_class_ids is None
+        assert cleared.target_class_filter is None
+        assert cleared.multi is None
+        assert cleared.validation_rules is None
+        for field in ("icon", "scope_class_ids", "target_class_filter", "multi", "validation_rules"):
+            assert field in cleared.model_fields_set
+
+    def test_update_target_class_filter_accepts_a_list(self) -> None:
+        payload = PAYLOAD_SCHEMAS["propertySchema.update"].model_validate(
+            {"propertySchemaId": UUID_1, "targetClassFilter": [UUID_2]}
+        )
+        assert [str(class_id) for class_id in payload.target_class_filter or ()] == [UUID_2]
+
+
+class TestValidationRulesPayload:
+    """``validationRules`` ({min?, max?, pattern?} strict, nullable) rides
+    the propertySchema.update payload: min <= max is a parse-time rule, the
+    strict record rejects unknown keys, and the applicability (min/max on
+    number schemas, pattern on text/url/email) is enforced at APPLY time
+    against the stored type — not here."""
+
+    def test_min_max_pattern_parse(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.update"]
+        rules = schema.model_validate(
+            {"propertySchemaId": UUID_1, "validationRules": {"min": 0, "max": 10, "pattern": "^#"}}
+        )
+        assert rules.validation_rules is not None
+        assert rules.validation_rules.min == 0
+        assert rules.validation_rules.max == 10
+        assert rules.validation_rules.pattern == "^#"
+        # An empty rule object parses (a no-op write).
+        empty = schema.model_validate({"propertySchemaId": UUID_1, "validationRules": {}})
+        assert empty.validation_rules is not None
+
+    def test_min_greater_than_max_rejected_parse_time(self) -> None:
+        with pytest.raises(ValidationError, match="min must be <= max"):
+            validate_payload(
+                "propertySchema.update",
+                {"propertySchemaId": UUID_1, "validationRules": {"min": 5, "max": 1}},
+            )
+        # min == max is legal (a single-point bound).
+        validate_payload(
+            "propertySchema.update",
+            {"propertySchemaId": UUID_1, "validationRules": {"min": 3, "max": 3}},
+        )
+
+    def test_unknown_rule_keys_rejected_by_the_strict_record(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(
+                "propertySchema.update",
+                {"propertySchemaId": UUID_1, "validationRules": {"bogus": 1}},
+            )
+
+    def test_null_clears_absent_keeps(self) -> None:
+        schema = PAYLOAD_SCHEMAS["propertySchema.update"]
+        cleared = schema.model_validate({"propertySchemaId": UUID_1, "validationRules": None})
+        assert cleared.validation_rules is None
+        assert "validation_rules" in cleared.model_fields_set
+        kept = schema.model_validate({"propertySchemaId": UUID_1})
+        assert "validation_rules" not in kept.model_fields_set
 
 
 class TestPropertySchemaNumberFormats:

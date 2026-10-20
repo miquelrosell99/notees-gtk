@@ -19,8 +19,7 @@
         "propertySchemaId": "0192a000-0000-7000-8000-000000000410",
         "name": "effort",
         "type": "text",
-        "multi": false,
-        "scope": "global"
+        "multi": false
       }
     },
     {
@@ -41,8 +40,7 @@
         "propertySchemaId": "0192a000-0000-7000-8000-000000000411",
         "name": "impact",
         "type": "text",
-        "multi": false,
-        "scope": "global"
+        "multi": false
       }
     },
     {

@@ -1,0 +1,143 @@
+{
+  "comment": "Property-schema update fields (owner ruling 2026-10-20 — the property-definition surfaces batch): `propertySchema.update` gains `icon`, `scopeClassIds`, `targetClassFilter`, `multi`, and `validationRules` ({min?, max?, pattern} — min/max on number schemas, pattern on text/url/email, min <= max), all nullable with the keep/clear contract (absent keeps the stored value, present-null clears). This fixture exercises the full set/clear lifecycle on a scratch workspace: a global 'Score' number schema gains an icon, multi, and {min: 0, max: 10} rules (an absent-field update keeps them), then clears all three back to defaults; an object-typed 'Related' schema gains a targetClassFilter and a scopeClassIds list, then clears both. The store suite asserts the column values through the lifecycle. (The reject shapes — the retired `scope` key, an empty scopeClassIds, min > max, min on a text schema — are parse-level strict-schema rejects pinned in the protocol suite; applicability against the stored type is pinned in the store suite.) LOCKSTEP-PENDING: GTK/Flutter validators/appliers converge before the live migration runs.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000950",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000951"],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:42.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000951",
+        "contentAst": [{ "type": "text", "text": "Filter target" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000952",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042100, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:42.100Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000960",
+        "name": "Score",
+        "type": "number",
+        "multi": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000953",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042200, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:42.200Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000960",
+        "icon": "mdiStar",
+        "multi": true,
+        "validationRules": { "min": 0, "max": 10 }
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000954",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042300, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:42.300Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000960",
+        "name": "Score (kept fields ride)"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000955",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042400, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:42.400Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000960",
+        "icon": null,
+        "multi": null,
+        "validationRules": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000956",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042500, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:42.500Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000961",
+        "name": "Related",
+        "type": "object",
+        "multi": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000957",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042600, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:42.600Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000961",
+        "targetClassFilter": ["0192a000-0000-7000-8000-000000000951"],
+        "scopeClassIds": ["0192a000-0000-7000-8000-000000000951"]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000958",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200042700, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.update",
+      "timestamp": "2026-09-24T12:00:42.700Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000961",
+        "targetClassFilter": null,
+        "scopeClassIds": null
+      }
+    }
+  ]
+}
