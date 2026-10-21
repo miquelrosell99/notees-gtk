@@ -865,21 +865,27 @@ class TestPropertyDisplayPositions:
             )
 
     def test_schema_render_contract_flags_parse_on_create_and_update(self) -> None:
+        # ``readonly`` retired outright (derived
+        # from the system list, not stored): the strict schemas reject it
+        # on both payloads like any retired key.
+        for op_type, base in (
+            ("propertySchema.create", {"propertySchemaId": UUID_1, "name": "stage", "type": "select"}),
+            ("propertySchema.update", {"propertySchemaId": UUID_1}),
+        ):
+            with pytest.raises(ValidationError, match="readonly"):
+                validate_payload(op_type, {**base, "readonly": True})
         create = PAYLOAD_SCHEMAS["propertySchema.create"].model_validate(
             {
                 "propertySchemaId": UUID_1,
                 "name": "stage",
                 "type": "select",
-                "readonly": True,
                 "hideWhenEmpty": False,
             }
         )
-        assert create.readonly is True
         assert create.hide_when_empty is False
         update = PAYLOAD_SCHEMAS["propertySchema.update"].model_validate(
-            {"propertySchemaId": UUID_1, "readonly": False, "hideWhenEmpty": True}
+            {"propertySchemaId": UUID_1, "hideWhenEmpty": True}
         )
-        assert update.readonly is False
         assert update.hide_when_empty is True
 
     def test_option_icon_parses_on_create_and_update(self) -> None:

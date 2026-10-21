@@ -414,12 +414,15 @@ class PropertySchemaCreatePayload(_Strict):
     # value-display position ("panel" (absent/null) keeps the value in the
     # properties section only; "bullet" renders it as an icon button next to
     # the block bullet; "inline" before the block content — the
-    # icon_visibility port); ``readonly``/``hideWhenEmpty`` are the tri-state
-    # render flags. All nullable-optional (absent or null stores NULL).
+    # icon_visibility port); ``hideWhenEmpty`` is the tri-state render flag.
+    # All nullable-optional (absent or null stores NULL).
     # ``required`` is NOT here — it retired outright (its only render effect was mild enforcement); the default
-    # lives HERE, not on the binding.
+    # lives HERE, not on the binding. ``readonly`` is NOT here either — it
+    # retired outright (never user
+    # configuration; clients derive it from the system property list,
+    # ``is_readonly_property`` in features.py); the strict schema rejects
+    # the key like any retired key.
     display: _DISPLAY_POSITION | None = Field(default=None)
-    readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
 
     @model_validator(mode="after")
@@ -486,9 +489,9 @@ class PropertySchemaUpdatePayload(_Strict):
     # Render contracts (PROPERTY-level): same absent-keeps /
     # null-clears contract as the number formats — `required` retired from
     # the binding outright; the default
-    # lives here.
+    # lives here. `readonly` retired outright 2026-10-21 (derived from the
+    # system list, not stored) — rejected like any retired key.
     display: _DISPLAY_POSITION | None = Field(default=None)
-    readonly: bool | None = Field(default=None)
     hide_when_empty: bool | None = Field(default=None, alias="hideWhenEmpty")
 
     @model_validator(mode="after")

@@ -419,10 +419,10 @@ class TestMigrations:
         # real v11 database is the only place the historical row shape
         # exists.
         with sqlite3.connect(path) as raw:
-            raw.execute("ALTER TABLE property_schema DROP COLUMN display")
-            raw.execute("ALTER TABLE property_schema DROP COLUMN readonly")
-            raw.execute("ALTER TABLE property_schema DROP COLUMN hide_when_empty")
-            raw.execute("ALTER TABLE property_schema DROP COLUMN default_value")
+            schema_cols = {row[1] for row in raw.execute("PRAGMA table_info(property_schema)")}
+            for col in ("display", "readonly", "hide_when_empty", "default_value"):
+                if col in schema_cols:
+                    raw.execute(f"ALTER TABLE property_schema DROP COLUMN {col}")
             raw.executescript(
                 f"""
                 CREATE TABLE class_property_v11 (
@@ -463,8 +463,10 @@ class TestMigrations:
         # v18 retired sequence.
         assert {"readonly", "hide_when_empty", "display", "required", "default_value", "sequence"} & binding_columns == set()
         assert "active" in binding_columns
-        # The schema table gained the render contracts and the default column.
-        assert {"display", "readonly", "hide_when_empty", "default_value"} <= schema_columns
+        # The schema table gained the render contracts and the default column
+        # (v19 retired readonly — the column is gone).
+        assert "readonly" not in schema_columns
+        assert {"display", "hide_when_empty", "default_value"} <= schema_columns
         # The pre-batch row keeps its active flag across the rebuilds; the
         # retired columns are gone with the columns.
         assert rows == [(1,)]
@@ -1708,7 +1710,10 @@ class TestClassPropertyBindings:
     def test_schema_render_contracts_keep_vs_clear_via_update(self, store: LocalStore) -> None:
         """propertySchema.update's key-PRESENCE contract — absent
         keeps the stored contract, an explicit null clears it (the number
-        formats keep-vs-clear shape, now for display/readonly/hideWhenEmpty)."""
+        formats keep-vs-clear shape, now for display/hideWhenEmpty).
+        ``readonly`` retired outright (derived
+        from the system list, not stored): the strict gate rejects it on
+        both schema payloads like any retired key."""
         store.apply_remote(
             make_env(
                 "propertySchema.create",
@@ -1717,34 +1722,45 @@ class TestClassPropertyBindings:
                     "name": "State",
                     "type": "select",
                     "display": "inline",
-                    "readonly": True,
                     "hideWhenEmpty": True,
                 },
                 hlc=(1, 0),
             )
         )
+        with pytest.raises(EnvelopeValidationError, match="readonly"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {"propertySchemaId": uid("ps-2"), "name": "Gate", "type": "select", "readonly": True},
+                    hlc=(1, 0),
+                )
+            )
+        with pytest.raises(EnvelopeValidationError, match="readonly"):
+            store.apply_remote(
+                make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "readonly": False}, hlc=(4, 0))
+            )
 
         def row() -> tuple:
             return raw_rows(
                 store,
-                f"SELECT display, readonly, hide_when_empty FROM property_schema WHERE id = '{uid('ps-1')}'",
+                f"SELECT display, hide_when_empty FROM property_schema WHERE id = '{uid('ps-1')}'",
             )[0]
 
-        assert row() == ("inline", 1, 1)
-        # Absent keeps all three.
+        assert row() == ("inline", 1)
+        # Absent keeps both.
         store.apply_remote(
             make_env("propertySchema.update", {"propertySchemaId": uid("ps-1"), "name": "State"}, hlc=(2, 0))
         )
-        assert row() == ("inline", 1, 1)
+        assert row() == ("inline", 1)
         # A present null clears; a present value writes.
         store.apply_remote(
             make_env(
                 "propertySchema.update",
-                {"propertySchemaId": uid("ps-1"), "display": None, "hideWhenEmpty": None, "readonly": False},
+                {"propertySchemaId": uid("ps-1"), "display": None, "hideWhenEmpty": None},
                 hlc=(3, 0),
             )
         )
-        assert row() == (None, 0, None)
+        assert row() == (None, None)
 
     def test_class_property_set_render_contract_keys_fail_loud(self, store: LocalStore) -> None:
         """display/readonly/hideWhenEmpty are retired keys on the
@@ -3159,24 +3175,18 @@ class TestPg4ExtendsAwareBindings:
 
     def test_inherited_binding_metadata_surfaces_on_authored_rows(self, store: LocalStore) -> None:
         self._chain_store(store, [self.BASE])
-        # Readonly is PROPERTY-level and rides the SCHEMA; boundBy is
-        # binding-sourced — the authored row surfaces it, naming the
-        # ancestor whose binding won. (`required`/`sequence` retired from
-        # the binding outright.)
-        store.apply_remote(
-            make_env(
-                "propertySchema.update",
-                {"propertySchemaId": self.SCHEMA, "readonly": True},
-                hlc=(10, 0),
-            )
-        )
+        # boundBy is binding-sourced — the authored row surfaces it, naming
+        # the ancestor whose binding won. (`required`/`sequence` retired
+        # from the binding outright; `readonly`
+        # retired outright too — derived from the system list, not stored,
+        #.)
         self._assign(store, NODE, self.LEAF, (20, 0))
         store.apply_remote(property_set_env(NODE, self.SCHEMA, value="mine", hlc=(21, 0)))
         row = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
         assert row.value == "mine"
         assert row.source == "authored"
         assert row.bound_by == self.BASE
-        assert row.readonly is True
+        assert not hasattr(row, "readonly")
 
 
 class TestPg6ApplyTimeValidation:
@@ -4198,7 +4208,6 @@ class TestMigrationsV16:
                     number_decimals INTEGER,
                     number_rounding TEXT,
                     display TEXT,
-                    readonly INTEGER,
                     hide_when_empty INTEGER,
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT,
@@ -4210,13 +4219,13 @@ class TestMigrationsV16:
                 """INSERT INTO property_schema (
                        id, workspace_id, name, type, multi, scope, options, target_class_filter,
                        date_precision, date_qualified, number_pad, number_decimals, number_rounding,
-                       display, readonly, hide_when_empty, active, created_at, updated_at
+                       display, hide_when_empty, active, created_at, updated_at
                    )
                    SELECT id, workspace_id, name, type, multi,
                        CASE WHEN scope_class_ids IS NOT NULL THEN 'class' ELSE 'global' END,
                        options, target_class_filter, date_precision, date_qualified,
                        number_pad, number_decimals, number_rounding,
-                       display, readonly, hide_when_empty, active, created_at, updated_at
+                       display, hide_when_empty, active, created_at, updated_at
                    FROM property_schema_v16"""
             )
             raw.execute("DROP TABLE property_schema_v16")

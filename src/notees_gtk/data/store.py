@@ -164,7 +164,7 @@ _log = logging.getLogger(__name__)
 #: monorepo's migrate-drop-binding-required.mts, Path B — appended
 #: propertySchema.update compensation per affected schema) + the epoch
 #: bump, so the backfill is deliberately NULL.
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -314,8 +314,10 @@ class EffectivePropertySchema:
 
     Carries the PROPERTY-level render contracts (``display``
     sanitized — ``"bullet"``/``"inline"`` or ``None`` for NULL/"panel";
-    ``readonly``/``hide_when_empty`` tri-state flags) — the same for every
-    carrier, class-bound or not. The R3 locality authority rides too:
+    the ``hide_when_empty`` tri-state flag — ``readonly`` retired
+    outright, derived from the system list) —
+    the same for every carrier, class-bound or not. The R3 locality
+    authority rides too:
     ``scope_class_ids`` (None = global — eligibility walks the node's class
     closure against this list), the ``icon`` (None = none), and the R2
     ``validation_rules`` (None = none)."""
@@ -325,7 +327,6 @@ class EffectivePropertySchema:
     type: str
     multi: bool
     display: str | None = None
-    readonly: bool | None = None
     hide_when_empty: bool | None = None
     icon: str | None = None
     scope_class_ids: tuple[str, ...] | None = None
@@ -344,11 +345,13 @@ class EffectiveProperty:
     visible, marked unbound). ``element_id`` is the PG5 element identity —
     the property_value row id for an authored row (the address multi-value
     removes target), ``default:{schema}:0`` for a derived default.
-   the render contracts ``readonly``/
+   the render contracts
     ``hide_when_empty``/``display`` are PROPERTY-level — SCHEMA-sourced and
     identical on authored and derived rows, unbound authored values
     included. ``required`` retired outright from
     the binding — there is no required field on effective rows anymore.
+   ``readonly`` retired outright — derived from
+    the system property list, not stored.
     """
 
     property_schema_id: str
@@ -359,7 +362,6 @@ class EffectiveProperty:
     metadata: dict[str, Any] | None
     source: str  # "authored" | "default"
     bound_by: str | None
-    readonly: bool | None
     hide_when_empty: bool | None
     display: str | None = None
     # R3 eligibility: False when the schema's
@@ -2456,9 +2458,9 @@ class LocalStore:
                 """INSERT INTO property_schema
                      (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
                       date_precision, date_qualified, number_pad, number_decimals, number_rounding,
-                      display, readonly, hide_when_empty, default_value,
+                      display, hide_when_empty, default_value,
                       active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = excluded.name, type = excluded.type, multi = excluded.multi,
                      icon = excluded.icon, scope_class_ids = excluded.scope_class_ids,
@@ -2467,7 +2469,7 @@ class LocalStore:
                      date_precision = excluded.date_precision, date_qualified = excluded.date_qualified,
                      number_pad = excluded.number_pad, number_decimals = excluded.number_decimals,
                      number_rounding = excluded.number_rounding,
-                     display = excluded.display, readonly = excluded.readonly,
+                     display = excluded.display,
                      hide_when_empty = excluded.hide_when_empty,
                      default_value = excluded.default_value,
                      active = 1, updated_at = excluded.updated_at""",
@@ -2487,9 +2489,10 @@ class LocalStore:
                     payload.get("numberDecimals"),
                     payload.get("numberRounding"),
                     # Render contracts (PROPERTY-level): absent or
-                    # null stores NULL (panel / unset).
+                    # null stores NULL (panel / unset). (``readonly``
+                    # retired outright — derived
+                    # from the system list, not stored.)
                     payload.get("display"),
-                    (None if payload.get("readonly") is None else (1 if payload.get("readonly") else 0)),
                     (None if payload.get("hideWhenEmpty") is None else (1 if payload.get("hideWhenEmpty") else 0)),
                     # The schema's ONE global default: JSON-encoded; NULL = no default (absent or
                     # an explicit JSON null both store NULL, the TS parity).
@@ -2587,13 +2590,11 @@ class LocalStore:
             # keep-vs-clear contract — absent keeps the stored value, a
             # present null clears back to panel / unset. `required` retired
             # from the binding; the default
-            # lives here.
+            # lives here. `readonly` retired outright 2026-10-21 (derived
+            # from the system list, not stored).
             if "display" in payload:
                 sets.append("display = ?")
                 values.append(payload["display"])
-            if "readonly" in payload:
-                sets.append("readonly = ?")
-                values.append(None if payload["readonly"] is None else (1 if payload["readonly"] else 0))
             if "hideWhenEmpty" in payload:
                 sets.append("hide_when_empty = ?")
                 values.append(None if payload["hideWhenEmpty"] is None else (1 if payload["hideWhenEmpty"] else 0))
@@ -3691,34 +3692,33 @@ class LocalStore:
         # Schema rows for everything referenced (authored rows survive schema
         # deletion: the row renders with schema=None). The schema
         # carries the PROPERTY-level render contracts — display (sanitized)
-        # and the readonly/hide-when-empty flags — and the ONE global default
-        # (the value moved from the binding row to
-        # the schema).
+        # and the hide-when-empty flag (readonly retired outright — derived from the system list, not stored) —
+        # and the ONE global default (the value
+        # moved from the binding row to the schema).
         schema_ids = {str(row["property_schema_id"]) for row in authored_rows} | set(winner_by_schema)
         schemas: dict[str, EffectivePropertySchema] = {}
         schema_default: dict[str, Any] = {}
         if schema_ids:
             placeholders = ", ".join("?" for _ in schema_ids)
             rows = self._conn.execute(
-                f"SELECT id, name, type, multi, display, readonly, hide_when_empty,"
+                f"SELECT id, name, type, multi, display, hide_when_empty,"
                 f" icon, scope_class_ids, validation_rules, default_value"
                 f" FROM property_schema WHERE id IN ({placeholders})",
                 tuple(sorted(schema_ids)),
             ).fetchall()
             for row in rows:
-                if row[10] is not None:
-                    schema_default[str(row[0])] = parse_json(row[10])
+                if row[9] is not None:
+                    schema_default[str(row[0])] = parse_json(row[9])
                 schemas[str(row[0])] = EffectivePropertySchema(
                     id=str(row[0]),
                     name=str(row[1]),
                     type=str(row[2]),
                     multi=bool(row[3]),
                     display=display_of(row[4]),
-                    readonly=flag(row[5]),
-                    hide_when_empty=flag(row[6]),
-                    icon=row[7],
-                    scope_class_ids=(tuple(scope) if (scope := _json_array_of_row(row[8])) is not None else None),
-                    validation_rules=_validation_rules_of_row(row[9]),
+                    hide_when_empty=flag(row[5]),
+                    icon=row[6],
+                    scope_class_ids=(tuple(scope) if (scope := _json_array_of_row(row[7])) is not None else None),
+                    validation_rules=_validation_rules_of_row(row[8]),
                 )
 
         # 4b. R3 eligibility: the node's
@@ -3758,7 +3758,6 @@ class LocalStore:
                 metadata=parse_json(authored["metadata"]) if authored["metadata"] is not None else None,
                 source="authored",
                 bound_by=winner[0] if winner else None,
-                readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 display=schema.display if schema is not None else None,
                 # Authored rows SURVIVE scope narrowing (never retroactive) —
@@ -3798,7 +3797,6 @@ class LocalStore:
                 metadata=None,
                 source="default",
                 bound_by=class_id,
-                readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 display=schema.display if schema is not None else None,
                 eligible=True,
@@ -4159,11 +4157,12 @@ CREATE TABLE IF NOT EXISTS property_schema (
     -- default that links a node is meaningless").
     default_value TEXT,
     -- The render contracts are PROPERTY-level — display (panel|bullet|inline; NULL = panel) and the
-    -- readonly/hide-when-empty tri-state flags, wherever the property
-    -- appears (class-bound or not). ('required' retired outright under the
-    -- it was the binding-level exception.)
+    -- hide-when-empty tri-state flag, wherever the property appears
+    -- (class-bound or not). ('required' retired outright — it was the binding-level exception. 'readonly'
+    -- retired outright — never user
+    -- configuration; clients derive it from the system property list,
+    -- is_readonly_property in features.py.)
     display TEXT,
-    readonly INTEGER,
     hide_when_empty INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
@@ -4754,7 +4753,6 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
             number_decimals INTEGER,
             number_rounding TEXT,
             display TEXT,
-            readonly INTEGER,
             hide_when_empty INTEGER,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT,
@@ -4764,12 +4762,12 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
             id, workspace_id, name, type, multi, icon, scope_class_ids, validation_rules,
             options, target_class_filter, date_precision, date_qualified,
             number_pad, number_decimals, number_rounding,
-            display, readonly, hide_when_empty, active, created_at, updated_at
+            display, hide_when_empty, active, created_at, updated_at
         )
         SELECT id, workspace_id, name, type, multi, NULL, NULL, NULL,
                options, target_class_filter, date_precision, date_qualified,
                number_pad, number_decimals, number_rounding,
-               display, readonly, hide_when_empty, active, created_at, updated_at
+               display, hide_when_empty, active, created_at, updated_at
         FROM property_schema;
         DROP TABLE property_schema;
         ALTER TABLE property_schema_v16 RENAME TO property_schema;
@@ -4856,6 +4854,64 @@ def _migrate_v18(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """v19 — the readonly retirement (web schema
+    v26→v27 parity): the `readonly` render contract retires from the
+    property schema — never user configuration (no seed ever carried the
+    flag), so clients derive readonly-ness from the system property list
+    (``is_readonly_property``, features.py) instead of storing it. The
+    schema table REBUILDS without the column (SQLite cannot drop a column
+    on old builds); there is NO data backfill (derived, not stored).
+    Guarded on the old column so the step is a no-op for databases already
+    carrying the new shape (idempotent).
+    """
+    schema_columns = {row[1] for row in conn.execute("PRAGMA table_info(property_schema)")}
+    if "readonly" in schema_columns:
+        conn.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE property_schema_v19 (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                multi INTEGER NOT NULL DEFAULT 0,
+                icon TEXT,
+                scope_class_ids TEXT,
+                validation_rules TEXT,
+                options TEXT NOT NULL DEFAULT '[]',
+                target_class_filter TEXT,
+                date_precision TEXT,
+                date_qualified INTEGER,
+                number_pad INTEGER,
+                number_decimals INTEGER,
+                number_rounding TEXT,
+                display TEXT,
+                hide_when_empty INTEGER,
+                default_value TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            INSERT INTO property_schema_v19 (
+                id, workspace_id, name, type, multi, icon, scope_class_ids, validation_rules,
+                options, target_class_filter, date_precision, date_qualified,
+                number_pad, number_decimals, number_rounding,
+                display, hide_when_empty, default_value, active, created_at, updated_at
+            )
+            SELECT id, workspace_id, name, type, multi, icon, scope_class_ids, validation_rules,
+                   options, target_class_filter, date_precision, date_qualified,
+                   number_pad, number_decimals, number_rounding,
+                   display, hide_when_empty, default_value, active, created_at, updated_at
+            FROM property_schema;
+            DROP TABLE property_schema;
+            ALTER TABLE property_schema_v19 RENAME TO property_schema;
+            CREATE INDEX IF NOT EXISTS idx_property_schema_workspace ON property_schema (workspace_id);
+            PRAGMA foreign_keys = ON;
+            """
+        )
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -4876,4 +4932,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (16, _migrate_v16),
     (17, _migrate_v17),
     (18, _migrate_v18),
+    (19, _migrate_v19),
 )
