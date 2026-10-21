@@ -2,9 +2,10 @@
 
 Covers the SCHEMA.md Content grammar mapping to view records — text runs
 with marks, hard_break, mention (displayText → resolved name → raw id),
-class_link, typed_link (underlined verb mark), external_link, math, quote
-(the only nested token), block tokens as labeled placeholders — plus the
-plaintext excerpt derivation and the editor's plaintext→token mapping.
+class_link, typed_link (underlined verb mark), markdown link spans parsed
+out of text tokens, math, quote (the only nested token), block tokens as
+labeled placeholders — plus the plaintext excerpt derivation and the
+editor's plaintext→token mapping.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ from notees_gtk.core.protocol.content import tokens_from_plaintext
 from notees_gtk.ui import ast_render
 from notees_gtk.ui.ast_render import (
     ClassChipRun,
-    ExternalLinkRun,
     HardBreakRun,
+    MarkdownLinkRun,
     MathRun,
     MentionRun,
     PageView,
@@ -121,10 +122,75 @@ def test_view_class_link_display_text_and_raw_id_fallback() -> None:
     )
 
 
-def test_view_external_link() -> None:
+def test_view_text_markdown_link_splits_into_link_run() -> None:
+    """A `[label](href)` span inside a text token parses into a link run."""
+    doc = [{"type": "text", "text": "see [the docs](https://example.com/docs) now"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(
+        items=(
+            TextRun(text="see "),
+            MarkdownLinkRun(href="https://example.com/docs", text="the docs"),
+            TextRun(text=" now"),
+        )
+    )
+
+
+def test_view_text_markdown_link_alone_is_one_link_run() -> None:
+    doc = [{"type": "text", "text": "[Example](https://example.com)"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(MarkdownLinkRun(href="https://example.com", text="Example"),))
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "http://example.com",
+        "https://example.com/page",
+        "mailto:someone@example.com",
+        "HTTPS://EXAMPLE.COM",  # the scheme allow-list is case-insensitive
+    ],
+)
+def test_view_text_markdown_linkable_schemes(href: str) -> None:
+    doc = [{"type": "text", "text": f"[site]({href})"}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(MarkdownLinkRun(href=href, text="site"),))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[x](javascript:steal)",  # other scheme — the raw span stays literal
+        "[guide](./relative/path)",  # relative path
+        "[unclosed](https://example.com",  # no closing paren — no match at all
+        "[label] with no parens",
+        "plain https://example.com without brackets",
+    ],
+)
+def test_view_text_non_linkable_markdown_stays_plain_text(text: str) -> None:
+    """Non-linkable syntax never becomes a link — one plain text run."""
+    doc = [{"type": "text", "text": text}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(items=(TextRun(text=text),))
+
+
+def test_view_text_markdown_link_keeps_marks_on_text_segments() -> None:
+    """The token's marks ride the literal-text segments (the web parity rule)."""
+    doc = [{"type": "text", "text": "read [site](https://example.com) today", "marks": ["bold"]}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(
+        items=(
+            TextRun(text="read ", marks=frozenset({"bold"})),
+            MarkdownLinkRun(href="https://example.com", text="site"),
+            TextRun(text=" today", marks=frozenset({"bold"})),
+        )
+    )
+
+
+def test_view_retired_external_link_token_is_unsupported() -> None:
+    """The retired token type renders as an unsupported placeholder (fail loud)."""
     doc = [{"type": "external_link", "href": "https://example.com", "text": "site"}]
     view = ast_render.ast_to_view(doc_json(doc))
-    assert view == PageView(items=(ExternalLinkRun(href="https://example.com", text="site"),))
+    assert view == PageView(items=(PlaceholderView(kind="unsupported"),))
 
 
 def test_view_math() -> None:
@@ -151,6 +217,21 @@ def test_view_quote_is_the_only_nested_token() -> None:
                     TextRun(text="quoted "),
                     MentionRun(target_id="t-1", text="Resolved"),
                     TypedLinkRun(verb="cites", text="cites"),
+                )
+            ),
+        )
+    )
+
+
+def test_view_quote_splits_markdown_links_too() -> None:
+    doc = [{"type": "quote", "children": [{"type": "text", "text": "see [src](https://example.com)"}]}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    assert view == PageView(
+        items=(
+            QuoteView(
+                children=(
+                    TextRun(text="see "),
+                    MarkdownLinkRun(href="https://example.com", text="src"),
                 )
             ),
         )

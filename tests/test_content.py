@@ -156,6 +156,7 @@ class TestStrictTokenValidation:
             {"type": "embed_ref", "nodeId": "11111111-1111-7111-8111-111111111111", "view": "banner"},
             {"type": "embed_ref", "nodeId": "not-a-uuid"},
             {"type": "unknown_kind"},
+            {"type": "external_link", "href": "https://example.com", "text": "site"},  # retired token
         ],
     )
     def test_bad_shapes_fail_loud(self, token: dict) -> None:

@@ -14,6 +14,10 @@ presentation. Resolution rules implemented here:
   name ?? raw class id; inserting/deleting a chip never mutates ``class_ids``;
 - ``typed_link``: a mark on the prose word —
   the marked word renders underlined, the verb is carried for tooltips/metadata;
+- ``text``: markdown ``[label](href)`` spans — the retired ``external_link``
+  token's replacement (SCHEMA.md render grammar) — split into link runs at
+  render time (``packages/domain/src/markdownLinks.ts`` port), http/https/
+  mailto hrefs only; every other shape stays literal text;
 - block-scale tokens (``asset_ref``/``embed_ref``/``query``/``whiteboard``)
   render as labeled placeholders until the GTK client grows real views.
 
@@ -24,6 +28,7 @@ stored as truth.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -32,9 +37,9 @@ from notees_gtk.core.protocol.content import parse_content_ast, plaintext_excerp
 
 __all__ = [
     "ClassChipRun",
-    "ExternalLinkRun",
     "HardBreakRun",
     "InlineView",
+    "MarkdownLinkRun",
     "MathRun",
     "MentionRun",
     "PageItem",
@@ -98,7 +103,12 @@ class TypedLinkRun:
 
 
 @dataclass(frozen=True)
-class ExternalLinkRun:
+class MarkdownLinkRun:
+    """A markdown ``[label](href)`` span parsed out of a text token at render
+    time — the retired ``external_link`` token's replacement (SCHEMA.md render
+    grammar; the ``{ kind: "link" }`` segment of
+    ``packages/domain/src/markdownLinks.ts``)."""
+
     href: str
     text: str
 
@@ -109,7 +119,7 @@ class MathRun:
 
 
 #: One inline-scale view record (everything that can sit in a rendered line).
-type InlineView = TextRun | HardBreakRun | MentionRun | ClassChipRun | TypedLinkRun | ExternalLinkRun | MathRun
+type InlineView = TextRun | HardBreakRun | MentionRun | ClassChipRun | TypedLinkRun | MarkdownLinkRun | MathRun
 
 
 @dataclass(frozen=True)
@@ -178,9 +188,55 @@ def _verb_string(raw: Any) -> str:
     return ""
 
 
-def _inline_view(token: Any, resolver: NameResolver | None) -> InlineView | None:
+#: The markdown-link span grammar (SCHEMA.md "Content grammar", the normative
+#: render rule shared by every renderer) — port of ``MARKDOWN_LINK_RE`` in
+#: ``packages/domain/src/markdownLinks.ts``: the label holds no ``]`` or
+#: newline, the href no whitespace or parentheses.
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^()\s]+)\)")
+
+#: The scheme allow-list (markdownLinks.ts ``linkableHref`` — the
+#: security-relevant part of the rule): a non-http(s)/mailto href must never
+#: become a clickable anchor.
+_LINKABLE_HREF_RE = re.compile(r"^(https?://|mailto:)", re.IGNORECASE)
+
+
+def _split_markdown_links(text: str, marks: frozenset[str]) -> list[InlineView]:
+    """Port of ``splitMarkdownLinks`` (packages/domain/src/markdownLinks.ts).
+
+    ``[label](href)`` spans with an http/https/mailto href become
+    :class:`MarkdownLinkRun`; anything else (unclosed brackets, other schemes,
+    relative paths) stays a literal :class:`TextRun`. A text token carrying no
+    linkable span renders as one run, exactly like before the split.
+    """
+    runs: list[InlineView] = []
+    cursor = 0
+    for match in _MARKDOWN_LINK_RE.finditer(text):
+        if match.start() > cursor:
+            runs.append(TextRun(text=text[cursor : match.start()], marks=marks))
+        raw, label, href = match.group(0), match.group(1), match.group(2)
+        if _LINKABLE_HREF_RE.match(href):
+            runs.append(MarkdownLinkRun(href=href, text=label))
+        else:
+            runs.append(TextRun(text=raw, marks=marks))
+        cursor = match.end()
+    if not runs:
+        return [TextRun(text=text, marks=marks)]
+    if cursor < len(text):
+        runs.append(TextRun(text=text[cursor:], marks=marks))
+    return runs
+
+
+def _inline_views(token: Any, resolver: NameResolver | None) -> list[InlineView]:
+    """Render one inline token to zero or more view records.
+
+    A ``text`` token splits into runs at markdown-link spans (a link run plus
+    its literal-text neighbours, the token's marks on the text segments); the
+    retired ``external_link`` type has no arm — it rejects as unknown at the
+    strict validator and renders as an unsupported placeholder here. Every
+    other token maps to exactly one record.
+    """
     if not isinstance(token, Mapping):
-        return None
+        return []
     ttype = token.get("type")
     if ttype == "text":
         raw_marks = token.get("marks")
@@ -189,43 +245,45 @@ def _inline_view(token: Any, resolver: NameResolver | None) -> InlineView | None
             if isinstance(raw_marks, list)
             else frozenset()
         )
-        return TextRun(text=str(token.get("text", "")), marks=marks)
+        return _split_markdown_links(str(token.get("text", "")), marks)
     if ttype == "hard_break":
-        return HardBreakRun()
+        return [HardBreakRun()]
     if ttype == "mention":
         target_id, text = _mention_text(token, resolver)
-        return MentionRun(target_id=target_id, text=text)
+        return [MentionRun(target_id=target_id, text=text)]
     if ttype == "class_link":
         class_id, text = _class_link_text(token, resolver)
-        return ClassChipRun(class_id=class_id, text=text)
+        return [ClassChipRun(class_id=class_id, text=text)]
     if ttype == "typed_link":
-        return TypedLinkRun(verb=_verb_string(token.get("verb")), text=str(token.get("text", "")))
-    if ttype == "external_link":
-        return ExternalLinkRun(href=str(token.get("href", "")), text=str(token.get("text", "")))
+        return [TypedLinkRun(verb=_verb_string(token.get("verb")), text=str(token.get("text", "")))]
     if ttype == "math":
-        return MathRun(expression=str(token.get("expression", "")))
-    return None
+        return [MathRun(expression=str(token.get("expression", "")))]
+    return []
 
 
-def _page_item(token: Any, resolver: NameResolver | None) -> PageItem:
+def _page_items(token: Any, resolver: NameResolver | None) -> tuple[PageItem, ...]:
+    """Render one top-level token to one or more page items.
+
+    Only ``text`` tokens can fan out (one run per markdown-link segment);
+    quotes recurse their children through the same splitter, block-scale
+    tokens stay labeled placeholders, and unknown types render unsupported.
+    """
     if not isinstance(token, Mapping):
-        return PlaceholderView(kind="unsupported")
+        return (PlaceholderView(kind="unsupported"),)
     ttype = token.get("type")
     if ttype == "quote":
         children = token.get("children")
         inner: list[InlineView] = []
         if isinstance(children, list):
             for child in children:
-                view = _inline_view(child, resolver)
-                if view is not None:
-                    inner.append(view)
-        return QuoteView(children=tuple(inner))
+                inner.extend(_inline_views(child, resolver))
+        return (QuoteView(children=tuple(inner)),)
     if ttype in _PLACEHOLDER_TOKENS:
-        return PlaceholderView(kind=str(ttype))
-    inline = _inline_view(token, resolver)
-    if inline is not None:
-        return inline
-    return PlaceholderView(kind="unsupported")
+        return (PlaceholderView(kind=str(ttype)),)
+    inline = _inline_views(token, resolver)
+    if not inline:
+        return (PlaceholderView(kind="unsupported"),)
+    return tuple(inline)
 
 
 # ------------------------------------------------------------------ public API
@@ -245,7 +303,8 @@ def ast_to_view(
             name, used for mention pills and class chips.
     """
     tokens = parse_content_ast(ast_json)
-    return PageView(items=tuple(_page_item(token, resolve_name) for token in tokens))
+    items = tuple(item for token in tokens for item in _page_items(token, resolve_name))
+    return PageView(items=items)
 
 
 def ast_to_plaintext(

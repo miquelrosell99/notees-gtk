@@ -8,6 +8,32 @@ history.
 
 ## 2026-10-21
 
+- **feat(ui,protocol): the `external_link` content token retires — links are
+  markdown spans in `text` tokens, parsed at render time (main-repo lockstep,
+  owner ruling 2026-10-21).** The strict content-grammar validator drops the
+  `external_link` branch entirely — the schema no longer lists the type, so a
+  retired token now rejects as an unknown type like any other (the payload
+  tests parametrize the rejection). The renderer gains the normative render
+  grammar port: `splitMarkdownLinks` (`packages/domain/src/markdownLinks.ts`)
+  splits every `text` token at `\[([^\]\n]+)\]\(([^()\s]+)\)` spans into runs —
+  an http/https/mailto href becomes a `MarkdownLinkRun` (the `ExternalLinkRun`
+  look — link color + underline in `ui/page_view.py`), anything else
+  (unclosed brackets, other schemes like `javascript:`, relative paths) stays
+  a literal `TextRun`, and the token's marks ride the text segments. The
+  retired `ExternalLinkRun` dataclass and its render arm are gone:
+  `_inline_view` is now the list-valued `_inline_views` (one text token may
+  fan out to several runs) and `_page_item` flattens accordingly; quote
+  children split the same way. `plaintext_excerpt` needed no change — the
+  retired token was always silent there and markdown link text now flows
+  verbatim, exactly the derived-state delta the monorepo recorded (link
+  labels appear in excerpts/display names post-migration). **Verification:**
+  `uv run pytest` 868 passed / 4 skipped; `ruff check` + `mypy src` clean. No
+  fixture bytes change (no fixture ever carried the token); the live log
+  rewrite (`migrate-retire-external-link.mts`) runs in the monorepo after
+  this port per the lockstep gate.
+
+## 2026-10-21
+
 - **feat(protocol,store): the readonly retirement — `readonly` derives from
   the system list, not stored (main-repo lockstep, owner ruling 2026-10-21,
   a continuation of the property-definition surfaces batch).** The
