@@ -413,3 +413,24 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
 def task_property_uuid(name: str) -> str:
     """The fixed schema id for a task-family property name."""
     return _TASK_PROPERTY_UUIDS[name]
+
+
+#: The READONLY derivation list (owner ruling 2026-10-21): the retired
+#: ``readonly`` render contract was never user configuration (ZERO seeds ever
+#: carried the flag), so clients DERIVE readonly-ness from the system list
+#: instead of storing it (the binding-``sequence`` philosophy). The list is
+#: the platform-PROVENANCE properties — values authored by platform flows,
+#: not user data: ``generatedFrom`` (templates provenance, written by
+#: instantiation) and ``alias`` (name-equivalence metadata). Mirrors
+#: ``READONLY_SYSTEM_PROPERTY_IDS`` in the monorepo's packages/domain.
+READONLY_SYSTEM_PROPERTY_IDS: tuple[str, ...] = (
+    "00000000-0000-0000-0000-000000000027",  # generatedFrom
+    "00000000-0000-0000-0000-000000000028",  # alias
+)
+
+
+def is_readonly_property(schema_id: str) -> bool:
+    """True when the schema id is a system property whose editors render
+    readonly (the retired render contract, now derived — never blocks a
+    write, PC1)."""
+    return schema_id in READONLY_SYSTEM_PROPERTY_IDS

@@ -8,6 +8,30 @@ history.
 
 ## 2026-10-21
 
+- **feat(protocol,store): the readonly retirement — `readonly` derives from
+  the system list, not stored (main-repo lockstep, owner ruling 2026-10-21,
+  a continuation of the property-definition surfaces batch).** The
+  `readonly` render contract RETIRES from `propertySchema.create/update` —
+  an enumeration of the seeds finds ZERO system properties that ever carried
+  the flag, so it was never user configuration. The strict payload schemas
+  reject the retired key like any unknown key (the payload tests parametrize
+  the rejection on both schema payloads); `hideWhenEmpty`/`display` stay.
+  Readonly-ness now DERIVES from the system property list —
+  `is_readonly_property(schema_id)` in `features.py` (fixed seed UUIDs,
+  precise) covering the platform-provenance schemas `generatedFrom`
+  (…0000-0000-0000-000000000027) + `alias` (…000000000028) — mirroring the
+  monorepo's `isReadonlyProperty`. `SCHEMA_VERSION` 18 → 19 (web schema
+  v26→v27 parity) — `property_schema` rebuilds WITHOUT the `readonly`
+  column (the historical v16 migration view drops it too; no data backfill —
+  derived, not stored); the `EffectivePropertySchema`/`EffectiveProperty`
+  read models drop the field. **Verification:** `uv run pytest` 854 passed /
+  4 skipped; `ruff check` + `mypy src` clean. The live log rewrite
+  (`migrate-drop-schema-readonly.mts`) runs in the monorepo after this port
+  (the fixture gate law). No fixture bytes change (no fixture ever carried
+  the flag).
+
+## 2026-10-21
+
 - **feat(protocol,store): the binding-sequence retirement — class properties
   render as a PURE ALPHABETICAL list everywhere (main-repo lockstep, owner
   ruling 2026-10-21, a continuation of the property-definition surfaces

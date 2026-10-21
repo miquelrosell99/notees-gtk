@@ -297,7 +297,6 @@ class TestClassPropertyDefaultsFixture:
                 metadata=None,
                 source="default",
                 bound_by=self.TASK,
-                readonly=None,
                 hide_when_empty=None,
             )
         ]
