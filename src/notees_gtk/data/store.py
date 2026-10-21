@@ -164,7 +164,7 @@ _log = logging.getLogger(__name__)
 #: monorepo's migrate-drop-binding-required.mts, Path B — appended
 #: propertySchema.update compensation per affected schema) + the epoch
 #: bump, so the backfill is deliberately NULL.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -361,7 +361,6 @@ class EffectiveProperty:
     bound_by: str | None
     readonly: bool | None
     hide_when_empty: bool | None
-    sequence: int | None
     display: str | None = None
     # R3 eligibility (owner ruling 2026-10-20): False when the schema's
     # scopeClassIds excludes the node (its class closure misses the list) —
@@ -2332,14 +2331,19 @@ class LocalStore:
     # ------------------------------------------------------- class.property.*
 
     def _apply_class_property_set(self, env: RelayEnvelope) -> bool:
-        """Binding upsert — the genuinely per-class mechanics ONLY
-        (sequence + the active soft-unbind flag; row LWW by envelope HLC).
+        """Binding upsert — the genuinely per-class mechanic ONLY: the
+        ``active`` soft-unbind flag (row LWW by envelope HLC).
 
         (owner ruling 2026-10-20, the property-definition surfaces batch):
         ``required`` and ``defaultValue`` left the binding entirely —
         ``required`` retired outright, ``defaultValue`` moved to the
         property schema (one global default per property, the Logseq shape;
         the strict payload schema rejects both keys like any retired key).
+        (owner ruling 2026-10-21): ``sequence`` retired too — class panels
+        render alphabetically by property name (a read-time derivation), so
+        panel order no longer exists to configure; the strict schema rejects
+        the key outright (the monorepo's
+        scripts/migrate-drop-binding-sequence.mts rewrites stored logs).
         On update the payload PATCHES the row — omitted fields keep their
         existing values (COALESCE; explicit false is a real write).
         """
@@ -2374,22 +2378,21 @@ class LocalStore:
 
         # Omitted (absent) fields keep the stored value via COALESCE; an
         # explicit false is a real write. The binding row carries ONLY
-        # sequence + active — the render contracts (readonly/hideWhenEmpty/
-        # display) are PROPERTY-level and live on property_schema; the
-        # default value lives there too (owner ruling 2026-10-20).
+        # active — the render contracts (readonly/hideWhenEmpty/display) are
+        # PROPERTY-level and live on property_schema; the default value
+        # lives there too (owner ruling 2026-10-20) and sequence retired
+        # outright (owner ruling 2026-10-21).
         active = None if "active" not in payload else (1 if payload["active"] else 0)
-        sequence = int(payload["sequence"]) if payload.get("sequence") is not None else None
         with self._conn:
             if existing is None:
                 self._conn.execute(
                     """INSERT INTO class_property
-                         (class_id, property_schema_id, sequence, active,
+                         (class_id, property_schema_id, active,
                           hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         class_id,
                         schema_id,
-                        sequence if sequence is not None else 0,
                         active if active is not None else 1,
                         env.hlc.physical,
                         env.hlc.logical,
@@ -2399,12 +2402,10 @@ class LocalStore:
             else:
                 self._conn.execute(
                     """UPDATE class_property SET
-                         sequence = COALESCE(?, sequence),
                          active = COALESCE(?, active),
                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
                        WHERE class_id = ? AND property_schema_id = ?""",
                     (
-                        sequence,
                         active,
                         env.hlc.physical,
                         env.hlc.logical,
@@ -3331,10 +3332,10 @@ class LocalStore:
             )
             self._conn.execute(
                 """INSERT OR IGNORE INTO class_property
-                     (class_id, property_schema_id, sequence,
+                     (class_id, property_schema_id,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, ?, 0, 0, NULL)""",
-                (class_id, schema_id, entry.sequence),
+                   VALUES (?, ?, 0, 0, NULL)""",
+                (class_id, schema_id),
             )
 
     def _apply_workspace_feature_set(self, env: RelayEnvelope) -> bool:
@@ -3580,8 +3581,11 @@ class LocalStore:
         property_value rows for them). The default is SCHEMA-level (owner
         ruling 2026-10-20 — one global default per property, the Logseq
         shape): a winning ACTIVE binding still decides WHICH properties a
-        class's nodes carry (and supplies sequence/boundBy), but the default
-        VALUE comes from the schema row. Authored rows come through the PG5
+        class's nodes carry (and supplies boundBy), but the default
+        VALUE comes from the schema row. Presentation order is PURE
+        ALPHABETICAL by property name (owner ruling 2026-10-21 —
+        ``sequence`` retired from the binding; class panels have no
+        configurable order). Authored rows come through the PG5
         visible-set derivation (:meth:`_visible_property_value_rows` — slot
         tombstones + element tombstones) and carry their stable element id.
         Binding conflicts across the node's classes resolve per the SCHEMA.md
@@ -3594,8 +3598,8 @@ class LocalStore:
         binding); with no extends edges this reduces exactly to
         first-class-applied-wins over own bindings. Only ACTIVE binding rows
         are candidates (PC4: an inactive binding stops contributing defaults
-        AND binding metadata — sequence — while the ROW survives and
-        authored values read as unbound, ``bound_by`` None; the render
+        while the ROW survives and authored values read as unbound,
+        ``bound_by`` None; the render
         contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
         they ride authored and derived rows alike, unbound values included).
         A stored default that no longer matches the schema type yields no
@@ -3656,7 +3660,7 @@ class LocalStore:
             physical, logical = int(cls[1]), int(cls[2])
             for ancestor_id, distance in reach_of(class_id):
                 for binding in self._conn.execute(
-                    "SELECT property_schema_id, sequence"
+                    "SELECT property_schema_id"
                     " FROM class_property WHERE class_id = ? AND active = 1",
                     (ancestor_id,),
                 ).fetchall():
@@ -3749,8 +3753,7 @@ class LocalStore:
                 shadowed_default_schemas.add(schema_id)
             # PG5 merge key: rows at the same idx are distinct elements and
             # all surface. Readonly/hideWhenEmpty/display are per-PROPERTY
-            # (the schema — unbound values included); sequence is per-CLASS
-            # (the winning binding).
+            # (the schema — unbound values included).
             rows_out[f"{schema_id}:{idx}:{authored['id']}"] = EffectiveProperty(
                 property_schema_id=schema_id,
                 idx=idx,
@@ -3762,7 +3765,6 @@ class LocalStore:
                 bound_by=winner[0] if winner else None,
                 readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
-                sequence=int(winner[1][1]) if winner else None,
                 display=schema.display if schema is not None else None,
                 # Authored rows SURVIVE scope narrowing (never retroactive) —
                 # the read tags them; callers decide how an ineligible row
@@ -3770,10 +3772,10 @@ class LocalStore:
                 eligible=eligible_of(schema_id, schema),
             )
 
-        for schema_id, (class_id, binding) in winner_by_schema.items():
+        for schema_id, (class_id, _binding) in winner_by_schema.items():
             # The default VALUE is schema-level (owner ruling 2026-10-20):
             # the winning binding decides the property is present (and
-            # supplies sequence/boundBy), the schema row supplies the value.
+            # supplies boundBy), the schema row supplies the value.
             if schema_id not in schema_default:
                 continue  # schema without a default
             default_value = schema_default[schema_id]
@@ -3803,15 +3805,15 @@ class LocalStore:
                 bound_by=class_id,
                 readonly=schema.readonly if schema is not None else None,
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
-                sequence=int(binding[1]),
                 display=schema.display if schema is not None else None,
                 eligible=True,
             )
 
-        # Deterministic presentation order: bound rows by binding sequence,
-        # unbound authored rows last; schema name then (idx, element id) as
-        # the tiebreak (PG5: concurrent adds may share an idx — the element
-        # id orders them identically on every replica).
+        # Deterministic presentation order: PURE ALPHABETICAL by property
+        # name (owner ruling 2026-10-21 — binding ``sequence`` retired; class
+        # panels have no configurable order), unbound authored rows last;
+        # (idx, element id) as the tiebreak (PG5: concurrent adds may share
+        # an idx — the element id orders them identically on every replica).
         def name_of(row: EffectiveProperty) -> str:
             return row.schema.name if row.schema is not None else row.property_schema_id
 
@@ -3819,7 +3821,6 @@ class LocalStore:
             rows_out.values(),
             key=lambda row: (
                 row.bound_by is None,
-                row.sequence if row.sequence is not None else 2**53 - 1,
                 name_of(row),
                 row.idx,
                 row.element_id,
@@ -4301,27 +4302,28 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
 
 
 _CLASS_PROPERTY_DDL = """
--- Class -> property bindings (sequence + active only), per SCHEMA.md
+-- Class -> property bindings (active only), per SCHEMA.md
 -- "Class properties — bindings, defaults, aggregation" (2026-09-27) and the
--- owner ruling 2026-10-20 (the property-definition surfaces batch).
+-- owner rulings 2026-10-20/21 (the property-definition surfaces batch).
 -- Registry rows authored by class.property.set/unset; LWW on the row by
 -- (hlc, actor). Defaults are a DERIVED read model (get_effective_properties),
 -- never materialized property_value rows — and the default VALUE is
 -- SCHEMA-level (one global default per property, the Logseq shape), read
 -- off the property_schema row.
--- (owner ruling 2026-10-20): the row carries ONLY the genuinely per-class
--- mechanics (sequence + active). 'required' retired outright (its only
+-- (owner ruling 2026-10-20): 'required' retired outright (its only
 -- render effect — hiding the icon-button's "None" row — was mild
 -- enforcement, contradicting the render-contract law) and 'default_value'
 -- MOVED to property_schema; the strict payload schema rejects both keys
--- like any retired key. 'active' (PC4): the soft-unbind flag — an inactive
--- row stops contributing to the effective read (no default, no sequence)
--- while the ROW survives; absent column means active, so existing rows
--- converge with zero migration.
+-- like any retired key. (owner ruling 2026-10-21): 'sequence' retired
+-- outright too — class panels render alphabetically by property name (a
+-- read-time derivation), so panel order no longer exists to configure; the
+-- strict payload schema rejects the key and the column is gone at v18.
+-- 'active' (PC4): the soft-unbind flag — an inactive row stops contributing
+-- to the effective read while the ROW survives; absent column means active,
+-- so existing rows converge with zero migration.
 CREATE TABLE IF NOT EXISTS class_property (
     class_id TEXT NOT NULL,
     property_schema_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
@@ -4583,7 +4585,6 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
             CREATE TABLE class_property_v12 (
                 class_id TEXT NOT NULL,
                 property_schema_id TEXT NOT NULL,
-                sequence INTEGER NOT NULL DEFAULT 0,
                 required INTEGER,
                 default_value TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
@@ -4593,10 +4594,10 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
                 PRIMARY KEY (class_id, property_schema_id)
             );
             INSERT INTO class_property_v12 (
-                class_id, property_schema_id, sequence, required, default_value, active,
+                class_id, property_schema_id, required, default_value, active,
                 hlc_physical, hlc_logical, actor_id
             )
-            SELECT class_id, property_schema_id, sequence, required, default_value, active,
+            SELECT class_id, property_schema_id, required, default_value, active,
                    hlc_physical, hlc_logical, actor_id
             FROM class_property;
             DROP TABLE class_property;
@@ -4806,7 +4807,6 @@ def _migrate_v17(conn: sqlite3.Connection) -> None:
             CREATE TABLE class_property_v17 (
                 class_id TEXT NOT NULL,
                 property_schema_id TEXT NOT NULL,
-                sequence INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
                 hlc_physical INTEGER NOT NULL DEFAULT 0,
                 hlc_logical INTEGER NOT NULL DEFAULT 0,
@@ -4814,9 +4814,9 @@ def _migrate_v17(conn: sqlite3.Connection) -> None:
                 PRIMARY KEY (class_id, property_schema_id)
             );
             INSERT INTO class_property_v17 (
-                class_id, property_schema_id, sequence, active, hlc_physical, hlc_logical, actor_id
+                class_id, property_schema_id, active, hlc_physical, hlc_logical, actor_id
             )
-            SELECT class_id, property_schema_id, sequence, active, hlc_physical, hlc_logical, actor_id
+            SELECT class_id, property_schema_id, active, hlc_physical, hlc_logical, actor_id
             FROM class_property;
             DROP TABLE class_property;
             ALTER TABLE class_property_v17 RENAME TO class_property;
@@ -4825,6 +4825,43 @@ def _migrate_v17(conn: sqlite3.Connection) -> None:
             """
         )
     LocalStore._add_column_if_missing(conn, "property_schema", "default_value", "TEXT")
+
+
+def _migrate_v18(conn: sqlite3.Connection) -> None:
+    """v18 — the binding-sequence retirement (owner ruling 2026-10-21; web
+    schema v25→v26 parity): `sequence` retires from the binding — class
+    panels render alphabetically by property name (a read-time derivation),
+    so panel order no longer exists to configure. The binding table REBUILDS
+    without the column (SQLite cannot drop a column on old builds); there is
+    NO data backfill (order metadata is discarded). Guarded on the old
+    column so the step is a no-op for databases already carrying the new
+    shape (idempotent).
+    """
+    binding_columns = {row[1] for row in conn.execute("PRAGMA table_info(class_property)")}
+    if "sequence" in binding_columns:
+        conn.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE class_property_v18 (
+                class_id TEXT NOT NULL,
+                property_schema_id TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                hlc_physical INTEGER NOT NULL DEFAULT 0,
+                hlc_logical INTEGER NOT NULL DEFAULT 0,
+                actor_id TEXT,
+                PRIMARY KEY (class_id, property_schema_id)
+            );
+            INSERT INTO class_property_v18 (
+                class_id, property_schema_id, active, hlc_physical, hlc_logical, actor_id
+            )
+            SELECT class_id, property_schema_id, active, hlc_physical, hlc_logical, actor_id
+            FROM class_property;
+            DROP TABLE class_property;
+            ALTER TABLE class_property_v18 RENAME TO class_property;
+            CREATE INDEX IF NOT EXISTS idx_class_property_class ON class_property (class_id);
+            PRAGMA foreign_keys = ON;
+            """
+        )
 
 
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
@@ -4846,4 +4883,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (15, _migrate_v15),
     (16, _migrate_v16),
     (17, _migrate_v17),
+    (18, _migrate_v18),
 )

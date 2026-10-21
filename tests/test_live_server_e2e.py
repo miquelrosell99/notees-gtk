@@ -485,14 +485,14 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     ]
 
     # --- 2: class binding through the engine's write path + effective default. ---
-    # The binding carries ONLY the per-class mechanics (sequence, active) —
-    # the default rode the schema create above.
+    # The binding carries ONLY the per-class mechanic (active — sequence
+    # retired, owner ruling 2026-10-21) — the default rode the schema create
+    # above.
     device_a.produce(
         "class.property.set",
         {
             "classId": CLASS_KIND,
             "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
-            "sequence": 0,
         },
         affected=(CLASS_KIND,),
     )
@@ -504,8 +504,8 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     # Node WITHOUT an authored value reads the derived default (never
     # materialized: no property_value row exists for it).
     defaults_b = device_b.store.get_effective_properties(PAGE_DEFAULTS)
-    assert [(row.source, row.value, row.bound_by, row.sequence) for row in defaults_b] == [
-        ("default", "medium", CLASS_KIND, 0)
+    assert [(row.source, row.value, row.bound_by) for row in defaults_b] == [
+        ("default", "medium", CLASS_KIND)
     ]
 
     # The authored row still shadows the default on the other node — and now

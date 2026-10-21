@@ -299,7 +299,6 @@ class TestClassPropertyDefaultsFixture:
                 bound_by=self.TASK,
                 readonly=None,
                 hide_when_empty=None,
-                sequence=0,
             )
         ]
         # The default is DERIVED: no property_value row was ever written.
@@ -814,8 +813,8 @@ class TestClassPropertyActiveFixture:
         for env in self._load()[:7]:
             assert store.apply_remote(env) is True
         effective = store.get_effective_properties(self.ITEM)
-        assert [(row.value, row.source, row.bound_by, row.sequence) for row in effective] == [
-            ("opt-b", "authored", None, None)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [
+            ("opt-b", "authored", None)
         ]
 
     def test_full_reenable_restores_flag_authored_shadows_default(self, store: LocalStore) -> None:
@@ -827,8 +826,8 @@ class TestClassPropertyActiveFixture:
             (self.CLASS, self.SCHEMA),
         ) == [(1,)]
         effective = store.get_effective_properties(self.ITEM)
-        assert [(row.value, row.source, row.bound_by, row.sequence, row.element_id) for row in effective] == [
-            ("opt-b", "authored", self.CLASS, 1, f"{self.ITEM}:{self.SCHEMA}:0")
+        assert [(row.value, row.source, row.bound_by, row.element_id) for row in effective] == [
+            ("opt-b", "authored", self.CLASS, f"{self.ITEM}:{self.SCHEMA}:0")
         ]
 
     def test_full_replay_carries_the_option_icon_color_and_bullet_display(self, store: LocalStore) -> None:

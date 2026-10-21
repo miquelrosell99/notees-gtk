@@ -1,5 +1,5 @@
 {
-  "comment": "Class membership removal (SCHEMA.md 'Class properties', unassign op). Class Task binds 'effort' (schema default 'xs') and 'impact' (schema default 'xl') — defaults are SCHEMA-level since the owner ruling 2026-10-20 (one global default per property, the Logseq shape); a binding is just 'this class lists the property, in this order'. The node is created classed with Task, then authors impact = 'authored' (which shadows the 'xl' default at idx 0). class.unassign tombstones the OR-Set pair: node.class_ids is recomputed empty, the derived 'effort' default stops reading (nothing was ever stored), and the authored impact value survives marked unbound (boundBy null). The final re-issued object.create re-assigns Task (OR-Set add-wins with a newer HLC): the 'effort' default is derived again, and the authored impact reads bound by Task.",
+  "comment": "Class membership removal (SCHEMA.md 'Class properties', unassign op). Class Task binds 'effort' (schema default 'xs') and 'impact' (schema default 'xl') — defaults are SCHEMA-level since the owner ruling 2026-10-20 (one global default per property, the Logseq shape); a binding is just 'this class lists the property' (class panels render alphabetically by property name, owner ruling 2026-10-21). The node is created classed with Task, then authors impact = 'authored' (which shadows the 'xl' default at idx 0). class.unassign tombstones the OR-Set pair: node.class_ids is recomputed empty, the derived 'effort' default stops reading (nothing was ever stored), and the authored impact value survives marked unbound (boundBy null). The final re-issued object.create re-assigns Task (OR-Set add-wins with a newer HLC): the 'effort' default is derived again, and the authored impact reads bound by Task.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000401",
@@ -119,8 +119,7 @@
       "timestamp": "2026-09-24T12:00:12.400Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000412",
-        "propertySchemaId": "0192a000-0000-7000-8000-000000000410",
-        "sequence": 0
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000410"
       }
     },
     {
@@ -141,8 +140,7 @@
       "timestamp": "2026-09-24T12:00:12.500Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000412",
-        "propertySchemaId": "0192a000-0000-7000-8000-000000000411",
-        "sequence": 1
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000411"
       }
     },
     {
