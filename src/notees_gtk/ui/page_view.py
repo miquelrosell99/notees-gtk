@@ -23,8 +23,8 @@ from gi.repository import Adw, GLib, Gtk
 from notees_gtk.ui.aliases import AliasEntry, build_aliased_node_row, build_aliases_section
 from notees_gtk.ui.ast_render import (
     ClassChipRun,
-    ExternalLinkRun,
     HardBreakRun,
+    MarkdownLinkRun,
     MathRun,
     MentionRun,
     PageView,
@@ -66,7 +66,7 @@ def run_markup(run: object, colors: ContentColors) -> str:
         )
     if isinstance(run, TypedLinkRun):
         return f"<u>{GLib.markup_escape_text(run.text, -1)}</u>"
-    if isinstance(run, ExternalLinkRun):
+    if isinstance(run, MarkdownLinkRun):
         return f'<span foreground="{colors.link}" underline="single">{GLib.markup_escape_text(run.text, -1)}</span>'
     if isinstance(run, MathRun):
         return f"<tt>{GLib.markup_escape_text(run.expression, -1)}</tt>"

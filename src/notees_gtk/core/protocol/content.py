@@ -251,10 +251,6 @@ def validate_content_token(token: Any) -> None:
         _check_no_extra(token, {"classId", "displayText"})
         if token.get("displayText") is not None:
             _require_str(token, "displayText", min_length=1, max_length=512)
-    elif ttype == "external_link":
-        _require_str(token, "href", min_length=1, max_length=4096)
-        _require_str(token, "text", min_length=1)
-        _check_no_extra(token, {"href", "text"})
     elif ttype == "math":
         _require_str(token, "expression", min_length=1, max_length=4096)
         _check_no_extra(token, {"expression"})
