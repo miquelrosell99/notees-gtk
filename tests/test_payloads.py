@@ -848,16 +848,20 @@ class TestPropertyDisplayPositions:
         with pytest.raises(ValidationError, match="display"):
             validate_payload("propertySchema.update", {"propertySchemaId": UUID_1, "display": "sideways"})
 
-    @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty", "required", "defaultValue"])
+    @pytest.mark.parametrize("key", ["display", "readonly", "hideWhenEmpty", "required", "defaultValue", "sequence"])
     def test_class_property_set_render_contract_keys_rejected(self, key: str) -> None:
         """The binding payload carries ONLY the genuinely per-class
-        mechanics (sequence + active) — display/readonly/hideWhenEmpty and
-        required/defaultValue are all retired keys there, rejected outright
-        by the strict schema."""
+        mechanic (active) — display/readonly/hideWhenEmpty, required/
+        defaultValue and sequence are all retired keys there, rejected
+        outright by the strict schema."""
         with pytest.raises(ValidationError, match=key):
             validate_payload(
                 "class.property.set",
-                {"classId": UUID_1, "propertySchemaId": UUID_2, key: "bullet" if key == "display" else True},
+                {
+                    "classId": UUID_1,
+                    "propertySchemaId": UUID_2,
+                    key: ("bullet" if key == "display" else 1 if key == "sequence" else True),
+                },
             )
 
     def test_schema_render_contract_flags_parse_on_create_and_update(self) -> None:

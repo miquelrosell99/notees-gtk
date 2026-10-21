@@ -357,7 +357,6 @@ class TaskFamilySeedEntry:
     # the amended time-of-day law (SCHEMA.md "Datetime") — values may carry a
     # wall-clock ``time`` beside the day-node anchor; full-day stays default.
     type: Literal["select", "datetime"]
-    sequence: int
     options: tuple[TaskSeedOption, ...] = ()
     # the value-display position rides
     # the SCHEMA entry the ensure authors — only the Status schema defaults
@@ -369,8 +368,9 @@ class TaskFamilySeedEntry:
 #: The task-family seed-ensure manifest: six schemas + their task-class
 #: bindings, authored idempotently by the store applier when the ``tasks``
 #: feature enables (closes the "task property schemas never authored" gap).
-#: Fixed ids end to end (schema + option uuids
-#: above); ``sequence`` is the task-panel display order. The Status options
+#: Fixed ids end to end (schema + option uuids above). Binding rows carry
+#: NO order (``sequence`` retired from the binding;
+#: class panels render alphabetically by property name). The Status options
 #: carry the designed glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
 #: circle-family MDI icons with a distinct color each, so a task's state
 #: reads at a glance from the block bullet. ``display`` lands on
@@ -380,7 +380,6 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         "taskStatus",
         "Status",
         "select",
-        1,
         (
             TaskSeedOption(TASK_STATUS_OPTION_UUIDS["backlog"], "Backlog", "mdiCircleOutline", "gray"),
             TaskSeedOption(TASK_STATUS_OPTION_UUIDS["pending"], "Pending", "mdiCircle", "yellow"),
@@ -391,13 +390,12 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
         ),
         display="bullet",
     ),
-    TaskFamilySeedEntry("taskScheduled", "Scheduled", "datetime", 2),
-    TaskFamilySeedEntry("taskDeadline", "Deadline", "datetime", 3),
+    TaskFamilySeedEntry("taskScheduled", "Scheduled", "datetime"),
+    TaskFamilySeedEntry("taskDeadline", "Deadline", "datetime"),
     TaskFamilySeedEntry(
         "taskPriority",
         "Priority",
         "select",
-        4,
         (
             TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["low"], "Low"),
             TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["medium"], "Medium"),
@@ -405,10 +403,10 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
             TaskSeedOption(TASK_PRIORITY_OPTION_UUIDS["urgent"], "Urgent"),
         ),
     ),
-    TaskFamilySeedEntry("taskClosedDate", "Closed", "datetime", 5),
+    TaskFamilySeedEntry("taskClosedDate", "Closed", "datetime"),
     # Migrated recurrence rides as a plain select (no engine executes it);
     # authored optionless until the recurrence spec lands.
-    TaskFamilySeedEntry("taskRecurrence", "Recurrence", "select", 6),
+    TaskFamilySeedEntry("taskRecurrence", "Recurrence", "select"),
 )
 
 

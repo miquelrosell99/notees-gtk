@@ -6,6 +6,31 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-21
+
+- **feat(protocol,store): the binding-sequence retirement — class properties
+  render as a PURE ALPHABETICAL list everywhere (main-repo lockstep, a continuation of the property-definition surfaces
+  batch).** `class.property.set` is now STRICTLY `{classId, propertySchemaId,
+  active?}` — `sequence` retires outright: panel order no longer exists to
+  configure (class panels render alphabetically by property name, a read-time
+  derivation), and the binding keeps only the `active` soft-unbind flag. The
+  strict payload schemas reject the retired key like any unknown key (the
+  payload tests parametrize the rejection). `SCHEMA_VERSION` 17 → 18 (web
+  schema v25→v26 parity) — `class_property` rebuilds WITHOUT the `sequence`
+  column (the historical v12/v17 migration views drop it too; no data
+  backfill — order metadata is discarded); the `EffectiveProperty` read model
+  drops the field and orders PURE ALPHABETICALLY by property name, unbound
+  authored rows last, `(idx, element_id)` tiebreak. `applyClassPropertySet`
+  is `active`-only; the task-family seed-ensure binds sequence-less (the
+  `TaskFamilySeedEntry.sequence` member is gone). Fixtures: the corpus
+  re-vendors from the main repo (36 files byte-identical, sha256 verified —
+  `class-property-defaults`/`class-property-active`/`class-unassign`/
+  `property-schema-scope` re-encoded to the active-only binding).
+  **Verification:** `uv run pytest` 854 passed / 4 skipped; `ruff check` +
+  `mypy src` clean. The live log rewrite
+  (`migrate-drop-binding-sequence.mts`) runs in the monorepo after this port
+  (the fixture gate law).
+
 ## 2026-10-20
 
 - **feat(protocol,store): the binding-defaults batch — `required` retires,

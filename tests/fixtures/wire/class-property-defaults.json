@@ -1,5 +1,5 @@
 {
-  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27; the default moved to the schema). A property schema 'priority' carries ONE GLOBAL default 'medium' (the Logseq shape — defaults are schema-level, not per-class). Classes Task and Project BIND the schema (sequence only — a binding is just 'this class lists the property, in this order'). A node created with Task reads the schema default; assigning Project too aggregates both bindings — the default is still the schema's single 'medium' (per-class default conflicts no longer exist). Unsetting Task's binding leaves Project's, so the node STILL reads 'medium'; unsetting both removes the property from the node's effective list entirely (no binding, no derived default). Defaults are a DERIVED read model: no property_value rows are ever written for them.",
+  "comment": "Class properties — bindings, defaults, aggregation (SCHEMA.md, NORMATIVE 2026-09-27; the default moved to the schema). A property schema 'priority' carries ONE GLOBAL default 'medium' (the Logseq shape — defaults are schema-level, not per-class). Classes Task and Project BIND the schema (active-only — a binding is just 'this class lists the property'; class panels render alphabetically by property name). A node created with Task reads the schema default; assigning Project too aggregates both bindings — the default is still the schema's single 'medium' (per-class default conflicts no longer exist). Unsetting Task's binding leaves Project's, so the node STILL reads 'medium'; unsetting both removes the property from the node's effective list entirely (no binding, no derived default). Defaults are a DERIVED read model: no property_value rows are ever written for them.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000111",
@@ -137,8 +137,7 @@
       "timestamp": "2026-09-24T12:00:11.400Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000302",
-        "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
-        "sequence": 0
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
       }
     },
     {
@@ -159,8 +158,7 @@
       "timestamp": "2026-09-24T12:00:11.500Z",
       "payload": {
         "classId": "0192a000-0000-7000-8000-000000000303",
-        "propertySchemaId": "0192a000-0000-7000-8000-000000000301",
-        "sequence": 0
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000301"
       }
     },
     {

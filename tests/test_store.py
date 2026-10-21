@@ -404,10 +404,9 @@ class TestMigrations:
         defaults, zero backfill) and class_property is REBUILT without the
         retired binding columns (readonly/hide_when_empty pre-v3.1.0, display
         the v11 experiment): the surviving per-class columns
-        (sequence, required, default_value, active + LWW causality) keep
-        their rows verbatim. (v17 then retires required/default_value too —
- so the upgraded table carries only
-        sequence + active.)"""
+        (required, default_value, active + LWW causality) keep their rows
+        verbatim. (v17 then retires required/default_value — and v18 retires sequence — 2026-10-21 — so the upgraded
+        table carries only active.)"""
         path = tmp_path / "v11.db"
         instance = LocalStore(path)
         instance.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
@@ -455,19 +454,20 @@ class TestMigrations:
             binding_columns = {row[1] for row in raw.execute("PRAGMA table_info(class_property)")}
             schema_columns = {row[1] for row in raw.execute("PRAGMA table_info(property_schema)")}
             rows = raw.execute(
-                "SELECT sequence, active FROM class_property"
+                "SELECT active FROM class_property"
                 f" WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'"
             ).fetchall()
         assert version == SCHEMA_VERSION
         # The binding table carries only the per-class mechanics now — v12
-        # retired the render contracts, v17 retired required/default_value.
-        assert {"readonly", "hide_when_empty", "display", "required", "default_value"} & binding_columns == set()
-        assert {"sequence", "active"} <= binding_columns
+        # retired the render contracts, v17 retired required/default_value,
+        # v18 retired sequence.
+        assert {"readonly", "hide_when_empty", "display", "required", "default_value", "sequence"} & binding_columns == set()
+        assert "active" in binding_columns
         # The schema table gained the render contracts and the default column.
         assert {"display", "readonly", "hide_when_empty", "default_value"} <= schema_columns
-        # The pre-batch row keeps its data — sequence/active survive the two
-        # rebuilds, the retired columns are gone with the columns.
-        assert rows == [(3, 1)]
+        # The pre-batch row keeps its active flag across the rebuilds; the
+        # retired columns are gone with the columns.
+        assert rows == [(1,)]
         # The migrated store takes new schema-side display writes like a
         # fresh v12 one.
         upgraded.apply_remote(
@@ -1580,25 +1580,25 @@ class TestClassOps:
 
 class TestClassPropertyBindings:
     def test_set_inserts_row_and_patch_keeps_omitted_fields(self, store: LocalStore) -> None:
-        """The binding row is sequence/active ONLY;
+        """The binding row is ACTIVE ONLY (required/defaultValue left the binding, sequence retired outright);
         the default rides the SCHEMA row — the last default write wins
         across classes (one global default per property)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 0},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1")},
                 hlc=(2, 0),
             )
         )
         assert raw_rows(
             store,
-            "SELECT sequence, active, hlc_physical"
+            "SELECT active, hlc_physical"
             f" FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [(0, 1, 2)]
+        ) == [(1, 2)]
 
-        # Patch only the sequence: the binding patches; the schema default
-        # survives untouched.
+        # Patch only the active flag: the binding patches; the schema
+        # default survives untouched.
         store.apply_remote(
             make_env(
                 "propertySchema.create",
@@ -1612,15 +1612,15 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 2},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "active": False},
                 hlc=(5, 0),
             )
         )
         assert raw_rows(
             store,
-            "SELECT sequence, active, hlc_physical FROM class_property"
+            "SELECT active, hlc_physical FROM class_property"
             f" WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [(2, 1, 5)]
+        ) == [(0, 5)]
         assert raw_rows(store, f"SELECT default_value FROM property_schema WHERE id = '{uid('ps-1')}'") == [('"low"',)]
 
     def test_stale_set_dropped_by_row_lww(self, store: LocalStore) -> None:
@@ -1628,7 +1628,7 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 3},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "active": False},
                 hlc=(3, 0),
             )
         )
@@ -1636,7 +1636,7 @@ class TestClassPropertyBindings:
             store.apply_remote(
                 make_env(
                     "class.property.set",
-                    {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 9},
+                    {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "active": True},
                     hlc=(2, 0),
                 )
             )
@@ -1644,8 +1644,8 @@ class TestClassPropertyBindings:
         )
         assert raw_rows(
             store,
-            f"SELECT sequence FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
-        ) == [(3,)]
+            f"SELECT active FROM class_property WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'",
+        ) == [(0,)]
 
     def test_display_position_is_schema_sourced_on_effective_rows(self, store: LocalStore) -> None:
         """The position is PROPERTY-level — it rides the SCHEMA row
@@ -1672,7 +1672,6 @@ class TestClassPropertyBindings:
                 {
                     "classId": uid("cls-1"),
                     "propertySchemaId": uid("ps-1"),
-                    "sequence": 1,
                 },
                 hlc=(3, 0),
             )
@@ -1771,8 +1770,8 @@ class TestClassPropertyBindings:
 
     def test_inactive_binding_keeps_schema_contracts_on_unbound_authored(self, store: LocalStore) -> None:
         """PC4: an inactive binding never becomes a candidate, so an
-        authored value reads unbound — sequence drops to None (it is
-        binding-sourced; `required` retired outright) — while the schema's render contracts still ride the
+        authored value reads unbound (binding metadata is bound_by-only
+        since `sequence` retired outright) — while the schema's render contracts still ride the
         row (they are PROPERTY-level, unbound values included)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
         store.apply_remote(
@@ -1785,7 +1784,7 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 1},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1")},
                 hlc=(3, 0),
             )
         )
@@ -1814,9 +1813,9 @@ class TestClassPropertyBindings:
         # …the effective read marks the value unbound (binding metadata
         # None) while the schema's display still rides.
         assert [
-            (row.source, row.bound_by, row.sequence, row.display)
+            (row.source, row.bound_by, row.display)
             for row in store.get_effective_properties(member)
-        ] == [("authored", None, None, "bullet")]
+        ] == [("authored", None, "bullet")]
 
     def test_schema_default_keep_vs_clear_via_update(self, store: LocalStore) -> None:
         """The schema default is keep/clear typed:
@@ -1846,7 +1845,7 @@ class TestClassPropertyBindings:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "sequence": 0},
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1")},
                 hlc=(2, 0),
             )
         )
@@ -1869,7 +1868,7 @@ class TestClassUnassign:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": uid("cls-x"), "propertySchemaId": uid("ps-x"), "sequence": 0},
+                {"classId": uid("cls-x"), "propertySchemaId": uid("ps-x")},
                 hlc=(3, 0),
             )
         )
@@ -3040,7 +3039,7 @@ class TestPg4ExtendsAwareBindings:
         """BASE <- MID <- LEAF chain, one text schema bound on each named
         class. The default is SCHEMA-global — set
         once after the bindings; the conflict these tests resolve is the
-        WINNING BINDING (boundBy/sequence), not the value."""
+        WINNING BINDING (boundBy), not the value."""
         store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
         for class_id, name, hlc in [
             (self.BASE, "Base", (2, 0)),
@@ -3063,7 +3062,7 @@ class TestPg4ExtendsAwareBindings:
                     "class.property.set",
                     class_id,
                     hlc=(8 + i, 0),
-                    **{"propertySchemaId": self.SCHEMA, "sequence": i},
+                    **{"propertySchemaId": self.SCHEMA},
                 )
             )
         store.apply_remote(
@@ -3090,7 +3089,7 @@ class TestPg4ExtendsAwareBindings:
         self._chain_store(store, [self.BASE, self.MID])
         # A node carrying MID itself: the own binding (distance 0) wins over
         # BASE's inherited row (distance 1) — the schema default is the same
-        # global value either way; the winner supplies boundBy/sequence.
+        # global value either way; the winner supplies boundBy.
         self._assign(store, NODE, self.MID, (20, 0))
         winner = next(row for row in store.get_effective_properties(NODE) if row.property_schema_id == self.SCHEMA)
         assert (winner.value, winner.source, winner.bound_by) == ("dft", "default", self.MID)
@@ -3126,7 +3125,7 @@ class TestPg4ExtendsAwareBindings:
                 "class.property.set",
                 self.MID,
                 hlc=(9, 0),
-                **{"propertySchemaId": self.SCHEMA, "sequence": 0},
+                **{"propertySchemaId": self.SCHEMA},
             )
         )
         store.apply_remote(
@@ -3134,7 +3133,7 @@ class TestPg4ExtendsAwareBindings:
                 "class.property.set",
                 self.MID_B,
                 hlc=(9, 0),
-                **{"propertySchemaId": self.SCHEMA, "sequence": 0},
+                **{"propertySchemaId": self.SCHEMA},
             )
         )
         # The schema's single global default — the same value everywhere.
@@ -3160,9 +3159,9 @@ class TestPg4ExtendsAwareBindings:
 
     def test_inherited_binding_metadata_surfaces_on_authored_rows(self, store: LocalStore) -> None:
         self._chain_store(store, [self.BASE])
-        # Readonly is PROPERTY-level and rides the SCHEMA; sequence/boundBy
-        # are binding-sourced — the authored row surfaces both, boundBy
-        # naming the ancestor whose binding won. (`required` retired from
+        # Readonly is PROPERTY-level and rides the SCHEMA; boundBy is
+        # binding-sourced — the authored row surfaces it, naming the
+        # ancestor whose binding won. (`required`/`sequence` retired from
         # the binding outright.)
         store.apply_remote(
             make_env(
@@ -3177,7 +3176,6 @@ class TestPg4ExtendsAwareBindings:
         assert row.value == "mine"
         assert row.source == "authored"
         assert row.bound_by == self.BASE
-        assert row.sequence == 0
         assert row.readonly is True
 
 
@@ -3705,7 +3703,7 @@ class TestPc2TypedDefaults:
         schema_id = uid("pc2-number")
         self._bound_store(store, "number", schema_id)
         store.apply_remote(
-            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id, "sequence": 0})
+            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id})
         )
         store.apply_remote(
             make_env("propertySchema.update", {"propertySchemaId": schema_id, "defaultValue": 7}, hlc=(5, 0))
@@ -3719,7 +3717,7 @@ class TestPc2TypedDefaults:
         schema_id = uid("pc2-drift")
         self._bound_store(store, "number", schema_id)
         store.apply_remote(
-            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id, "sequence": 0})
+            class_env("class.property.set", self.CLS, hlc=(4, 0), **{"propertySchemaId": schema_id})
         )
         store.apply_remote(
             make_env("propertySchema.update", {"propertySchemaId": schema_id, "defaultValue": 7}, hlc=(5, 0))
@@ -3987,7 +3985,7 @@ class TestAssetPropertyType:
                     "class.property.set",
                     self.SOURCE_CLASS,
                     hlc=(6, 0),
-                    **{"propertySchemaId": self.SCHEMA, "sequence": 0},
+                    **{"propertySchemaId": self.SCHEMA},
                 )
             )
             is True
@@ -4070,7 +4068,7 @@ class TestAssetPropertyType:
                     "class.property.set",
                     self.SOURCE_CLASS,
                     hlc=(6, 0),
-                    **{"propertySchemaId": self.ATTACHMENTS, "sequence": 0},
+                    **{"propertySchemaId": self.ATTACHMENTS},
                 )
             )
             is True
@@ -4434,7 +4432,7 @@ class TestPropertyScope:
             store.apply_remote(
                 make_env(
                     "class.property.set",
-                    {"classId": foreign, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                    {"classId": foreign, "propertySchemaId": self.SCHEMA},
                     hlc=(9, 0),
                 )
             )
@@ -4455,7 +4453,7 @@ class TestPropertyScope:
             store.apply_remote(
                 make_env(
                     "class.property.set",
-                    {"classId": self.CLASS_B, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                    {"classId": self.CLASS_B, "propertySchemaId": self.SCHEMA},
                     hlc=(11, 0),
                 )
             )
@@ -4480,7 +4478,7 @@ class TestPropertyScope:
         store.apply_remote(
             make_env(
                 "class.property.set",
-                {"classId": self.CLASS_A, "propertySchemaId": self.SCHEMA, "sequence": 0},
+                {"classId": self.CLASS_A, "propertySchemaId": self.SCHEMA},
                 hlc=(9, 0),
             )
         )

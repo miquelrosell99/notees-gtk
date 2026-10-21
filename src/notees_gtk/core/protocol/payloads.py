@@ -308,8 +308,7 @@ class ClassSetExtendsPayload(_Strict):
 
 class ClassPropertySetPayload(_Strict):
     """The class → property-schema binding upsert — the genuinely PER-CLASS
-    mechanics only: panel order (``sequence``) and the class's soft-unbind
-    (``active``).
+    mechanic left: the class's soft-unbind (``active``).
 
     (the property-definition surfaces batch):
     ``required`` and ``defaultValue`` RETIRE from the binding — ``required``
@@ -318,14 +317,19 @@ class ClassPropertySetPayload(_Strict):
     enforcement) and ``defaultValue`` MOVED to the property schema
     (``propertySchema.create/update``) — ONE global default per property,
     the Logseq shape. The strict schema rejects both keys like any retired
-    key. A binding answers "does THIS class list the property, in what
-    order"; a schema answers "what the property is, how it behaves, and
-    what value it starts with everywhere".
+    key. A binding answers "does THIS class list the property"; a schema
+    answers "what the property is, how it behaves, and what value it starts
+    with everywhere".
+
+   ``sequence`` RETIRES too — class properties
+    render as a PURE ALPHABETICAL list everywhere (by property name, at read
+    time), so panel order no longer exists to configure. The strict schema
+    rejects the key outright; live logs rewrite in place via the monorepo's
+    scripts/migrate-drop-binding-sequence.mts.
     """
 
     class_id: UUID = Field(alias="classId")
     property_schema_id: UUID = Field(alias="propertySchemaId")
-    sequence: int | None = None
     # PC4: the soft-unbind flag — an inactive binding stops
     # contributing to the effective read while the ROW survives. Omitted =
     # keep the stored flag (the patch convention). zod parity: an explicit
