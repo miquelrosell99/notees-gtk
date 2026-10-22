@@ -77,14 +77,20 @@ class HelloInfo:
     restore_epoch: int
 
 
-def build_ws_url(base_url: str, workspace_id: str, token: str) -> str:
-    """Build the relay WS URL from the REST base URL (``http(s)`` → ``ws(s)``)."""
+def build_ws_url(base_url: str, workspace_id: str) -> str:
+    """Build the relay WS URL from the REST base URL (``http(s)`` → ``ws(s)``).
+
+    The URL carries NO credential: the relay retires the ``?token=`` query
+    fallback (WIRE.md), so auth rides the ``Authorization: Bearer``
+    upgrade header instead (a bearer token in a URL lands in every log
+    along the path).
+    """
     base = base_url.rstrip("/")
     if base.startswith("https://"):
         base = "wss://" + base[len("https://") :]
     elif base.startswith("http://"):
         base = "ws://" + base[len("http://") :]
-    return f"{base}/api/relay/v2/ws/{quote(workspace_id, safe='')}?token={quote(token, safe='')}"
+    return f"{base}/api/relay/v2/ws/{quote(workspace_id, safe='')}"
 
 
 class RealtimeClient:
@@ -93,8 +99,10 @@ class RealtimeClient:
     Args:
         client: REST client supplying the base URL and the WS credential
             (:meth:`NoteesClient.ws_token` — the API key, or the bearer token
-            as fallback). The token is REQUIRED: without a credential the
-            relay rejects the handshake.
+            as fallback), sent as the ``Authorization: Bearer`` upgrade
+            header (the ``?token=`` query fallback is retired; WIRE.md). The
+            credential is REQUIRED: without one the relay rejects the
+            handshake.
         workspace_id: Workspace to subscribe to.
         on_hello: Called with :class:`HelloInfo` on every (re)connect, after
             the framing version validated.
@@ -124,7 +132,10 @@ class RealtimeClient:
         token = client.ws_token()
         if not token:
             raise ValueError("RealtimeClient: no API key or bearer token available for the WS handshake")
-        self._url = build_ws_url(client.base_url, workspace_id, token)
+        self._url = build_ws_url(client.base_url, workspace_id)
+        # The credential rides the upgrade header, never the URL (WIRE.md):
+        # a bearer token in a URL lands in every log along the path.
+        self._auth_headers = {"Authorization": f"Bearer {token}"}
         self._on_hello_cb = on_hello
         self._on_ops_cb = on_ops
         self._on_ack_cb = on_ack
@@ -213,7 +224,7 @@ class RealtimeClient:
         """Connect → read frames → dispatch, reconnecting on abnormal closes."""
         while not self._stopped.is_set() and not self._failed:
             try:
-                with connect(self._url) as conn:
+                with connect(self._url, additional_headers=self._auth_headers) as conn:
                     with self._send_lock:
                         self._conn = conn
                     while True:
