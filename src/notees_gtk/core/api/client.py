@@ -180,7 +180,8 @@ class NoteesClient:
         self._client.headers["Authorization"] = f"Bearer {result.token}"
         return result
     def ws_token(self) -> str | None:
-        """Return the credential for the WebSocket ``?token=`` parameter.
+        """Return the credential for the WebSocket ``Authorization: Bearer``
+        upgrade header.
 
         Prefers the API key (v2 relay auth); falls back to the bearer token
         from login. ``None`` when the client is unauthenticated.

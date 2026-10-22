@@ -52,16 +52,59 @@ def make_client(stub: WsRelayStub, **callbacks: Any) -> RealtimeClient:
 
 class TestUrlBuilding:
     def test_http_becomes_ws(self) -> None:
-        url = build_ws_url("http://notees.test:8001/", WORKSPACE_ID, "tok en")
-        assert url == "ws://notees.test:8001/api/relay/v2/ws/ws-a?token=tok%20en"
+        url = build_ws_url("http://notees.test:8001/", WORKSPACE_ID)
+        assert url == "ws://notees.test:8001/api/relay/v2/ws/ws-a"
 
     def test_https_becomes_wss(self) -> None:
-        url = build_ws_url("https://notees.test", WORKSPACE_ID, "k")
-        assert url == "wss://notees.test/api/relay/v2/ws/ws-a?token=k"
+        url = build_ws_url("https://notees.test", WORKSPACE_ID)
+        assert url == "wss://notees.test/api/relay/v2/ws/ws-a"
 
     def test_workspace_id_is_quoted(self) -> None:
-        url = build_ws_url("http://h", "ws/odd", "k")
-        assert url == "ws://h/api/relay/v2/ws/ws%2Fodd?token=k"
+        url = build_ws_url("http://h", "ws/odd")
+        assert url == "ws://h/api/relay/v2/ws/ws%2Fodd"
+
+    def test_url_carries_no_credential(self) -> None:
+        # The relay retires ?token= (WIRE.md): the URL must have no query
+        # string at all — auth rides the Authorization upgrade header.
+        url = build_ws_url("http://notees.test:8001", WORKSPACE_ID)
+        assert "?" not in url
+        assert "token" not in url
+
+
+class TestAuthHeader:
+    def test_upgrade_carries_authorization_bearer(self) -> None:
+        seen: list[str | None] = []
+
+        def on_connect(conn: ServerConnection, _index: int) -> None:
+            seen.append(conn.request.headers.get("Authorization"))
+            conn.send(json.dumps(HELLO))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            client = make_client(stub)
+            client.start()
+            try:
+                assert wait_until(lambda: len(seen) == 1)
+                assert seen == ["Bearer secret-key"]
+            finally:
+                client.stop()
+
+    def test_reconnect_resends_the_authorization_header(self) -> None:
+        seen: list[str | None] = []
+
+        def on_connect(conn: ServerConnection, _index: int) -> None:
+            seen.append(conn.request.headers.get("Authorization"))
+            conn.send(json.dumps(HELLO))
+
+        with WsRelayStub(on_connect=on_connect) as stub:
+            client = make_client(stub)
+            client.start()
+            try:
+                assert wait_until(lambda: stub.connection_count() == 1)
+                stub.close_all(code=1011)
+                assert wait_until(lambda: stub.connection_count() == 2)
+                assert seen == ["Bearer secret-key", "Bearer secret-key"]
+            finally:
+                client.stop()
 
 
 class TestLifecycle:

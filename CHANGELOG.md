@@ -8,6 +8,42 @@ history.
 
 ## 2026-10-22
 
+- **feat(protocol): WS auth moves to the Authorization header — the
+  `?token=` credential query param retires (main-repo lockstep, WIRE.md;
+  GTK lockstep port).** The relay now rejects `?token=` credential query
+  params on the entire API (401): a bearer token in a URL lands in every
+  log along the path. The realtime client changes shape accordingly
+  (`core/api/ws.py`): `build_ws_url(base_url, workspace_id)` loses its
+  `token` parameter entirely and returns a bare
+  `/api/relay/v2/ws/{workspaceId}` URL with no query string;
+  `RealtimeClient.__init__` keeps its credential-required guard
+  (`NoteesClient.ws_token()` — API key, bearer token fallback) but stores
+  the value as an upgrade header, `{"Authorization": "Bearer <credential>"}`,
+  passed to `websockets.sync.client.connect(..., additional_headers=...)`
+  (websockets ≥14 kwarg; the pinned 17.1 in `uv.lock` supports it), so
+  every connect — including backoff reconnects, which reuse the stored
+  header since the credential is stable per client lifetime — admits auth
+  per WIRE.md's native-client path. `NoteesClient.ws_token()`'s docstring
+  (`core/api/client.py`) now describes the header, not the query param.
+  The REST surface already carried credentials in headers and needed no
+  change; a repo-wide sweep confirmed no other query-string credential
+  use. Tests (`tests/test_ws_client.py`): the URL-building class asserts
+  the bare URL (plus a dedicated no-credential test — no `?`, no `token`
+  in the string), and a new `TestAuthHeader` class asserts against the
+  in-process `WsRelayStub` that the server sees `Authorization: Bearer
+  secret-key` on the initial connect AND on a reconnect after an abnormal
+  close. **Verification:** `uv run pytest` 873 passed / 4 skipped; `ruff
+  check` + `mypy src` clean; the live end-to-end module against the real
+  monorepo server (`NOTEES_V2_ROOT=/root/projects/notees`, dist built at
+  `apps/server/dist`) passes 3/3 — its WS acceleration step (Device B
+  subscribes, Device A pushes, the ops frame arrives over the live
+  socket) now handshakes with the header against the server that rejects
+  `?token=`. No fixture/wire/envelope changes (auth transport only), so
+  the fixture corpus is untouched; Flutter convergence is the third leg
+  of the lockstep law.
+
+## 2026-10-22
+
 - **feat(protocol,store): the system-extends lock — a system class's extends
   mapping is frozen to the seeded set (main-repo lockstep).** `class.setExtends` on a SYSTEM class now applies only when
   the payload's `parentClassIds` set EQUALS the seeded parent set (the
