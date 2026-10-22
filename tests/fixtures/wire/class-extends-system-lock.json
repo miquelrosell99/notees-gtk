@@ -1,0 +1,197 @@
+{
+  "comment": "System-extends lock (SCHEMA.md: a system class's extends mapping is frozen to the seeded set — the feature-toggle cascade and binding inheritance both derive from it). The PREFIX applies cleanly: event and meeting are created at their fixed seed uuids, a USER class may extend a system base (conference talk extends meeting), and an idempotent re-issue of the seeded edge (meeting extends [event], the seed/ensure convergence path) applies. The FINAL THREE envelopes each deviate and MUST throw SystemExtendsLockError on apply: detaching meeting's seeded parent, adding an extra parent to meeting, and adding a parent to event (a system class with no seeded parents is frozen to the empty set). Kept as its own fixture — and excluded from the store suite's all-fixtures replay set — precisely because applying its tail must throw.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000110",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200006900,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000040"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:06.900Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000040",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Event"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000111",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000039"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.000Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000039",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Meeting"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000112",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e1"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000e1",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Conference Talk"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000113",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000e1"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000e1",
+        "parentClassIds": [
+          "00000000-0000-0000-0001-000000000039"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000114",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000039"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.300Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000039",
+        "parentClassIds": [
+          "00000000-0000-0000-0001-000000000040"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000115",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000039"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.400Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000039",
+        "parentClassIds": []
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000116",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000039"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.500Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000039",
+        "parentClassIds": [
+          "00000000-0000-7000-8000-0000000000e1",
+          "00000000-0000-0000-0001-000000000040"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000117",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000040"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.600Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000040",
+        "parentClassIds": [
+          "00000000-0000-0000-0001-000000000039"
+        ]
+      }
+    }
+  ]
+}

@@ -65,6 +65,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-delete-managed.json",
     "wire/class-extends-cycle.json",
     "wire/class-extends-m2m.json",
+    "wire/class-extends-system-lock.json",
     "wire/class-link-assertion.json",
     "wire/class-link.json",
     "wire/class-property-active.json",

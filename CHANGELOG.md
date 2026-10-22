@@ -6,6 +6,39 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-22
+
+- **feat(protocol,store): the system-extends lock — a system class's extends
+  mapping is frozen to the seeded set (main-repo lockstep, owner ruling
+  2026-10-22).** `class.setExtends` on a SYSTEM class now applies only when
+  the payload's `parentClassIds` set EQUALS the seeded parent set (the
+  seed/ensure re-issue convergence path); every deviation — detaching a
+  seeded parent, adding an extra parent, attaching parents to a system class
+  with none — fails loud with a dedicated `SystemExtendsLockError`
+  (`data/errors.py`) and is never applied. The guard sits in
+  `_apply_class_set_extends` after the class-node existence check and before
+  the parent existence/cycle checks (`packages/store/src/appliers.ts`
+  `applyClassSetExtends` parity), set-compared and order-insensitive. The
+  lock authority is `SYSTEM_CLASS_EXTENDS_IDS` + `is_system_class_id` in
+  `core/protocol/features.py` (`packages/domain/src/seeds.ts`
+  `SYSTEM_CLASS_EXTENDS_IDS` / `isSystemClassId` parity) — the static map now
+  carries the FULL seeds.ts `SYSTEM_CLASS_UUIDS` block (44 fixed ids; it was
+  the family-relevant subset, but the lock needs every fixed id — a system
+  class without seeded parents is frozen to the empty set), with
+  `SYSTEM_CLASS_EXTENDS` unchanged (already full parity). User classes stay
+  freely extensible, including onto system bases. The vendored fixture
+  `class-extends-system-lock.json` (sha256-identical to the monorepo,
+  verified at vendor time) pins the accepting prefix (user class extends
+  `meeting`; the seeded `meeting → [event]` re-issue) and the rejecting
+  tail; it joins `REPLAY_EXCLUDED` in the store-fixture suite with a
+  dedicated `TestSystemExtendsLockFixture` (prefix rows, per-envelope throw,
+  unchanged `class_extends` after the rejects) and the wire list in
+  `test_fixtures.py` (36 → 37 fixture files). **Verification:** `uv run
+  pytest` 870 passed / 4 skipped; `ruff check` + `mypy src` clean. No
+  `SCHEMA_VERSION` bump (write-time guard only — the stored schema is
+  unchanged). Flutter convergence remains open (the third leg of the
+  lockstep law).
+
 ## 2026-10-21
 
 - **feat(ui,protocol): the `external_link` content token retires — links are

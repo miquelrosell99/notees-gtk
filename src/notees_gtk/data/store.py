@@ -87,6 +87,7 @@ from notees_gtk.core.protocol.dates import (
     parse_date_node_id,
 )
 from notees_gtk.core.protocol.features import (
+    SYSTEM_CLASS_EXTENDS_IDS,
     SYSTEM_CLASS_ICONS_TASK,
     TASK_FAMILY_SEED,
     WorkspaceFeature,
@@ -104,6 +105,7 @@ from notees_gtk.data.errors import (
     MoveGuardError,
     NotFoundError,
     PropertyValueShapeError,
+    SystemExtendsLockError,
     UnsupportedCarrierError,
 )
 
@@ -2265,6 +2267,28 @@ class LocalStore:
         class_id = str(payload["classId"])
         parent_ids = [str(parent) for parent in (payload.get("parentClassIds") or [])]
         self._require_node(env.workspace_id, class_id, op_type)
+
+        # System-extends lock (SCHEMA.md "Class properties", owner ruling
+        # 2026-10-22; packages/store/src/appliers.ts ``applyClassSetExtends``
+        # parity): a system class's extends mapping is seeded platform
+        # structure — the feature-toggle cascade (system_class_ancestors)
+        # and binding inheritance (the class_extends walk) both derive from
+        # it. The payload's parent set must EQUAL the seeded set (compared
+        # as sets — the seed/ensure re-issue convergence path); any
+        # deviation fails loud and is never applied. System classes without
+        # seeded parents are frozen to the empty set. User classes stay
+        # freely extensible, including onto system bases.
+        if class_id in SYSTEM_CLASS_EXTENDS_IDS:
+            seeded_parents = SYSTEM_CLASS_EXTENDS_IDS[class_id]
+            if len(parent_ids) != len(seeded_parents) or any(parent not in seeded_parents for parent in parent_ids):
+                def fmt(ids: list[str] | tuple[str, ...]) -> str:
+                    return ", ".join(sorted(ids))
+
+                raise SystemExtendsLockError(
+                    f"{op_type}: system class {class_id} has a frozen extends mapping; "
+                    f"payload parents [{fmt(parent_ids)}] deviate from the seeded set [{fmt(seeded_parents)}]",
+                    op_type,
+                )
 
         for parent_id in parent_ids:
             self._require_node(env.workspace_id, parent_id, op_type)

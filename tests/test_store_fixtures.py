@@ -22,7 +22,12 @@ import pytest
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
-from notees_gtk.data.errors import CycleError, MoveGuardError, PropertyValueShapeError
+from notees_gtk.data.errors import (
+    CycleError,
+    MoveGuardError,
+    PropertyValueShapeError,
+    SystemExtendsLockError,
+)
 from notees_gtk.data.store import (
     EffectiveProperty,
     EffectivePropertySchema,
@@ -32,14 +37,17 @@ from notees_gtk.data.store import (
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 
 #: Fixtures whose application must THROW — never part of the replay/determinism
-#: sets (class-extends-cycle closes a cycle; is-embedded-parent-page claims the
-#: standalone role under an embedded block, the parent-page condition;
+#: sets (class-extends-cycle closes a cycle; class-extends-system-lock
+#: deviates a system class's frozen seeded extends mapping;
+#: is-embedded-parent-page claims the standalone role under an embedded
+#: block, the parent-page condition;
 #: property-validation-rules pins its reject tail — below-min/above-max,
 #: pattern rejects, one bad multi element, one uncompilable pattern — after
 #: an accepting prefix, all applied deliberately in their own tests — the
 #: store.test.ts REPLAY_EXCLUDED_FIXTURES parity).
 REPLAY_EXCLUDED = {
     "class-extends-cycle.json",
+    "class-extends-system-lock.json",
     "is-embedded-parent-page.json",
     "property-validation-rules.json",
 }
@@ -1061,6 +1069,67 @@ class TestCycleFixture:
         # And the thrown envelope ids were not consumed: a retry after a wipe
         # re-applies the prefix (the throw rolled the dedupe record back too).
         assert raw(store, "SELECT COUNT(*) FROM relay_operations") == [(3,)]
+
+
+class TestSystemExtendsLockFixture:
+    """Replay of class-extends-system-lock.json (the system-extends lock,
+    owner ruling 2026-10-22): a system class's extends mapping is frozen to
+    the seeded set — only an idempotent re-issue applies; every deviation
+    fails loud with SystemExtendsLockError and rolls back. Mirrors the
+    monorepo store test."""
+
+    EVENT = "00000000-0000-0000-0001-000000000040"
+    MEETING = "00000000-0000-0000-0001-000000000039"
+    USER_CLASS = "0192a000-0000-7000-8000-0000000000e1"
+
+    def test_lock_tail_throws_and_rolls_back(self, store: LocalStore) -> None:
+        (
+            create_event,
+            create_meeting,
+            create_user_class,
+            user_extends_meeting,
+            meeting_reissue,
+            meeting_detach,
+            meeting_extra_parent,
+            event_gains_parent,
+        ) = (RelayEnvelope.model_validate(item) for item in load_fixture("class-extends-system-lock.json"))
+        # The PREFIX applies cleanly: user classes extend system bases, and an
+        # idempotent re-issue of the seeded edge (the seed/ensure convergence
+        # path) applies.
+        assert store.apply_remote(create_event) is True
+        assert store.apply_remote(create_meeting) is True
+        assert store.apply_remote(create_user_class) is True
+        assert store.apply_remote(user_extends_meeting) is True
+        assert store.apply_remote(meeting_reissue) is True
+        assert raw(
+            store,
+            "SELECT parent_class_id FROM class_extends WHERE class_id = ? ORDER BY parent_class_id",
+            (self.USER_CLASS,),
+        ) == [(self.MEETING,)]
+        assert raw(
+            store,
+            "SELECT parent_class_id FROM class_extends WHERE class_id = ? ORDER BY parent_class_id",
+            (self.MEETING,),
+        ) == [(self.EVENT,)]
+
+        # Detaching meeting's seeded parent, adding an extra parent to
+        # meeting, and adding a parent to event (no seeded parents — frozen
+        # to empty) each fail loud and roll back.
+        with pytest.raises(SystemExtendsLockError):
+            store.apply_remote(meeting_detach)
+        with pytest.raises(SystemExtendsLockError):
+            store.apply_remote(meeting_extra_parent)
+        with pytest.raises(SystemExtendsLockError):
+            store.apply_remote(event_gains_parent)
+
+        # The rejected writes left the derived edges exactly at the prefix
+        # state.
+        assert raw(
+            store,
+            "SELECT parent_class_id FROM class_extends WHERE class_id = ? ORDER BY parent_class_id",
+            (self.EVENT,),
+        ) == []
+        assert raw(store, "SELECT COUNT(*) FROM class_extends") == [(2,)]
 
 
 class TestIsEmbeddedParentPageFixture:
