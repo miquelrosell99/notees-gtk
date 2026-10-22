@@ -24,6 +24,7 @@ from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.errors import (
     CycleError,
+    LockedSystemClassError,
     MoveGuardError,
     PropertyValueShapeError,
     SystemExtendsLockError,
@@ -43,12 +44,16 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 #: block, the parent-page condition;
 #: property-validation-rules pins its reject tail — below-min/above-max,
 #: pattern rejects, one bad multi element, one uncompilable pattern — after
-#: an accepting prefix, all applied deliberately in their own tests — the
+#: an accepting prefix, all applied deliberately in their own tests;
+#: object-delete-class-routing pins the locked-system-class delete arm
+#: (LockedSystemClassError) after its accepting prefix — the arms are
+#: asserted deliberately in the routing suite below — the
 #: store.test.ts REPLAY_EXCLUDED_FIXTURES parity).
 REPLAY_EXCLUDED = {
     "class-extends-cycle.json",
     "class-extends-system-lock.json",
     "is-embedded-parent-page.json",
+    "object-delete-class-routing.json",
     "property-validation-rules.json",
 }
 
@@ -560,7 +565,8 @@ class TestWorkspaceFeatureSetFixture:
     disables, sources re-enables — and the LOSING laptop enable still ran the
     task-family ensure on every enable payload, so both delivery orders
     converge byte-identical (the archival bits normalize to the current row
-    state on every path)."""
+    state on every path). The journal pair (owner ruling 2026-10-22) rides
+    the same LWW row — surfaces-only, no class bits derived."""
 
     TASKS_DISABLE = "0192a000-0000-7000-8000-000000000602"
     TASK_CLASS = "00000000-0000-0000-0001-000000000012"
@@ -583,6 +589,8 @@ class TestWorkspaceFeatureSetFixture:
             assert instance.is_feature_enabled(WS, "tasks") is False
             assert instance.is_feature_enabled(WS, "events") is False
             assert instance.is_feature_enabled(WS, "sources") is True
+            # The journal off→on pair: the re-enable wins.
+            assert instance.is_feature_enabled(WS, "journal") is True
             # Absent rows read enabled (F2).
             assert instance.is_feature_enabled(WS, "meetings") is True
             assert instance.is_feature_enabled(WS, "persons") is True
@@ -590,7 +598,7 @@ class TestWorkspaceFeatureSetFixture:
             assert raw(
                 instance,
                 "SELECT feature, enabled FROM workspace_feature ORDER BY feature",
-            ) == [("events", 0), ("sources", 1), ("tasks", 0)]
+            ) == [("events", 0), ("journal", 1), ("sources", 1), ("tasks", 0)]
             # The losing enable still authored the family: the task class and
             # its six schemas exist, archived per the winning disable.
             assert raw(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(0,)]
@@ -609,51 +617,102 @@ class TestWorkspaceFeatureSetFixture:
         backward.close()
 
 
-class TestClassDeleteManagedFixture:
-    """Replay of class-delete-managed.json (F4): the
-    class.delete on the managed task BASE class routes to the toggle as a
-    feature-disable — membership pairs survive untouched — and the racing
-    re-enable wins the (workspace, tasks) slot under either delivery
-    order."""
+class TestObjectUpdateActiveFixture:
+    """Replay of object-update-active.json: the archival bit flips
+    ``is_active`` with NO trash row ever (archive is a state, deletion is an
+    event) — archive both probe pages, unarchive one, and exactly the other
+    stays archived (the default read hides it; the unarchived one is back)."""
 
-    TASK_CLASS = "00000000-0000-0000-0001-000000000012"
-    MEMBER = "0192a000-0000-7000-8000-000000000615"
+    PAGE = "0192a000-0000-7000-8000-000000000a20"
+    OTHER = "0192a000-0000-7000-8000-000000000a21"
 
     def _load(self) -> list[RelayEnvelope]:
-        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-delete-managed.json")]
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("object-update-active.json")]
 
-    def test_routed_delete_keeps_memberships_and_the_reenable_wins(self, store: LocalStore) -> None:
+    def test_archive_unarchive_flips_the_bit_without_a_trash_row(self, store: LocalStore) -> None:
         for env in self._load():
             assert store.apply_remote(env) is True
-        assert store.is_feature_enabled(WS, "tasks") is True
-        assert store.node(WS, self.TASK_CLASS).is_active is True
-        assert raw(store, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(1,)]
-        # The membership pair survived the routed delete untouched (F3).
-        assert store.node(WS, self.MEMBER).class_ids == (self.TASK_CLASS,)
+        assert store.node(WS, self.PAGE).is_active is True
+        assert store.node(WS, self.OTHER).is_active is False
+        assert raw(store, "SELECT 1 FROM trash WHERE node_id IN (?, ?)", (self.PAGE, self.OTHER)) == []
+        # The default read hides the archived node; include_inactive sees it.
+        assert [row.id for row in store.nodes(WS)] == [self.PAGE]
+        assert {row.id for row in store.nodes(WS, include_inactive=True)} == {self.PAGE, self.OTHER}
+
+
+class TestObjectDeleteClassRoutingFixture:
+    """Replay of object-delete-class-routing.json: the four class-node
+    delete arms (owner ruling 2026-10-22) — a family BASE (task) routes to
+    the toggle, a LOCKED system class (year) fails loud, another system
+    class (quote) archives instead of trashing, a USER class (Genre) takes
+    the plain trash row. Membership RIDES every arm: the pairs are never
+    touched by class removal."""
+
+    TASK = "00000000-0000-0000-0001-000000000012"
+    YEAR = "00000000-0000-0000-0001-000000000003"
+    QUOTE = "00000000-0000-0000-0001-000000000006"
+    GENRE = "0192a000-0000-7000-8000-000000000a23"
+    TASK_MEMBER = "0192a000-0000-7000-8000-000000000a22"
+    GENRE_MEMBER = "0192a000-0000-7000-8000-000000000a24"
+
+    def _load(self) -> list[dict[str, Any]]:
+        return load_fixture("object-delete-class-routing.json")
+
+    def test_all_four_arms_route_and_membership_survives_each(self, store: LocalStore) -> None:
+        envelopes = [RelayEnvelope.model_validate(item) for item in self._load()]
+        locked_delete = envelopes[5]  # the year delete — arm 1 fails loud
+        for env in [*envelopes[:5], *envelopes[6:]]:
+            assert store.apply_remote(env) is True
+        # Arm 2 — family base (task): routed to the toggle, NOT trashed; the
+        # family archives membership-preserving.
+        assert store.is_feature_enabled(WS, "tasks") is False
+        assert store.node(WS, self.TASK).is_active is False
+        assert raw(store, "SELECT 1 FROM trash WHERE node_id = ?", (self.TASK,)) == []
+        assert store.node(WS, self.TASK_MEMBER).class_ids == (self.TASK,)
+        # Arm 3 — system class (quote): archived, NOT trashed.
+        assert store.node(WS, self.QUOTE).is_active is False
+        assert raw(store, "SELECT 1 FROM trash WHERE node_id = ?", (self.QUOTE,)) == []
+        assert raw(store, "SELECT active FROM class WHERE id = ?", (self.QUOTE,)) == [(0,)]
+        # Arm 4 — user class (Genre): plain trash row, memberships intact.
+        assert store.node(WS, self.GENRE).is_active is False
+        assert raw(store, "SELECT is_permanent FROM trash WHERE node_id = ?", (self.GENRE,)) == [(0,)]
+        assert store.node(WS, self.GENRE_MEMBER).class_ids == (self.GENRE,)
         assert raw(
             store,
             "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
-            (self.MEMBER, self.TASK_CLASS),
+            (self.GENRE_MEMBER, self.GENRE),
         ) == [(1,)]
+        # Arm 1 — the locked delete still throws when applied deliberately.
+        with pytest.raises(LockedSystemClassError, match="locked system class"):
+            store.apply_remote(locked_delete)
+        assert store.node(WS, self.YEAR).is_active is True
 
-    def test_routed_delete_and_racing_reenable_converge_under_either_order(self, tmp_path: Path) -> None:
-        envelopes = self._load()
-        base, routed_delete, reenable = envelopes[:2], envelopes[2], envelopes[3]
-        forward = LocalStore(tmp_path / "f.db")
-        backward = LocalStore(tmp_path / "b.db")
-        for env in [*base, routed_delete, reenable]:
-            assert forward.apply_remote(env) is True
-        for env in [*base, reenable, routed_delete]:
-            # Reversed: the delete (@11200) loses the (ws, tasks) slot to the
-            # already-standing re-enable (@11300) and drops by LWW.
-            backward.apply_remote(env)
-        # The enable (@11300) wins the (ws, tasks) slot over the delete (@11200).
-        for instance in (forward, backward):
-            assert instance.is_feature_enabled(WS, "tasks") is True
-            assert instance.node(WS, self.TASK_CLASS).is_active is True
-        assert _dump_convergence_tables(forward) == _dump_convergence_tables(backward)
-        forward.close()
-        backward.close()
+    def test_a_trashed_user_class_restores_with_every_assignment_intact(self, store: LocalStore) -> None:
+        envelopes = [RelayEnvelope.model_validate(item) for item in self._load()]
+        for env in [*envelopes[:5], *envelopes[6:]]:
+            assert store.apply_remote(env) is True
+        restore = RelayEnvelope.model_validate(
+            {
+                "id": "0192a000-0000-7000-8000-000000000a99",
+                "protocolVersion": 3,
+                "workspaceId": WS,
+                "actorId": "0192a000-0000-7000-8000-000000000002",
+                "deviceId": "fixture-test-device",
+                "hlc": {"physical": 1727200030950, "logical": 0},
+                "affectedNodeIds": [self.GENRE],
+                "opType": "object.restore",
+                "timestamp": "2026-09-24T12:00:30.950Z",
+                "payload": {"objectId": self.GENRE},
+            }
+        )
+        assert store.apply_remote(restore) is True
+        assert store.node(WS, self.GENRE).is_active is True
+        assert store.node(WS, self.GENRE_MEMBER).class_ids == (self.GENRE,)
+        assert raw(
+            store,
+            "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
+            (self.GENRE_MEMBER, self.GENRE),
+        ) == [(1,)]
 
 
 class TestCodeBlockFixture:

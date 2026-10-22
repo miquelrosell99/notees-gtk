@@ -60,7 +60,6 @@ class TestOpTypeRegistry:
                     "object.move",
                     "class.create",
                     "class.update",
-                    "class.delete",
                     "class.unassign",
                     "class.reorder",
                     "tag.unassign",

@@ -97,7 +97,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from notees_gtk.core.protocol.colors import ColorValue
 
@@ -200,6 +200,16 @@ class ObjectUpdatePayload(_Strict):
     # Preset token (`sky`) or custom `#RRGGBB` hex (colors.py grammar);
     # null CLEARS the node's color.
     color: ColorValue = Field(default=None)
+    # Archival state (owner ruling 2026-10-22, the classes-gallery batch):
+    # `false` ARCHIVES the node, `true` UNARCHIVES it — a reversible STATE,
+    # distinct from the trash table (deletion: object.delete/object.restore).
+    # Platform-fixed, cardinality-1 node fundamental (the icon/color
+    # precedent; the class registry `active` is a projection of the class
+    # node's bit). Presence writes — absent = no write; the applier refuses
+    # an explicit null (zod `z.boolean().optional()` parity — null is not a
+    # valid archival write). Class rows mirror the bit to the registry
+    # projection (the feature-derivation pattern).
+    active: StrictBool | None = Field(default=None)
     # Wire node fields (the icon/color precedent, owner 2026-10-07):
     # platform-fixed node fundamentals that core chrome or navigation
     # reads/writes — an asset node for the page cover, an asset node for the
@@ -232,6 +242,14 @@ class ObjectUpdatePayload(_Strict):
             raise ValueError("object.update requires at least one field")
         if self.content_delta_b64 is not None and self.content_ast is not None:
             raise ValueError("exactly one content carrier per update")
+        return self
+
+    @model_validator(mode="after")
+    def _check_active_not_null(self) -> ObjectUpdatePayload:
+        # zod `z.boolean().optional()` parity: the archival bit is presence-
+        # only — an explicit null is rejected outright, never coerced.
+        if "active" in self.model_fields_set and self.active is None:
+            raise ValueError("object.update 'active' must be a boolean when present")
         return self
 
 
@@ -280,10 +298,6 @@ class ClassUpdatePayload(_Strict):
     # the schema now accepts what the catalog always documented.
     color: ColorValue = Field(default=None)
     description: str | None = Field(default=None, max_length=4096)
-
-
-class ClassDeletePayload(_Strict):
-    class_id: UUID = Field(alias="classId")
 
 
 class ClassUnassignPayload(_Strict):
@@ -571,15 +585,17 @@ class WorkspaceFeatureSetPayload(_Strict):
 
     ``feature`` is fixed protocol vocabulary — the five core class families
     (tasks=task, events=event, meetings=meeting, sources=source,
-    persons=person; the ``WORKSPACE_FEATURES`` enum in ``features.py``, the
-    op-types.ts ``WORKSPACE_FEATURES`` parity). The retired pre-reshape ids
-    (journals/readItLater/library/people/collections) are rejected outright
-    by this strict schema — no wire compat (owner directive). LWW by
-    envelope HLC on (workspace, feature); the derived ``workspace_feature``
-    table stores the winning row and an ABSENT row means enabled (F2).
+    persons=person) plus ``journal`` (owner ruling 2026-10-22 — the
+    surfaces-only toggle: the journal nav view + Today-page management; the
+    date classes stay always-on structural seeds and it derives no class
+    bits). The retired pre-reshape ids (journals/readItLater/library/
+    people/collections) are rejected outright by this strict schema — no
+    wire compat (owner directive). LWW by envelope HLC on (workspace,
+    feature); the derived ``workspace_feature`` table stores the winning row
+    and an ABSENT row means enabled (F2).
     """
 
-    feature: Literal["tasks", "events", "meetings", "sources", "persons"]
+    feature: Literal["tasks", "events", "meetings", "sources", "persons", "journal"]
     enabled: bool
 
 
@@ -593,7 +609,6 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "object.move": ObjectMovePayload,
     "class.create": ClassCreatePayload,
     "class.update": ClassUpdatePayload,
-    "class.delete": ClassDeletePayload,
     "class.unassign": ClassUnassignPayload,
     "class.reorder": ClassReorderPayload,
     "tag.unassign": TagUnassignPayload,
@@ -701,6 +716,7 @@ def build_object_update(
     aliased_node_id: str | None | object = _UNSET,
     description: str | None | object = _UNSET,
     list_style: str | None | object = _UNSET,
+    active: bool | None = None,
 ) -> dict[str, Any]:
     """Build an ``object.update`` payload (at least one field required).
 
@@ -709,7 +725,10 @@ def build_object_update(
     node fields (``cover_asset_id`` / ``banner_asset_id`` /
     ``aliased_node_id`` / ``description``) follow the same convention:
     ``None`` sends an explicit null that CLEARS the column, omitting leaves
-    it untouched. ``list_style`` rides the same nullable contract.
+    it untouched. ``list_style`` rides the same nullable contract. The
+    archival bit is presence-only: ``active=False`` archives, ``active=True``
+    unarchives, omitting leaves the bit untouched (an explicit null is
+    rejected by the strict schema).
     """
     payload: dict[str, Any] = {"objectId": object_id}
     if is_embedded is not None:
@@ -732,6 +751,8 @@ def build_object_update(
         payload["description"] = description
     if list_style is not _UNSET:
         payload["listStyle"] = list_style
+    if active is not None:
+        payload["active"] = active
     return _validated("object.update", payload)
 
 
@@ -846,10 +867,11 @@ def build_tag_unassign(object_id: str, tag_id: str) -> dict[str, Any]:
 def build_workspace_feature_set(feature: str, enabled: bool) -> dict[str, Any]:
     """Build a ``workspace.feature.set`` payload (the Features tab).
 
-    ``feature`` is one of the five core class families (the
-    ``WORKSPACE_FEATURES`` enum in ``features.py``); the strict schema
-    rejects the retired pre-reshape ids (journals/readItLater/library/
-    people/collections) outright. LWW by HLC on (workspace, feature); an
-    absent derived row reads enabled (F2).
+    ``feature`` is one of the five core class families or ``journal`` (the
+    ``WORKSPACE_FEATURES`` enum in ``features.py`` — the journal entry gates
+    the journal surfaces only, no class bits); the strict schema rejects the
+    retired pre-reshape ids (journals/readItLater/library/people/collections)
+    outright. LWW by HLC on (workspace, feature); an absent derived row reads
+    enabled (F2).
     """
     return _validated("workspace.feature.set", {"feature": feature, "enabled": enabled})

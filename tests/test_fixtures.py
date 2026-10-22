@@ -62,7 +62,6 @@ WIRE_SINGLE_ENVELOPE_FIXTURES = [
 # wire/ parity port: fixtures holding {"comment": ..., "envelopes": [...]}.
 WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-convert.json",
-    "wire/class-delete-managed.json",
     "wire/class-extends-cycle.json",
     "wire/class-extends-m2m.json",
     "wire/class-extends-system-lock.json",
@@ -78,11 +77,13 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/is-embedded-parent-page.json",
     "wire/link-embedded.json",
     "wire/object-color.json",
+    "wire/object-delete-class-routing.json",
     "wire/object-is-embedded.json",
     "wire/object-list-style.json",
     "wire/object-move-before.json",
     "wire/object-move.json",
     "wire/object-restore.json",
+    "wire/object-update-active.json",
     "wire/object-wire-fields.json",
     "wire/property-asset-type.json",
     "wire/property-date-qualifier.json",

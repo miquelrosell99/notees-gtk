@@ -11,6 +11,7 @@ from __future__ import annotations
 __all__ = [
     "CycleError",
     "EnvelopeValidationError",
+    "LockedSystemClassError",
     "MoveGuardError",
     "NotFoundError",
     "PropertyValueShapeError",
@@ -46,6 +47,16 @@ class SystemExtendsLockError(StoreError):
     mappings are seeded platform structure; only an idempotent re-issue of
     the seeded parent set applies, every deviation fails loud and is never
     applied)."""
+
+
+class LockedSystemClassError(StoreError):
+    """object.delete (or an archival ``object.update {active: false}``)
+    addressed at a LOCKED system class — the date chain (year/month/day) +
+    table, asset, query, code, template, comment (owner ruling 2026-10-22,
+    the classes-gallery batch; ``LOCKED_SYSTEM_CLASSES`` in
+    ``core/protocol/features.ts`` parity). Locked classes are platform
+    structure: they can never be archived or deleted. Fails loud, never
+    applied."""
 
 
 class MoveGuardError(StoreError):
