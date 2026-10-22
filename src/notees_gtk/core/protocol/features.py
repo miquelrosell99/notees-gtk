@@ -8,11 +8,15 @@ resolves the family set through the STATIC seed knowledge
 the store's ``class_extends`` table — so the applier's archival re-derivation
 converges on replicas that have not seen the seed envelopes yet. The same
 static map is ported here (the GTK client has no seed manifest of its own;
-seeding is server-side, and the store only needs the family-relevant subset of
-the fixed system-class UUIDs — never rename, never regenerate, never reuse —
+seeding is server-side; the map carries the family-relevant subset of the
+fixed system-class UUIDs — never rename, never regenerate, never reuse —
 plus the #14 follow-up five: the deploy catalog's
 missing everyday classes, trip extending event so the events cascade reaches
-it).
+it). The system-extends lock additionally needs
+EVERY fixed system-class UUID — the seeded extends mapping is frozen
+platform structure — so the full seeds.ts ``SYSTEM_CLASS_UUIDS`` block is
+carried below and ``SYSTEM_CLASS_EXTENDS_IDS`` / ``is_system_class_id``
+derive the lock authority from it.
 
 Semantics (F1–F4, owner-confirmed, mirroring the TS record):
 
@@ -42,6 +46,7 @@ from typing import Literal
 __all__ = [
     "ALWAYS_ON_SYSTEM_CLASSES",
     "SYSTEM_CLASS_DISPLAY_NAMES",
+    "SYSTEM_CLASS_EXTENDS_IDS",
     "SYSTEM_CLASS_ICONS",
     "TASK_FAMILY_SEED",
     "TASK_PRIORITY_OPTION_UUIDS",
@@ -55,6 +60,7 @@ __all__ = [
     "feature_for_managed_class",
     "gating_features_for_class",
     "is_always_on_system_class",
+    "is_system_class_id",
     "managed_class_ids",
     "system_class_ancestors",
     "system_class_uuid",
@@ -66,16 +72,38 @@ __all__ = [
 WorkspaceFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
 WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = ("tasks", "events", "meetings", "sources", "persons")
 
-#: The family-relevant system-class UUIDs (seeds.ts subset — the applier's
-#: flip list and F4 routing resolve through these fixed ids), plus the two
-#: ids the property/applier semantics resolve through: ``asset`` (the
-#: implicit filter of an asset-typed property schema, M38) and ``weblink``
-#: (the source-family child, the 2026-10-07 convergence), plus the #14
-#: follow-up five (the deploy catalog's missing
-#: everyday classes, plain seeds per the meeting-system precedent).
+#: The fixed system-class UUIDs (seeds.ts ``SYSTEM_CLASS_UUIDS`` FULL parity —
+#: never rename, never regenerate, never reuse): the family-relevant ids the
+#: feature map resolves through (the applier's flip list and F4 routing), the
+#: two ids the property/applier semantics resolve through (``asset`` — the
+#: implicit filter of an asset-typed property schema, M38 — and ``weblink`` —
+#: the source-family child, the 2026-10-07 convergence), the #14 follow-up
+#: five (the deploy catalog's missing everyday
+#: classes, plain seeds per the meeting-system precedent), and the base-system
+#: classes. The FULL block is carried (not just the family subset) because the
+#: system-extends lock needs every fixed id — a
+#: system class's seeded extends mapping is frozen platform structure.
 _SYSTEM_CLASS_UUIDS: dict[str, str] = {
+    "year": "00000000-0000-0000-0001-000000000003",
+    "month": "00000000-0000-0000-0001-000000000004",
+    "day": "00000000-0000-0000-0001-000000000005",
+    "quote": "00000000-0000-0000-0001-000000000006",
+    "query": "00000000-0000-0000-0001-000000000007",
+    "code": "00000000-0000-0000-0001-000000000008",
     "asset": "00000000-0000-0000-0001-000000000009",
+    "whiteboard": "00000000-0000-0000-0001-000000000010",
+    "card": "00000000-0000-0000-0001-000000000011",
     "task": "00000000-0000-0000-0001-000000000012",
+    "template": "00000000-0000-0000-0001-000000000013",
+    "comment": "00000000-0000-0000-0001-000000000014",
+    "table": "00000000-0000-0000-0001-000000000015",
+    "warning": "00000000-0000-0000-0001-000000000016",
+    "note": "00000000-0000-0000-0001-000000000017",
+    "tip": "00000000-0000-0000-0001-000000000018",
+    "info": "00000000-0000-0000-0001-000000000019",
+    "danger": "00000000-0000-0000-0001-000000000020",
+    "success": "00000000-0000-0000-0001-000000000021",
+    "cloze": "00000000-0000-0000-0001-000000000022",
     "source": "00000000-0000-0000-0001-000000000023",
     "book": "00000000-0000-0000-0001-000000000024",
     "paper": "00000000-0000-0000-0001-000000000025",
@@ -85,6 +113,9 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "agent": "00000000-0000-0000-0001-000000000029",
     "person": "00000000-0000-0000-0001-000000000030",
     "organization": "00000000-0000-0000-0001-000000000031",
+    "collection": "00000000-0000-0000-0001-000000000032",
+    "highlight": "00000000-0000-0000-0001-000000000033",
+    "weblink": "00000000-0000-0000-0001-000000000034",
     "movie": "00000000-0000-0000-0001-000000000035",
     "song": "00000000-0000-0000-0001-000000000036",
     "tv_series": "00000000-0000-0000-0001-000000000037",
@@ -92,7 +123,6 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "meeting": "00000000-0000-0000-0001-000000000039",
     "event": "00000000-0000-0000-0001-000000000040",
     "birthday": "00000000-0000-0000-0001-000000000041",
-    "weblink": "00000000-0000-0000-0001-000000000034",
     # The #14 follow-up five: the deploy catalog's
     # missing everyday classes — plain seeds per the meeting-system ruling
     # (zero wire cost, seed convergence only; seeds.ts …0043-…0047).
@@ -135,6 +165,29 @@ _SYSTEM_CLASS_EXTENDS: dict[str, tuple[str, ...]] = {
     # the cascade authority (seeds.ts ``SYSTEM_CLASS_EXTENDS`` parity).
     "trip": ("event",),
 }
+
+#: The frozen extends parent set per system class UUID (name-keyed
+#: ``_SYSTEM_CLASS_EXTENDS`` resolved to ids) — the system-extends lock
+#: authority (SCHEMA.md "Class properties";
+#: seeds.ts ``SYSTEM_CLASS_EXTENDS_IDS`` parity): a system class's extends
+#: mapping is seeded platform structure the feature-toggle cascade
+#: (``system_class_ancestors``) and binding inheritance (the store's
+#: ``class_extends`` walk) both derive from, so ``class.setExtends`` on a
+#: system class only applies when the payload's parent set EQUALS the seeded
+#: set (the seed/ensure re-issue convergence path); every deviation fails
+#: loud at the applier. Classes absent from ``_SYSTEM_CLASS_EXTENDS`` are
+#: frozen to the empty tuple. User classes stay freely extensible, including
+#: onto system bases.
+SYSTEM_CLASS_EXTENDS_IDS: dict[str, tuple[str, ...]] = {
+    class_id: tuple(_SYSTEM_CLASS_UUIDS[parent] for parent in _SYSTEM_CLASS_EXTENDS.get(name, ()))
+    for name, class_id in _SYSTEM_CLASS_UUIDS.items()
+}
+
+
+def is_system_class_id(class_id: str) -> bool:
+    """True when the id is a fixed system-class seed UUID (seeds.ts
+    ``isSystemClassId``)."""
+    return class_id in SYSTEM_CLASS_EXTENDS_IDS
 
 #: The #14 follow-up five's seed decorations (seeds.ts ``SYSTEM_CLASS_ICONS``
 #: / ``SYSTEM_CLASS_DISPLAY_NAMES`` subset — the GTK map's classes only).

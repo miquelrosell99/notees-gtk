@@ -15,6 +15,7 @@ __all__ = [
     "NotFoundError",
     "PropertyValueShapeError",
     "StoreError",
+    "SystemExtendsLockError",
     "UnsupportedCarrierError",
 ]
 
@@ -37,6 +38,14 @@ class EnvelopeValidationError(StoreError):
 
 class CycleError(StoreError):
     """class.setExtends closed a cycle (self-parent or multi-hop)."""
+
+
+class SystemExtendsLockError(StoreError):
+    """class.setExtends attempted to modify a system class's frozen extends
+    mapping (SCHEMA.md "Class properties" — system
+    mappings are seeded platform structure; only an idempotent re-issue of
+    the seeded parent set applies, every deviation fails loud and is never
+    applied)."""
 
 
 class MoveGuardError(StoreError):
