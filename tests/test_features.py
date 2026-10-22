@@ -1,6 +1,7 @@
 """Tests for the workspace-feature map (packages/domain/src/features.ts
-parity, RESHAPED): the five core class families, the extends-cascade
-family sets, the gating walks, and F4 base-only routing.
+parity, RESHAPED): the five core class families, the
+extends-cascade family sets, the gating walks, the class-node delete
+routing (base-only), and the locked-system-class core.
 
 The GTK client has no seed manifest of its own (seeding is server-side);
 this module is the static seed knowledge the STORE's feature applier
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 from notees_gtk.core.protocol.features import (
     ALWAYS_ON_SYSTEM_CLASSES,
+    LOCKED_SYSTEM_CLASSES,
     TASK_FAMILY_SEED,
     WORKSPACE_FEATURE_MAP,
     WORKSPACE_FEATURES,
@@ -19,8 +21,11 @@ from notees_gtk.core.protocol.features import (
     feature_for_managed_class,
     gating_features_for_class,
     is_always_on_system_class,
+    is_family_feature,
+    is_locked_system_class_id,
     managed_class_ids,
     system_class_ancestors,
+    system_class_name_for_id,
     system_class_uuid,
     task_property_uuid,
 )
@@ -37,9 +42,11 @@ TRIP = "00000000-0000-0000-0001-000000000047"
 
 
 class TestFiveFamilyMap:
-    def test_the_reshaped_enum_is_exactly_the_five_families(self) -> None:
-        assert WORKSPACE_FEATURES == ("tasks", "events", "meetings", "sources", "persons")
-        assert set(WORKSPACE_FEATURE_MAP) == set(WORKSPACE_FEATURES)
+    def test_the_reshaped_enum_carries_the_five_families_plus_journal(self) -> None:
+        """The five family entries + the surfaces-only ``journal`` toggle
+       ; the family MAP stays the five exactly."""
+        assert WORKSPACE_FEATURES == ("tasks", "events", "meetings", "sources", "persons", "journal")
+        assert set(WORKSPACE_FEATURE_MAP) == {"tasks", "events", "meetings", "sources", "persons"}
 
     def test_family_specs(self) -> None:
         assert WORKSPACE_FEATURE_MAP["tasks"].base_class == "task"
@@ -47,6 +54,11 @@ class TestFiveFamilyMap:
         assert WORKSPACE_FEATURE_MAP["meetings"].base_class == "meeting"
         assert WORKSPACE_FEATURE_MAP["sources"].base_class == "source"
         assert WORKSPACE_FEATURE_MAP["persons"].base_class == "person"
+
+    def test_is_family_feature_excludes_journal(self) -> None:
+        for feature in ("tasks", "events", "meetings", "sources", "persons"):
+            assert is_family_feature(feature) is True
+        assert is_family_feature("journal") is False
 
 
 class TestFamilySets:
@@ -132,6 +144,39 @@ class TestF4Routing:
         assert feature_for_managed_class("0192a000-0000-7000-8000-000000000099") is None
 
 
+class TestLockedSystemClasses:
+    """The locked core (the classes-gallery batch):
+    the date chain + table, asset, query, code, template, comment can never
+    be archived or deleted (features.ts ``LOCKED_SYSTEM_CLASSES`` parity)."""
+
+    def test_the_locked_list_is_the_always_on_core(self) -> None:
+        assert LOCKED_SYSTEM_CLASSES == (
+            "year",
+            "month",
+            "day",
+            "table",
+            "asset",
+            "query",
+            "code",
+            "template",
+            "comment",
+        )
+        assert set(LOCKED_SYSTEM_CLASSES) <= set(ALWAYS_ON_SYSTEM_CLASSES)
+
+    def test_locked_ids_resolve_through_the_seed_map(self) -> None:
+        assert is_locked_system_class_id("00000000-0000-0000-0001-000000000003") is True  # year
+        assert is_locked_system_class_id("00000000-0000-0000-0001-000000000015") is True  # table
+        # Gallery-toggleable always-on classes are NOT locked; user classes neither.
+        assert is_locked_system_class_id("00000000-0000-0000-0001-000000000006") is False  # quote
+        assert is_locked_system_class_id("00000000-0000-0000-0001-000000000010") is False  # whiteboard
+        assert is_locked_system_class_id("0192a000-0000-7000-8000-000000000099") is False
+
+    def test_system_class_name_for_id(self) -> None:
+        assert system_class_name_for_id(TASK) == "task"
+        assert system_class_name_for_id("00000000-0000-0000-0001-000000000003") == "year"
+        assert system_class_name_for_id("0192a000-0000-7000-8000-000000000099") is None
+
+
 class TestAlwaysOnAndAncestors:
     def test_always_on_list(self) -> None:
         for name in ("year", "month", "day", "asset", "highlight", "collection", "agent", "organization"):
@@ -143,14 +188,14 @@ class TestAlwaysOnAndAncestors:
         for name in ("definition", "idea", "place", "project"):
             assert not is_always_on_system_class(name)
         assert set(ALWAYS_ON_SYSTEM_CLASSES).isdisjoint(
-            name for feature in WORKSPACE_FEATURES for name in family_class_names(feature)
+            name for feature in WORKSPACE_FEATURE_MAP for name in family_class_names(feature)
         )
 
     def test_the_retired_class_meta_class_left_the_manifest(self) -> None:
         """The seeded `class` meta class (…0001) is retired 2026-10-07:
         never feature-managed, never reused (the seeds.ts withdrawal)."""
         assert "class" not in ALWAYS_ON_SYSTEM_CLASSES
-        all_family_names = {name for feature in WORKSPACE_FEATURES for name in family_class_names(feature)}
+        all_family_names = {name for feature in WORKSPACE_FEATURE_MAP for name in family_class_names(feature)}
         assert "class" not in all_family_names
 
     def test_static_extends_closure(self) -> None:

@@ -18,7 +18,8 @@ platform structure — so the full seeds.ts ``SYSTEM_CLASS_UUIDS`` block is
 carried below and ``SYSTEM_CLASS_EXTENDS_IDS`` / ``is_system_class_id``
 derive the lock authority from it.
 
-Semantics (F1–F4, owner-confirmed, mirroring the TS record):
+Semantics (F1–F3 + the class-node delete routing, owner-confirmed,
+mirroring the TS record; superseding F4 — the retired ``class.delete`` op):
 
 - Toggle-off is NEVER deletion (F3): the store applier flips the family
   classes' registry ``active`` bit + class-node ``is_active``,
@@ -26,12 +27,15 @@ Semantics (F1–F4, owner-confirmed, mirroring the TS record):
   stay in the graph.
 - An absent ``workspace_feature`` row means ENABLED (F2 — all families
   default ON; the empty table is the pre-toggle state, zero migration).
-- A ``class.delete`` addressed at a family's BASE class is routed to the
-  toggle (F4): applied as a feature-disable so the Features setting is the
-  single archive path and the lossy plain delete (membership tombstoning)
-  never runs on managed classes. Family CHILDREN (book, meeting, birthday,
-  …) are NOT F4 bases — a delete on those keeps plain semantics (the owner
-  mapped F4 to the five bases exactly).
+- Class-node delete routing: ``object.delete`` on
+  a LOCKED system class (``LOCKED_SYSTEM_CLASSES`` below) fails loud; on a
+  family BASE class it is routed to the toggle (applied as a
+  feature-disable — the Features setting is the single archive path for the
+  families); on any other non-locked system class it archives
+  (``active = false``), never trash; on a user class it is a plain trash
+  row. Membership RIDES in every arm — ``class_member_set`` is never
+  touched by class removal (archive or trash); stripping a class from nodes
+  stays the explicit per-node ``class.unassign``.
 - The base system stays always-on (F1): journals (year/month/day), assets,
   the structural + admonition classes, and the classes of the DROPPED
   pre-reshape features (readItLater/library/collections/people → highlight,
@@ -41,10 +45,11 @@ Semantics (F1–F4, owner-confirmed, mirroring the TS record):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeGuard
 
 __all__ = [
     "ALWAYS_ON_SYSTEM_CLASSES",
+    "LOCKED_SYSTEM_CLASSES",
     "SYSTEM_CLASS_DISPLAY_NAMES",
     "SYSTEM_CLASS_EXTENDS_IDS",
     "SYSTEM_CLASS_ICONS",
@@ -53,6 +58,7 @@ __all__ = [
     "TASK_STATUS_OPTION_UUIDS",
     "WORKSPACE_FEATURES",
     "WORKSPACE_FEATURE_MAP",
+    "FamilyFeature",
     "WorkspaceFeature",
     "TaskFamilySeedEntry",
     "TaskSeedOption",
@@ -60,17 +66,33 @@ __all__ = [
     "feature_for_managed_class",
     "gating_features_for_class",
     "is_always_on_system_class",
+    "is_family_feature",
+    "is_locked_system_class_id",
     "is_system_class_id",
     "managed_class_ids",
     "system_class_ancestors",
+    "system_class_name_for_id",
     "system_class_uuid",
     "task_property_uuid",
 ]
 
-#: The five core class families — the
-#: strict ``workspace.feature.set`` enum (op-types.ts ``WORKSPACE_FEATURES``).
-WorkspaceFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
-WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = ("tasks", "events", "meetings", "sources", "persons")
+#: The strict ``workspace.feature.set`` enum (op-types.ts ``WORKSPACE_FEATURES``):
+#: the five core class families + ``journal`` — the surfaces-only toggle
+#: (the journal nav view + Today-page management; the date classes stay
+#: always-on structural seeds).
+WorkspaceFeature = Literal["tasks", "events", "meetings", "sources", "persons", "journal"]
+WORKSPACE_FEATURES: tuple[WorkspaceFeature, ...] = (
+    "tasks",
+    "events",
+    "meetings",
+    "sources",
+    "persons",
+    "journal",
+)
+
+#: The family toggles: the five entries that derive class archival bits
+#: (features.ts ``FamilyFeature = Exclude<WorkspaceFeature, "journal">``).
+FamilyFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
 
 #: The fixed system-class UUIDs (seeds.ts ``SYSTEM_CLASS_UUIDS`` FULL parity —
 #: never rename, never regenerate, never reuse): the family-relevant ids the
@@ -236,7 +258,7 @@ class WorkspaceFeatureSpec:
 
 
 #: The core class families.
-WORKSPACE_FEATURE_MAP: dict[WorkspaceFeature, WorkspaceFeatureSpec] = {
+WORKSPACE_FEATURE_MAP: dict[FamilyFeature, WorkspaceFeatureSpec] = {
     "tasks": WorkspaceFeatureSpec("task", "Tasks", "Tasks hub + checkbox gestures"),
     "events": WorkspaceFeatureSpec("event", "Events", "The calendar day/month surfaces"),
     "meetings": WorkspaceFeatureSpec("meeting", "Meetings", "Meeting quick-create + meeting logic"),
@@ -244,7 +266,7 @@ WORKSPACE_FEATURE_MAP: dict[WorkspaceFeature, WorkspaceFeatureSpec] = {
     "persons": WorkspaceFeatureSpec("person", "Persons", "The people graph + contact fields"),
 }
 
-_BASE_FEATURE_BY_CLASS: dict[str, WorkspaceFeature] = {
+_BASE_FEATURE_BY_CLASS: dict[str, FamilyFeature] = {
     spec.base_class: feature for feature, spec in WORKSPACE_FEATURE_MAP.items()
 }
 
@@ -254,7 +276,23 @@ def system_class_uuid(name: str) -> str:
     return _SYSTEM_CLASS_UUIDS[name]
 
 
-def feature_for_base_class(name: str) -> WorkspaceFeature | None:
+def system_class_name_for_id(class_id: str) -> str | None:
+    """The seed name for a system-class id, else None (user/unknown classes;
+    seeds.ts ``systemClassNameForId``)."""
+    for name, seed_id in _SYSTEM_CLASS_UUIDS.items():
+        if seed_id == class_id:
+            return name
+    return None
+
+
+def is_family_feature(feature: WorkspaceFeature) -> TypeGuard[FamilyFeature]:
+    """True when ``feature`` is a family toggle (derives class archival
+    bits) — the ``journal`` entry gates surfaces only and is excluded
+    (features.ts ``isFamilyFeature``)."""
+    return feature in WORKSPACE_FEATURE_MAP
+
+
+def feature_for_base_class(name: str) -> FamilyFeature | None:
     """The feature whose BASE class is ``name``, if any."""
     return _BASE_FEATURE_BY_CLASS.get(name)
 
@@ -298,8 +336,37 @@ ALWAYS_ON_SYSTEM_CLASSES: tuple[str, ...] = (
     "highlight",
 )
 
+#: Locked system classes (the classes-gallery
+#: batch): the core seeds that can NEVER be archived or deleted —
+#: ``object.delete`` fails loud (``LockedSystemClassError``) and an archival
+#: write (``object.update {active: false}``) is rejected the same way. This
+#: is the always-on set's locked CORE: the date chain + table, asset, query,
+#: code, template, comment (features.ts ``LOCKED_SYSTEM_CLASSES`` parity).
+#: The other always-on classes (callouts, quote, whiteboard, …) are
+#: gallery-toggleable — disabling them archives (``active = false``), it
+#: never deletes. Membership rides; nothing here is ever feature-managed.
+LOCKED_SYSTEM_CLASSES: tuple[str, ...] = (
+    "year",
+    "month",
+    "day",
+    "table",
+    "asset",
+    "query",
+    "code",
+    "template",
+    "comment",
+)
 
-def family_class_names(feature: WorkspaceFeature) -> tuple[str, ...]:
+_LOCKED_CLASS_ID_SET: frozenset[str] = frozenset(_SYSTEM_CLASS_UUIDS[name] for name in LOCKED_SYSTEM_CLASSES)
+
+
+def is_locked_system_class_id(class_id: str) -> bool:
+    """True when ``class_id`` is a LOCKED system class (never archivable or
+    deletable; features.ts ``isLockedSystemClassId``)."""
+    return class_id in _LOCKED_CLASS_ID_SET
+
+
+def family_class_names(feature: FamilyFeature) -> tuple[str, ...]:
     """The family's full class set: the base class + its transitive
     extends-children (deterministic, sorted after the base). Disabling the
     family archives exactly this set (the applier's per-class re-derivation
@@ -309,17 +376,19 @@ def family_class_names(feature: WorkspaceFeature) -> tuple[str, ...]:
     return (base, *children)
 
 
-def managed_class_ids(feature: WorkspaceFeature) -> tuple[str, ...]:
+def managed_class_ids(feature: FamilyFeature) -> tuple[str, ...]:
     """Resolved UUIDs of the family's full class set (the applier's flip list)."""
     return tuple(_SYSTEM_CLASS_UUIDS[name] for name in family_class_names(feature))
 
 
-def feature_for_managed_class(class_id: str) -> WorkspaceFeature | None:
-    """F4 routing: the owning feature when ``class_id`` is a family's BASE
-    class, else None. Children (book, meeting, birthday, …) deliberately do
-    NOT route — the owner mapped F4 to the five bases exactly. The route
-    decision is a pure function of the class id (fixed vocabulary), so every
-    replica takes the same branch."""
+def feature_for_managed_class(class_id: str) -> FamilyFeature | None:
+    """Class-node delete routing (the retired ``class.delete`` op's F4 rule,
+    moved into the ``object.delete`` applier): the owning feature when
+    ``class_id`` is a family's BASE class, else None. Children (book,
+    meeting, birthday, …) deliberately do NOT route — the owner mapped the
+    routing to the five bases exactly. The route decision is a pure function
+    of the class id (fixed vocabulary), so every replica takes the same
+    branch."""
     for feature, spec in WORKSPACE_FEATURE_MAP.items():
         if _SYSTEM_CLASS_UUIDS[spec.base_class] == class_id:
             return feature

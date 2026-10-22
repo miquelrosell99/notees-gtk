@@ -41,6 +41,7 @@ from notees_gtk.core.protocol.models import PROTOCOL_VERSION, RelayEnvelope
 from notees_gtk.data.errors import (
     CycleError,
     EnvelopeValidationError,
+    LockedSystemClassError,
     MoveGuardError,
     NotFoundError,
     PropertyValueShapeError,
@@ -1518,7 +1519,11 @@ class TestClassOps:
         assert json.loads(row.content or "") == [{"type": "text", "text": "Bob notes"}]
         assert raw_rows(store, f"SELECT name FROM class WHERE id = '{uid('cls-1')}'") == [("Bob notes",)]
 
-    def test_class_update_and_delete(self, store: LocalStore) -> None:
+    def test_class_update_and_object_delete_of_a_user_class_trashes_it(self, store: LocalStore) -> None:
+        """Arm 4 of the class-node delete routing:
+        a USER class takes the plain trash path — soft delete with a trash
+        row, restorable from the Trash hub (the registry projection stays
+        untouched on this path, TS parity)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Book"))
         store.apply_remote(class_env("class.update", uid("cls-1"), hlc=(2, 0), name="Novel", description="long form"))
         row = store.node(WS_A, uid("cls-1"))
@@ -1526,9 +1531,14 @@ class TestClassOps:
         assert row.content == json.dumps([{"type": "text", "text": "Novel"}])
         assert row.content_plain == "Novel"  # the registry name cache follows
         assert raw_rows(store, f"SELECT description FROM class WHERE id = '{uid('cls-1')}'") == [("long form",)]
-        store.apply_remote(class_env("class.delete", uid("cls-1"), hlc=(3, 0)))
+        store.apply_remote(delete_env(uid("cls-1"), hlc=(3, 0)))
         assert store.node(WS_A, uid("cls-1")).is_active is False
-        assert raw_rows(store, f"SELECT active FROM class WHERE id = '{uid('cls-1')}'") == [(0,)]
+        assert raw_rows(store, "SELECT is_permanent FROM trash WHERE node_id = ?", (uid("cls-1"),)) == [(0,)]
+        # The trash path never touches the registry projection (TS parity —
+        # only the archival write, the arm-3 archival, and the feature
+        # re-derivation mirror the bit): the registry row keeps its bit; the
+        # default reads filter on the node row.
+        assert raw_rows(store, f"SELECT active FROM class WHERE id = '{uid('cls-1')}'") == [(1,)]
 
     def test_set_extends_maintains_closure_and_replaces(self, store: LocalStore, tmp_path: Path) -> None:
         store.apply_remote(class_env("class.create", uid("a"), hlc=(1, 0), name="Entity"))
@@ -2491,7 +2501,9 @@ class TestSnapshotRestore:
 class TestWorkspaceFeatureToggle:
     """The workspace.feature.set applier: LWW rows, the
     family archival re-derivation with the event→meeting/birthday/trip
-    cascade, the tasks-enable family ensure, and F4 routing."""
+    cascade, the tasks-enable family ensure, the journal surfaces-only
+    toggle, and the class-node object.delete routing onto the family
+    toggle."""
 
     TASK_CLASS = "00000000-0000-0000-0001-000000000012"
     EVENT_CLASS = "00000000-0000-0000-0001-000000000040"
@@ -2643,28 +2655,130 @@ class TestWorkspaceFeatureToggle:
         store.apply_remote(self.feature_env("tasks", True, hlc=(20, 0)))
         assert raw_rows(store, "SELECT name FROM class WHERE id = ?", (self.TASK_CLASS,)) == [("Custom",)]
 
-    def test_f4_routes_managed_base_delete_and_children_stay_plain(self, store: LocalStore) -> None:
+    def test_class_node_delete_routing(self, store: LocalStore) -> None:
+        """The four class-node delete arms (the
+        retired ``class.delete`` op's routing, moved into ``object.delete``;
+        packages/store/src/appliers.ts ``applyObjectDelete`` parity)."""
         store.apply_remote(class_env("class.create", self.TASK_CLASS, hlc=(1, 0), name="Task"))
         member = uid("member")
         store.apply_remote(create_env(member, class_ids=(self.TASK_CLASS,), hlc=(2, 0), name="Buy milk"))
-        # The managed base delete routes to the toggle: memberships survive…
-        assert store.apply_remote(class_env("class.delete", self.TASK_CLASS, hlc=(30, 0))) is True
+        # Arm 2 — the managed base delete routes to the toggle: memberships
+        # survive, the family archives, NO feature row appears for a
+        # non-managed delete.
+        assert store.apply_remote(delete_env(self.TASK_CLASS, hlc=(30, 0))) is True
         assert store.is_feature_enabled(WS_A, "tasks") is False
         assert store.node(WS_A, member).class_ids == (self.TASK_CLASS,)
         assert store.node(WS_A, self.TASK_CLASS).is_active is False
-        # …and NO feature row appears for a non-managed child delete, which
-        # keeps the lossy semantics (membership tombstoning).
+        assert raw_rows(store, "SELECT 1 FROM trash WHERE node_id = ?", (self.TASK_CLASS,)) == []
+        # Arm 3 — a non-locked SYSTEM class (book, a sources child): re-wired
+        # to ARCHIVAL, not trash; membership rides here too (the pairs are
+        # never touched by class removal).
         store.apply_remote(class_env("class.create", self.BOOK_CLASS, hlc=(40, 0), name="Book"))
         book_member = uid("book-member")
         store.apply_remote(create_env(book_member, class_ids=(self.BOOK_CLASS,), hlc=(41, 0), name="Dune"))
-        assert store.apply_remote(class_env("class.delete", self.BOOK_CLASS, hlc=(50, 0))) is True
-        assert store.node(WS_A, book_member).class_ids == ()
+        assert store.apply_remote(delete_env(self.BOOK_CLASS, hlc=(50, 0))) is True
+        assert store.node(WS_A, book_member).class_ids == (self.BOOK_CLASS,)
         assert raw_rows(
             store,
             "SELECT present FROM class_member_set WHERE node_id = ? AND class_id = ?",
             (book_member, self.BOOK_CLASS),
-        ) == [(0,)]
+        ) == [(1,)]
+        assert store.node(WS_A, self.BOOK_CLASS).is_active is False
+        assert raw_rows(store, "SELECT 1 FROM trash WHERE node_id = ?", (self.BOOK_CLASS,)) == []
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (self.BOOK_CLASS,)) == [(0,)]
         assert raw_rows(store, "SELECT COUNT(*) FROM workspace_feature WHERE feature = 'sources'") == [(0,)]
+
+    def test_locked_system_class_delete_fails_loud(self, store: LocalStore) -> None:
+        """Arm 1: the locked core (the date chain + table, asset, query,
+        code, template, comment) is platform structure — a delete fails loud,
+        never applied, regardless of ``permanent``."""
+        year = "00000000-0000-0000-0001-000000000003"
+        table = "00000000-0000-0000-0001-000000000015"
+        for class_id, name, hlc in ((year, "Year", (1, 0)), (table, "Table", (2, 0))):
+            store.apply_remote(class_env("class.create", class_id, hlc=hlc, name=name))
+            with pytest.raises(LockedSystemClassError, match="locked system class"):
+                store.apply_remote(delete_env(class_id, hlc=(hlc[0] + 10, 0)))
+            with pytest.raises(LockedSystemClassError, match="locked system class"):
+                store.apply_remote(delete_env(class_id, permanent=True, hlc=(hlc[0] + 20, 0)))
+            assert store.node(WS_A, class_id).is_active is True
+
+    def test_routed_base_delete_and_racing_reenable_converge_under_either_order(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        """Arm 2 convergence: the routed delete and a racing re-enable land
+        the same derived state in either delivery order (the LWW row gate)."""
+        base = [
+            class_env("class.create", self.TASK_CLASS, hlc=(1, 0), name="Task"),
+            create_env(uid("member"), class_ids=(self.TASK_CLASS,), hlc=(2, 0), name="Buy milk"),
+        ]
+        routed_delete = delete_env(self.TASK_CLASS, hlc=(30, 0))
+        reenable = self.feature_env("tasks", True, hlc=(40, 0))
+        forward = LocalStore(tmp_path / "forward.db")
+        for env in (*base, routed_delete, reenable):
+            forward.apply_remote(env)
+        backward = LocalStore(tmp_path / "backward.db")
+        for env in (*base, reenable, routed_delete):
+            backward.apply_remote(env)
+        for instance in (forward, backward):
+            assert instance.feature_rows(WS_A) == [("tasks", True, 40, 0, ACTOR)]
+            assert instance.node(WS_A, self.TASK_CLASS).is_active is True
+            assert instance.node(WS_A, uid("member")).class_ids == (self.TASK_CLASS,)
+            assert raw_rows(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(1,)]
+        forward.close()
+        backward.close()
+
+    def test_object_update_active_archives_unarchives_and_mirrors_the_registry(self, store: LocalStore) -> None:
+        """The archival bit: presence writes flip ``is_active`` with NO trash
+        row ever (archive is a state, deletion an event); a class row mirrors
+        the bit to the registry projection."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Genre"))
+        assert store.apply_remote(update_env(uid("cls-1"), hlc=(2, 0), active=False)) is True
+        assert store.node(WS_A, uid("cls-1")).is_active is False
+        assert raw_rows(store, "SELECT 1 FROM trash WHERE node_id = ?", (uid("cls-1"),)) == []
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (uid("cls-1"),)) == [(0,)]
+        assert store.apply_remote(update_env(uid("cls-1"), hlc=(3, 0), active=True)) is True
+        assert store.node(WS_A, uid("cls-1")).is_active is True
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (uid("cls-1"),)) == [(1,)]
+
+    def test_archival_refusals_fail_loud_but_unarchive_stays_legal(self, store: LocalStore) -> None:
+        """The write-path refusals: a LOCKED system class can never be
+        archived, a family base refuses a direct archival write
+        (toggle-managed) — both fail loud; unarchiving is harmless and stays
+        legal on both."""
+        year = "00000000-0000-0000-0001-000000000003"
+        store.apply_remote(class_env("class.create", year, hlc=(1, 0), name="Year"))
+        with pytest.raises(LockedSystemClassError, match="locked system class"):
+            store.apply_remote(update_env(year, hlc=(2, 0), active=False))
+        assert store.node(WS_A, year).is_active is True
+        assert store.apply_remote(update_env(year, hlc=(3, 0), active=True)) is True
+        store.apply_remote(class_env("class.create", self.TASK_CLASS, hlc=(4, 0), name="Task"))
+        with pytest.raises(MoveGuardError, match="toggle-managed"):
+            store.apply_remote(update_env(self.TASK_CLASS, hlc=(5, 0), active=False))
+        assert store.node(WS_A, self.TASK_CLASS).is_active is True
+        assert store.apply_remote(update_env(self.TASK_CLASS, hlc=(6, 0), active=True)) is True
+
+    def test_restore_is_not_the_unarchive_path(self, store: LocalStore) -> None:
+        """Archive ≠ trash: without a trash row there is nothing to restore —
+        ``object.restore`` no-ops on an archived node; the unarchive path is
+        the archival write itself."""
+        store.apply_remote(create_env(uid("page"), hlc=(1, 0), name="P"))
+        store.apply_remote(update_env(uid("page"), hlc=(2, 0), active=False))
+        assert store.apply_remote(make_env("object.restore", {"objectId": uid("page")}, hlc=(3, 0))) is False
+        assert store.node(WS_A, uid("page")).is_active is False
+        store.apply_remote(update_env(uid("page"), hlc=(4, 0), active=True))
+        assert store.node(WS_A, uid("page")).is_active is True
+
+    def test_journal_toggle_is_surfaces_only(self, store: LocalStore) -> None:
+        """The ``journal`` entry rides the same LWW
+        row but derives NO class bits — the date classes stay always-on."""
+        year = "00000000-0000-0000-0001-000000000003"
+        store.apply_remote(class_env("class.create", year, hlc=(1, 0), name="Year"))
+        assert store.apply_remote(self.feature_env("journal", False, hlc=(2, 0))) is True
+        assert store.is_feature_enabled(WS_A, "journal") is False
+        assert store.node(WS_A, year).is_active is True
+        assert raw_rows(store, "SELECT active FROM class WHERE id = ?", (year,)) == [(1,)]
+        assert store.apply_remote(self.feature_env("journal", True, hlc=(3, 0))) is True
+        assert store.is_feature_enabled(WS_A, "journal") is True
 
 
 class TestPropertyUnsetCarrierTrash:

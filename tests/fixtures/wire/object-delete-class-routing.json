@@ -1,0 +1,258 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000a15",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000003"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:30.000Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000003",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Year"
+          }
+        ],
+        "icon": "mdiCalendarText"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a16",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000006"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:30.100Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000006",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Quote"
+          }
+        ],
+        "icon": "mdiFormatQuoteClose"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a17",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000012"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:30.200Z",
+      "payload": {
+        "classId": "00000000-0000-0000-0001-000000000012",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Task"
+          }
+        ],
+        "icon": "mdiCheckboxMarkedCircleOutline"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a18",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a22"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:30.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a22",
+        "isEmbedded": false,
+        "classIds": [
+          "00000000-0000-0000-0001-000000000012"
+        ],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Buy milk"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a19",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000012"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:30.400Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-0001-000000000012",
+        "permanent": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1a",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200030500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000003"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:30.500Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-0001-000000000003",
+        "permanent": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1b",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "00000000-0000-0000-0001-000000000006"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:30.600Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-0001-000000000006",
+        "permanent": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1c",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a23"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:30.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000a23",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Genre"
+          }
+        ],
+        "icon": "mdiTagOutline"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1d",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200030800,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a24"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:30.800Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a24",
+        "isEmbedded": false,
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000a23"
+        ],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Dune"
+          }
+        ],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1e",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200030900,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a23"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:30.900Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a23",
+        "permanent": false
+      }
+    }
+  ]
+}

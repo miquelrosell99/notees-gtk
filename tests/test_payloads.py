@@ -49,6 +49,14 @@ class TestRegistry:
         with pytest.raises(ValueError, match="unknown opType"):
             validate_payload("legacy.nodeCreate", {"objectId": UUID_1})
 
+    def test_retired_class_delete_rejected_outright(self) -> None:
+        """The retired ``class.delete`` op carries no schema in the strict
+        registry (the no-wire-compat law): it is
+        rejected like any unknown op type, and it is no longer a known op."""
+        assert "class.delete" not in KNOWN_OP_TYPES
+        with pytest.raises(ValueError, match="unknown opType"):
+            validate_payload("class.delete", {"classId": UUID_1})
+
     def test_schema_lookup(self) -> None:
         assert payload_schema_for("tag.unassign") is PAYLOAD_SCHEMAS["tag.unassign"]
         assert payload_schema_for("nope") is None
@@ -126,6 +134,36 @@ class TestObjectUpdateRefines:
 
     def test_single_carrier_accepted(self) -> None:
         validate_payload("object.update", {"objectId": UUID_1, "contentDeltaB64": "AAAA"})
+
+
+class TestObjectUpdateActivePayload:
+    """The archival ``active`` bit (the
+    classes-gallery batch): ``object.update`` accepts the optional boolean —
+    presence writes, an explicit null is rejected outright (zod
+    ``z.boolean().optional()`` parity) — and ``object.create`` carries no
+    appearance/fundamental fields (the wire-fields precedent)."""
+
+    def test_active_boolean_accepted(self) -> None:
+        validate_payload("object.update", {"objectId": UUID_1, "active": False})
+        validate_payload("object.update", {"objectId": UUID_1, "active": True})
+
+    def test_active_null_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="active"):
+            validate_payload("object.update", {"objectId": UUID_1, "active": None})
+
+    @pytest.mark.parametrize("bad", ["yes", 1, 0, []])
+    def test_non_boolean_active_rejected(self, bad: Any) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("object.update", {"objectId": UUID_1, "active": bad})
+
+    def test_object_create_rejects_active(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("object.create", {"objectId": UUID_1, "active": False})
+
+    def test_builder_emits_active_only_when_set(self) -> None:
+        assert build_object_update(UUID_1, active=False) == {"objectId": UUID_1, "active": False}
+        assert build_object_update(UUID_1, active=True) == {"objectId": UUID_1, "active": True}
+        assert "active" not in build_object_update(UUID_1, icon="mdiStar")
 
 
 class TestColorGrammar:
@@ -464,16 +502,17 @@ class TestBuilders:
 
 
 class TestWorkspaceFeatureSet:
-    """The workspace.feature.set payload — the strict five-
-    family enum (tasks|events|meetings|sources|persons); the retired pre-
-    reshape ids are rejected outright, no wire compat."""
+    """The workspace.feature.set payload — the strict enum of the five core
+    class families (tasks|events|meetings|sources|persons) plus ``journal``
+    (the surfaces-only toggle; the plural
+    ``journals`` stays rejected outright, no wire compat)."""
 
     def test_builder_emits_the_toggle(self) -> None:
         assert build_workspace_feature_set("tasks", True) == {"feature": "tasks", "enabled": True}
         assert build_workspace_feature_set("events", False) == {"feature": "events", "enabled": False}
 
-    @pytest.mark.parametrize("feature", ["tasks", "events", "meetings", "sources", "persons"])
-    def test_every_family_id_accepted(self, feature: str) -> None:
+    @pytest.mark.parametrize("feature", ["tasks", "events", "meetings", "sources", "persons", "journal"])
+    def test_every_feature_id_accepted(self, feature: str) -> None:
         validate_payload("workspace.feature.set", {"feature": feature, "enabled": True})
 
     @pytest.mark.parametrize(

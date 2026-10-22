@@ -8,6 +8,55 @@ history.
 
 ## 2026-10-22
 
+- **feat(protocol,store): the classes gallery + the archival `active` bit +
+  the retired `class.delete` op (main-repo lockstep; GTK lockstep port).** Four wire/applier changes ported from
+  the monorepo's `feat(protocol,store,web)!: classes gallery, archival
+  active bit, retired class.delete` slice (packages/protocol/src/op-types.ts,
+  packages/domain/src/features.ts, packages/store/src/appliers.ts parity).
+  (1) `object.update` gains the archival `active: boolean` — presence
+  writes: `false` archives, `true` unarchives, an explicit null is rejected
+  outright (`StrictBool` + a not-null validator, zod `z.boolean().optional()`
+  parity); the applier projects the bit to `node.is_active` and mirrors it
+  to the class-registry `class.active` projection on class rows (no
+  HLC/timestamp writes on the registry row). Archival REFUSALS fail loud: a
+  LOCKED system class can never be archived (`LockedSystemClassError`, new
+  in `data/errors.py`) and a family base refuses a direct archival write
+  (`MoveGuardError`, toggle-managed) — unarchiving stays legal on both.
+  Archive ≠ trash: no trash row ever lands, and `object.restore` no-ops
+  without one (the unarchive path is the archival write itself).
+  (2) `WORKSPACE_FEATURES` gains `journal` — a surfaces-only toggle (the
+  journal nav view + Today-page management); the new `FamilyFeature` type
+  excludes it and `is_family_feature` guards the applier's family
+  re-derivation, so journal rides the LWW row with zero class bits.
+  (3) `class.delete` is RETIRED from the op registry (22 known op types
+  now): no payload schema, no applier — rejected outright like any unknown
+  op (the no-wire-compat law).
+  (4) `object.delete` on a class node routes four ways, membership RIDING
+  every arm (`class_member_set` is never touched by class removal; the
+  membership sweep is deleted with the retired op): LOCKED system classes
+  (`LOCKED_SYSTEM_CLASSES` in `core/protocol/features.ts` — the date chain +
+  table, asset, query, code, template, comment) fail loud; family bases
+  apply as `workspace.feature.set {enabled: false}`; other system classes
+  archive (`active = false`, no trash row, `permanent` ignored); user
+  classes take the plain trash row. The `children()` read joins the
+  filtering law (active rows only, `packages/store/src/store.ts`
+  `children` parity). The fixture corpus re-vendors byte-identical: +
+  `object-update-active.json`, + `object-delete-class-routing.json`, the
+  journal pair in `workspace-feature-set.json`, − `class-delete-managed.json`
+  (the byte-pin diff against the monorepo is clean). Tests: the fixture
+  gate and op-registry parity drop the retired op; new payload classes pin
+  the `active` shape (boolean-only, null rejected, create carries none);
+  new store suites cover the four routing arms, the archival refusals,
+  archive-≠-trash, the journal surfaces-only toggle, and both-orders
+  convergence of the routed delete vs a racing re-enable; the
+  workspace-feature-set replay asserts the journal off→on pair wins its LWW
+  slot. **Verification:** `uv run pytest` 894 passed / 4 skipped; `ruff
+  check` + `mypy src` clean; the fixture byte-pin diff against the monorepo
+  (`diff -r tests/fixtures/wire <monorepo>/packages/protocol/fixtures`) is
+  clean. Flutter convergence is the third leg of the lockstep law.
+
+## 2026-10-22
+
 - **feat(protocol): WS auth moves to the Authorization header — the
   `?token=` credential query param retires (main-repo lockstep, WIRE.md;
   GTK lockstep port).** The relay now rejects `?token=` credential query

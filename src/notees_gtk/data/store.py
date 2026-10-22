@@ -13,8 +13,13 @@ containers and always roots), m2m class extends with an
 applier-maintained transitive closure (cycles fail loud), fractional
 child-order positions, property values with tombstones, soft/permanent
 deletes with trash retention, per-workspace feature toggles
-(``workspace.feature.set`` — LWW rows, F4 ``class.delete`` routing, the
-``tasks`` enable family seed-ensure), PG5 per-element value
+(``workspace.feature.set`` — LWW rows, the family re-derivation, the
+class-node ``object.delete`` routing onto the family toggle, the
+``tasks`` enable family seed-ensure), the archival ``active`` bit
+(``object.update {active}`` presence-writes
+project to ``node.is_active`` with a class-registry mirror on class
+rows; class removal — archive or trash — never touches memberships,
+they ride), PG5 per-element value
 identity (the row id IS the element id; OR-Set add-wins removes with element
 tombstones; the visible-set derivation every read consults), PC4 binding
 ``active`` (soft-unbind), PC6 date-node-backed qualifiers (normalize-on-write,
@@ -90,10 +95,14 @@ from notees_gtk.core.protocol.features import (
     SYSTEM_CLASS_EXTENDS_IDS,
     SYSTEM_CLASS_ICONS_TASK,
     TASK_FAMILY_SEED,
+    FamilyFeature,
     WorkspaceFeature,
     family_class_names,
     feature_for_managed_class,
     gating_features_for_class,
+    is_family_feature,
+    is_locked_system_class_id,
+    system_class_name_for_id,
     system_class_uuid,
     task_property_uuid,
 )
@@ -102,6 +111,7 @@ from notees_gtk.core.protocol.payloads import validate_payload
 from notees_gtk.data.errors import (
     CycleError,
     EnvelopeValidationError,
+    LockedSystemClassError,
     MoveGuardError,
     NotFoundError,
     PropertyValueShapeError,
@@ -853,7 +863,6 @@ class LocalStore:
             "object.move": self._apply_object_move,
             "class.create": self._apply_class_create,
             "class.update": self._apply_class_update,
-            "class.delete": self._apply_class_delete,
             "class.unassign": self._apply_class_unassign,
             "class.reorder": self._apply_class_reorder,
             "tag.unassign": self._apply_tag_unassign,
@@ -1452,6 +1461,35 @@ class LocalStore:
         if "listStyle" in payload:
             sets.append("list_style = ?")
             values.append(payload["listStyle"])
+        # Archival bit (the classes-gallery batch):
+        # presence writes — `false` archives, `true` unarchives. A reversible
+        # STATE, distinct from the trash table (deletion). Archival REFUSALS
+        # (packages/store/src/appliers.ts ``applyObjectUpdate`` parity): the
+        # locked system classes can never be archived, and family bases are
+        # toggle-managed (the Features setting is their single archive path)
+        # both fail loud below; unarchiving is harmless and stays legal.
+        # Class rows mirror the bit to the registry projection after the
+        # write (the feature-derivation pattern).
+        if "active" in payload:
+            active = bool(payload["active"])
+            if not active and bool(row[3]):
+                if is_locked_system_class_id(object_id):
+                    raise LockedSystemClassError(
+                        f"{op_type}: {system_class_name_for_id(object_id)} is a locked system class"
+                        " — it can never be archived (archival is gallery-toggleable for every"
+                        " OTHER system class)",
+                        op_type,
+                    )
+                managed_feature = feature_for_managed_class(object_id)
+                if managed_feature is not None:
+                    raise MoveGuardError(
+                        f"{op_type}: {system_class_name_for_id(object_id)} is a family base class"
+                        f' — archival is toggle-managed (workspace.feature.set {{feature: "{managed_feature}",'
+                        " enabled: false}); direct archival writes are refused",
+                        op_type,
+                    )
+            sets.append("is_active = ?")
+            values.append(1 if active else 0)
         if payload.get("contentAst") is not None:
             # Class content stays text-only; every other node keeps the rich
             # token stream it was sent. A page's own content may carry inline
@@ -1502,32 +1540,52 @@ class LocalStore:
                 self._class_member_upsert(object_id, class_id, env)
             if asserted_class_ids:
                 self._recompute_class_ids(object_id)
+            # On a class row the archival bit ALSO mirrors to the registry
+            # projection (``class.active``, the pickers/class-hubs read —
+            # the feature-derivation pattern): the class node's bit is the
+            # authority, the registry column its direct projection. No
+            # HLC/timestamp writes on the registry row — the op's HLC
+            # already landed on the node row above.
+            if "active" in payload and bool(row[3]):
+                self._conn.execute(
+                    "UPDATE class SET active = ? WHERE id = ?",
+                    (1 if payload["active"] else 0, object_id),
+                )
         return True
 
-    def _sweep_class_membership(self, class_id: str, purge: bool) -> None:
-        """A deleted class leaves every node's class_ids (the no-divergence
-        law's deletion arm): ``purge`` deletes the membership rows outright
-        (permanent delete / trash.empty), otherwise the pairs are tombstoned
-        (trash — restore brings the class node back; membership is
-        re-assertable from content). Lockstep with the TS reference's
-        ``sweepClassMembership`` (packages/store/src/appliers.ts)."""
-        members = [
-            str(r[0])
-            for r in self._conn.execute(
-                "SELECT node_id FROM class_member_set WHERE class_id = ? AND present = 1",
-                (class_id,),
-            ).fetchall()
-        ]
-        if purge:
-            self._conn.execute("DELETE FROM class_member_set WHERE class_id = ?", (class_id,))
-        else:
-            self._conn.execute(
-                "UPDATE class_member_set SET present = 0 WHERE class_id = ?", (class_id,)
-            )
-        for node_id in members:
-            self._recompute_class_ids(node_id)
-
     def _apply_object_delete(self, env: RelayEnvelope) -> bool:
+        """Delete (lockstep with the TS reference's ``applyObjectDelete``,
+        ``packages/store/src/appliers.ts``).
+
+        Class-node delete routing (the retired
+        ``class.delete`` op's routing, moved here; SCHEMA.md "Workspace
+        features"). Classes are nodes: one delete op, four applier-decided
+        outcomes, all a pure function of the class id so every replica takes
+        the same branch. MEMBERSHIP RIDES in every arm —
+        ``class_member_set`` rows are never touched by class removal
+        (archive or trash); stripping a class from nodes stays the explicit
+        per-node ``class.unassign``.
+
+        Arm 1 — LOCKED system classes (the date chain + table, asset, query,
+        code, template, comment): platform structure, never archivable or
+        deletable. Fails loud, never applied — regardless of ``permanent``.
+        Arm 2 — a family BASE class (task, event, meeting, source, person):
+        routed to the toggle, applied as a feature-disable (the LWW row +
+        the family re-derivation — the Features setting stays the single
+        archive path for the families, and the whole extends family archives
+        with the base). The route decision rides the envelope's HLC, so a
+        racing toggle converges under either delivery order (the row gate).
+        Arm 3 — any OTHER non-locked system class: re-wired to ARCHIVAL
+        (``active = false``), NOT trash (the gallery's disable gesture; the
+        system picks the most reversible interpretation — disable = delete).
+        No trash row: the node is restorable with ``object.update
+        {active: true}``, not ``object.restore`` (archive is not deletion).
+        ``permanent`` is ignored on this arm — archival is the only delete a
+        system class admits.
+        Arm 4 — a USER class: falls through to the plain trash path (soft
+        delete with a trash row, restorable from the Trash hub — the whole
+        subtree rides, exactly like any node).
+        """
         op_type = "object.delete"
         object_id = str(env.payload["objectId"])
         self._require_node(env.workspace_id, object_id, op_type)
@@ -1535,6 +1593,29 @@ class LocalStore:
         ts = _envelope_ts(env)
         deleted_row = self._node_row(env.workspace_id, object_id)
         deleted_is_class = deleted_row is not None and bool(deleted_row[3])
+        if deleted_is_class:
+            if is_locked_system_class_id(object_id):
+                raise LockedSystemClassError(
+                    f"{op_type}: {system_class_name_for_id(object_id)} is a locked system class"
+                    " — it can never be deleted",
+                    op_type,
+                )
+            managed_feature = feature_for_managed_class(object_id)
+            if managed_feature is not None:
+                wrote = self._lww_write_feature_row(env, managed_feature, False)
+                if wrote:
+                    self._derive_family_class_bits(env.workspace_id, managed_feature)
+                return wrote
+            if system_class_name_for_id(object_id) is not None:
+                with self._conn:
+                    self._conn.execute(
+                        "UPDATE nodes SET is_active = 0, updated_at = ? WHERE workspace_id = ? AND id = ?",
+                        (ts, env.workspace_id, object_id),
+                    )
+                    self._conn.execute(
+                        "UPDATE class SET active = 0, updated_at = ? WHERE id = ?", (ts, object_id)
+                    )
+                return True
         if not permanent:
             ids = self._subtree_ids(env.workspace_id, object_id)
             placeholders = ", ".join("?" for _ in ids)
@@ -1544,15 +1625,13 @@ class LocalStore:
                     (object_id, ts),
                 )
                 # Soft delete: trash the whole subtree (restore is whole-tree),
-                # keep the tree rows for restore.
+                # keep the tree rows for restore. Membership RIDES the trash
+                # event — the pairs stand; a
+                # restored class revives with every assignment intact.
                 self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
-                if deleted_is_class:
-                    self._sweep_class_membership(object_id, purge=False)
             return True
         with self._conn:
             self._permanently_delete_subtree(env.workspace_id, object_id, ts)
-            if deleted_is_class:
-                self._sweep_class_membership(object_id, purge=True)
         return True
 
     def _permanently_delete_subtree(self, workspace_id: str, object_id: str, ts: str) -> None:
@@ -1624,10 +1703,11 @@ class LocalStore:
                     # stale row and skip — replay never fails on it.
                     self._conn.execute("DELETE FROM trash WHERE node_id = ?", (node_id,))
                     continue
-                root_was_class = bool(root_row[3])
                 self._permanently_delete_subtree(workspace_id, node_id, ts)
-                if root_was_class:
-                    self._sweep_class_membership(node_id, purge=True)
+                # A class emptied from the trash keeps its memberships
+                # (membership rides): the
+                # surviving pairs become the dangling-reference render state
+                # (SCHEMA.md "Content grammar", Fork 3).
         return True
 
     def _apply_object_restore(self, env: RelayEnvelope) -> bool:
@@ -1635,7 +1715,10 @@ class LocalStore:
         ``applyObjectRestore``). Whole-tree: the subtree that rode THIS trash
         event reactivates; a descendant with its OWN trash row was trashed
         independently and stays trashed (its subtree rides with it). The
-        root's trash row is consumed. Corner: a missing parent row (parent
+        root's trash row is consumed. With NO trash row on the root there is
+        nothing to restore: a safe no-op (archive is not trash — an archived
+        node's unarchive path is ``object.update {active: true}``, never
+        object.restore). Corner: a missing parent row (parent
         permanently deleted / legacy data) reparents to the workspace root;
         a present-but-inactive parent is left alone — restoring the parent
         later heals the tree. LWW against ``object.delete`` is log order."""
@@ -1643,6 +1726,14 @@ class LocalStore:
         object_id = str(env.payload["objectId"])
         row = self._require_node(env.workspace_id, object_id, op_type)
         workspace_id = env.workspace_id
+        # Archive is not trash: without a trash
+        # row on the root there is no trash event to restore from — the op
+        # is a safe no-op (the promote-gesture precedent: restoring a live
+        # carrier no-ops). An ARCHIVED node (is_active = 0, no trash row)
+        # is therefore NOT reactivated here: unarchive rides
+        # ``object.update {active: true}``.
+        if self._conn.execute("SELECT 1 FROM trash WHERE node_id = ?", (object_id,)).fetchone() is None:
+            return False
         with self._conn:
             parent_id = row[2]
             if parent_id is not None and self._node_row(workspace_id, str(parent_id)) is None:
@@ -2134,49 +2225,6 @@ class LocalStore:
             class_id,
             _class_node_fields(payload),
         )
-        return True
-
-    def _apply_class_delete(self, env: RelayEnvelope) -> bool:
-        """Class removal.
-
-        F4 routing: a delete addressed at a family BASE class is applied as a
-        FEATURE-DISABLE (LWW row + the per-class archival re-derivation), so
-        the Features setting is the single archive path for managed classes
-        and the lossy plain delete (membership tombstoning below) never runs
-        on them. Only the five bases route (the owner's exact mapping);
-        family children (book, meeting, birthday, …) keep plain delete
-        semantics. The route decision is a pure function of the class id
-        (fixed vocabulary), so every replica takes the same branch; the LWW
-        row gate keeps the derived state convergent under either delivery
-        order.
-        """
-        class_id = str(env.payload["classId"])
-        ts = _envelope_ts(env)
-        managed_feature = feature_for_managed_class(class_id)
-        if managed_feature is not None:
-            wrote = self._lww_write_feature_row(env, managed_feature, False)
-            if wrote:
-                self._derive_family_class_bits(env.workspace_id, managed_feature)
-            return wrote
-        with self._conn:
-            self._conn.execute("UPDATE class SET active = 0, updated_at = ? WHERE id = ?", (ts, class_id))
-            self._conn.execute(
-                "UPDATE nodes SET is_active = 0, updated_at = ? WHERE workspace_id = ? AND id = ?",
-                (ts, env.workspace_id, class_id),
-            )
-            # The lossy plain path (non-managed classes): the class leaves
-            # every node's class_ids — tombstone the membership pairs and
-            # recompute the affected nodes (otherwise pills render dangling
-            # ids). The toggle path above NEVER touches membership (F3).
-            affected = [
-                str(row[0])
-                for row in self._conn.execute(
-                    "SELECT node_id FROM class_member_set WHERE class_id = ? AND present = 1", (class_id,)
-                )
-            ]
-            self._conn.execute("UPDATE class_member_set SET present = 0 WHERE class_id = ?", (class_id,))
-            for node_id in affected:
-                self._recompute_class_ids(node_id)
         return True
 
     def _apply_class_unassign(self, env: RelayEnvelope) -> bool:
@@ -3215,13 +3263,17 @@ class LocalStore:
     # membership-preserving archival of the family's classes from it.
     # Toggle-off is hide-surfaces-keep-data (F3): the class registry ``active``
     # bit + the class node's ``is_active`` flip; ``class_member_set`` rows are
-    # NEVER touched (plain class.delete tombstones every membership pair and
-    # is lossy; the toggle must not). An absent row means ENABLED (F2). A
-    # class.delete addressed at a family BASE class is ROUTED here (F4,
-    # ``_apply_class_delete``). The family sets and gating walk resolve
-    # through the STATIC seed map in ``features.py`` — never the store's
-    # class_extends table — so replicas converge before the seed envelopes
-    # arrive.
+    # NEVER touched (membership rides — class
+    # removal, archive or trash, never tombstones a pair). An absent row
+    # means ENABLED (F2). An ``object.delete`` addressed at a family BASE
+    # class is ROUTED here (the retired ``class.delete`` op's F4 rule, moved
+    # into the ``object.delete`` applier). The family sets and gating walk
+    # resolve through the STATIC seed map in ``features.py`` — never the
+    # store's class_extends table — so replicas converge before the seed
+    # envelopes arrive. The ``journal`` toggle gates SURFACES only (the
+    # journal nav view, Today-page management) — the date classes stay
+    # always-on and it derives no class bits (``is_family_feature`` is the
+    # guard).
 
     def _lww_write_feature_row(self, env: RelayEnvelope, feature: WorkspaceFeature, enabled: bool) -> bool:
         """LWW-write one feature row. Returns True when the incoming envelope
@@ -3251,7 +3303,7 @@ class LocalStore:
         ).fetchone()
         return row is None or int(row[0]) == 1
 
-    def _derive_family_class_bits(self, workspace_id: str, feature: WorkspaceFeature) -> None:
+    def _derive_family_class_bits(self, workspace_id: str, feature: FamilyFeature) -> None:
         """Re-derive the archival bits for one family's full class set (base +
         extends-children) from the CURRENT feature rows. Each class's bit is
         the AND of its gating features' current rows (own feature when it is
@@ -3361,18 +3413,23 @@ class LocalStore:
 
     def _apply_workspace_feature_set(self, env: RelayEnvelope) -> bool:
         payload = env.payload
-        feature = payload["feature"]
+        feature = cast(WorkspaceFeature, payload["feature"])
         enabled = bool(payload["enabled"])
+        # Family toggles derive class archival bits; the journal toggle gates
+        # SURFACES only (the date classes stay always-on) — no family, no
+        # derivation, just the LWW row (appliers.ts ``applyWorkspaceFeatureSet``
+        # parity).
+        family = feature if is_family_feature(feature) else None
         wrote = self._lww_write_feature_row(env, feature, enabled)
-        if wrote:
-            self._derive_family_class_bits(env.workspace_id, feature)
+        if wrote and family is not None:
+            self._derive_family_class_bits(env.workspace_id, family)
         # The ensure rides every enable PAYLOAD (not only the LWW winner):
         # both delivery orders of a racing toggle pair must author the
         # identical row set — the family re-derivation below normalizes the
         # archival bits to the CURRENT row state on every path.
         if enabled and feature == "tasks":
             self._ensure_task_family_rows(env)
-            self._derive_family_class_bits(env.workspace_id, feature)
+            self._derive_family_class_bits(env.workspace_id, "tasks")
         return wrote
 
     @_synchronized
@@ -3417,14 +3474,20 @@ class LocalStore:
 
     @_synchronized
     def children(self, workspace_id: str, parent_id: str) -> list[NodeRow]:
-        """Direct children in child-order position order (the outliner read)."""
+        """Direct children in child-order position order (the outliner read).
+
+        ACTIVE rows only (the filtering law, packages/store/src/store.ts
+        ``children`` parity): archived and trashed children stay out of every
+        default read — the Trash hub and the Archived surface read through
+        their own seams.
+        """
         rows = self._conn.execute(
             """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.is_embedded, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain,
                       n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description, n.list_style
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
-               WHERE n.workspace_id = ? AND o.parent_id = ?
+               WHERE n.workspace_id = ? AND o.parent_id = ? AND n.is_active = 1
                ORDER BY o.position""",
             (workspace_id, parent_id),
         ).fetchall()
