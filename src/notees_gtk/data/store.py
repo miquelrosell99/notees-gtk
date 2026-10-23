@@ -198,7 +198,13 @@ _log = logging.getLogger(__name__)
 #: causality per ref, killing stale concurrent sets under any delivery
 #: order); a node's hard delete purges its live rows (applier-side, the
 #: subtreeIds pattern), soft-trash keeps them.
-SCHEMA_VERSION = 20
+#: v21 (owner 2026-10-23; web schema v29→v30 parity — the
+#: ``workspace.feature.set`` settings payload): the winning feature row
+#: gains the optional per-feature configuration record (JSON text; NULL =
+#: the winning payload carried no settings — distinct from the empty
+#: record). Purely additive — the guarded ALTER is a no-op for fresh
+#: databases whose canonical aux DDL already carries the column.
+SCHEMA_VERSION = 21
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1627,6 +1633,9 @@ class LocalStore:
                 )
             managed_feature = feature_for_managed_class(object_id)
             if managed_feature is not None:
+                # The routed disable is an old-shape payload: no settings, so
+                # the winning row stores NULL (appliers.ts arm-2 parity — the
+                # same rule as a plain toggle without the key).
                 wrote = self._lww_write_feature_row(env, managed_feature, False)
                 if wrote:
                     self._derive_family_class_bits(env.workspace_id, managed_feature)
@@ -3317,24 +3326,36 @@ class LocalStore:
     # always-on and it derives no class bits (``is_family_feature`` is the
     # guard).
 
-    def _lww_write_feature_row(self, env: RelayEnvelope, feature: WorkspaceFeature, enabled: bool) -> bool:
+    def _lww_write_feature_row(
+        self,
+        env: RelayEnvelope,
+        feature: WorkspaceFeature,
+        enabled: bool,
+        settings: dict[str, Any] | None = None,
+    ) -> bool:
         """LWW-write one feature row. Returns True when the incoming envelope
         won (the row was written); False when a newer (hlc, actor) row already
-        stood (the toggle is dropped, exactly like a stale property.set)."""
+        stood (the toggle is dropped, exactly like a stale property.set).
+        ``settings`` rides the same whole-row comparator: the winning
+        payload's record is stored as JSON text (compact separators — the
+        ``JSON.stringify`` byte parity), and a winning payload WITHOUT
+        settings stores NULL (absent — distinct from ``{}``)."""
         existing = self._conn.execute(
             "SELECT hlc_physical, hlc_logical, actor_id FROM workspace_feature WHERE workspace_id = ? AND feature = ?",
             (env.workspace_id, feature),
         ).fetchone()
         if existing is not None and not self._incoming_wins(env, existing[0], existing[1], existing[2]):
             return False
+        settings_json = json.dumps(settings, ensure_ascii=False, separators=(",", ":")) if settings is not None else None
         self._conn.execute(
             """INSERT INTO workspace_feature
-                 (workspace_id, feature, enabled, hlc_physical, hlc_logical, actor_id)
-               VALUES (?, ?, ?, ?, ?, ?)
+                 (workspace_id, feature, enabled, settings, hlc_physical, hlc_logical, actor_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(workspace_id, feature) DO UPDATE SET
-                 enabled = excluded.enabled, hlc_physical = excluded.hlc_physical,
+                 enabled = excluded.enabled, settings = excluded.settings,
+                 hlc_physical = excluded.hlc_physical,
                  hlc_logical = excluded.hlc_logical, actor_id = excluded.actor_id""",
-            (env.workspace_id, feature, 1 if enabled else 0, env.hlc.physical, env.hlc.logical, env.actor_id),
+            (env.workspace_id, feature, 1 if enabled else 0, settings_json, env.hlc.physical, env.hlc.logical, env.actor_id),
         )
         return True
 
@@ -3457,12 +3478,15 @@ class LocalStore:
         payload = env.payload
         feature = cast(WorkspaceFeature, payload["feature"])
         enabled = bool(payload["enabled"])
+        # The optional settings record rides the whole-row LWW (appliers.ts
+        # ``p.settings`` parity): absent key -> NULL, empty record -> ``{}``.
+        settings = cast(dict[str, Any] | None, payload.get("settings"))
         # Family toggles derive class archival bits; the journal toggle gates
         # SURFACES only (the date classes stay always-on) — no family, no
         # derivation, just the LWW row (appliers.ts ``applyWorkspaceFeatureSet``
         # parity).
         family = feature if is_family_feature(feature) else None
-        wrote = self._lww_write_feature_row(env, feature, enabled)
+        wrote = self._lww_write_feature_row(env, feature, enabled, settings)
         if wrote and family is not None:
             self._derive_family_class_bits(env.workspace_id, family)
         # The ensure rides every enable PAYLOAD (not only the LWW winner):
@@ -3480,14 +3504,29 @@ class LocalStore:
         return self._feature_enabled_now(workspace_id, cast(WorkspaceFeature, feature))
 
     @_synchronized
-    def feature_rows(self, workspace_id: str) -> list[tuple[str, bool, int, int, str | None]]:
-        """The winning feature rows: (feature, enabled, hlc_physical, hlc_logical, actor)."""
+    def feature_rows(
+        self, workspace_id: str
+    ) -> list[tuple[str, bool, int, int, str | None, dict[str, Any] | None]]:
+        """The winning feature rows: (feature, enabled, hlc_physical,
+        hlc_logical, actor, settings) — settings is the parsed winning
+        payload's record, ``None`` when the winning payload carried no
+        settings (stored NULL, distinct from the empty record)."""
         rows = self._conn.execute(
-            "SELECT feature, enabled, hlc_physical, hlc_logical, actor_id FROM workspace_feature"
+            "SELECT feature, enabled, hlc_physical, hlc_logical, actor_id, settings FROM workspace_feature"
             " WHERE workspace_id = ? ORDER BY feature",
             (workspace_id,),
         ).fetchall()
-        return [(str(r[0]), bool(r[1]), int(r[2]), int(r[3]), r[4]) for r in rows]
+        return [
+            (
+                str(r[0]),
+                bool(r[1]),
+                int(r[2]),
+                int(r[3]),
+                r[4],
+                cast(dict[str, Any] | None, json.loads(r[5])) if r[5] is not None else None,
+            )
+            for r in rows
+        ]
 
     # ------------------------------------------------------------- external_ref.*
     #
@@ -4686,11 +4725,14 @@ _WORKSPACE_FEATURE_DDL = """
 -- workspaces need no migration). The applier derives the membership-
 -- preserving archival of the feature's managed system classes from this row
 -- (class registry active bit + the class node's is_active; class_member_set
--- rows are never touched).
+-- rows are never touched). The settings column is the optional per-feature
+-- configuration record (JSON text; NULL = the winning payload carried no
+-- settings — distinct from the empty record).
 CREATE TABLE IF NOT EXISTS workspace_feature (
     workspace_id TEXT NOT NULL,
     feature TEXT NOT NULL,
     enabled INTEGER NOT NULL,
+    settings TEXT,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
@@ -4753,6 +4795,16 @@ def _migrate_v20(conn: sqlite3.Connection) -> None:
     that already ran the canonical aux DDL; existing databases gain the two
     empty tables (the v8 migration precedent)."""
     conn.executescript(_EXTERNAL_REF_DDL)
+
+
+def _migrate_v21(conn: sqlite3.Connection) -> None:
+    """v21 — the workspace.feature.set settings payload (owner 2026-10-23;
+    web schema v29→v30 parity): the winning feature row gains the optional
+    per-feature configuration record (JSON text; NULL = the winning payload
+    carried no settings — distinct from the empty record). Purely additive —
+    the guarded ALTER is a no-op for fresh databases whose canonical aux DDL
+    already carries the column (the v9 guarded-column precedent)."""
+    LocalStore._add_column_if_missing(conn, "workspace_feature", "settings", "TEXT")
 
 
 def _migrate_v9(conn: sqlite3.Connection) -> None:
@@ -5240,4 +5292,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (18, _migrate_v18),
     (19, _migrate_v19),
     (20, _migrate_v20),
+    (21, _migrate_v21),
 )

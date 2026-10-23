@@ -8,6 +8,36 @@ history.
 
 ## 2026-10-23
 
+- **feat(protocol,store): the workspace.feature.set settings payload — the
+  optional per-feature configuration record (main-repo source-library
+  lockstep port, owner 2026-10-23).** The monorepo extended the
+  ``workspace.feature.set`` wire payload with an optional ``settings`` JSON
+  object (``settings: z.record(z.unknown()).optional()`` — record-shaped,
+  feature-scoped vocabulary; the protocol pins only "a JSON object", the
+  Sources library's citekey config et al. ride it). GTK port: (1) the strict
+  ``WorkspaceFeatureSetPayload`` gains the optional record — explicit null
+  rejected (zod ``optional()`` parity, the elementId precedent), non-records
+  fail loud; (2) the LWW row writer persists the winning payload's record as
+  JSON text (compact separators, the ``JSON.stringify`` byte parity) — the
+  settings ride the SAME whole-row (workspace, feature) LWW comparator, and a
+  winning old-shape payload (no settings — including the ``object.delete``
+  arm-2 routed family disable) stores NULL, distinct from the empty record;
+  (3) the derived schema gains the ``workspace_feature.settings`` column —
+  fresh databases via the canonical aux DDL, existing databases via the
+  guarded ``SCHEMA_VERSION`` 20→21 migration (web schema v29→v30 parity);
+  (4) ``feature_rows`` surfaces the parsed record (``None`` = the winning
+  payload carried no settings). No GTK code emits settings yet —
+  convergence-only alignment; the builder is unchanged. The
+  ``workspace-feature-set.json`` fixture re-vendored verbatim (sha256
+  f8989a15…a94431 — the three-envelope settings tail). Tests: the
+  fixture-replay test asserts both delivery orders converge on the final
+  sources winner's record (and the intermediate old-shape re-enable cleared
+  it to NULL); a unit test ports the main repo's settings-semantics test
+  (persist, old-shape-wins → NULL, ``{}`` round-trips as a real value, stale
+  settings op drops whole); payload-shape tests pin the record/null rules.
+  **Verification:** `uv run pytest` 925 passed / 4 skipped; `uv run ruff
+  check` clean; `uv run mypy src` clean.
+
 - **feat(protocol,store): the source-library seed roster — renames, 30 new
   source type-classes, the authorship model, and the archival-is-not-absence
   hierarchy rebuild (main-repo source-library lockstep port, owner
