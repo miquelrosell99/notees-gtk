@@ -545,6 +545,23 @@ class TestWorkspaceFeatureSet:
         with pytest.raises(ValidationError):
             validate_payload("workspace.feature.set", {"feature": "tasks", "enabled": []})
 
+    def test_settings_record_accepted_and_optional(self) -> None:
+        """The optional per-feature configuration record (the Sources citekey config et al.): any JSON object rides, absent
+        stays valid, an explicit null is rejected (zod ``optional()`` parity)."""
+        validate_payload("workspace.feature.set", {"feature": "sources", "enabled": True})
+        validate_payload(
+            "workspace.feature.set",
+            {"feature": "sources", "enabled": True, "settings": {"citekeyPattern": "[auth:lower][year]"}},
+        )
+        validate_payload("workspace.feature.set", {"feature": "sources", "enabled": True, "settings": {}})
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": "sources", "enabled": True, "settings": None})
+
+    @pytest.mark.parametrize("settings", ["[auth]", ["a"], 42, True])
+    def test_settings_must_be_a_record(self, settings: Any) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("workspace.feature.set", {"feature": "sources", "enabled": True, "settings": settings})
+
 
 class TestPropertyWirePayloads:
     """The property-wire batch: the optional PG5 elementId (UUID, explicit

@@ -2543,7 +2543,43 @@ class TestWorkspaceFeatureToggle:
         # A stale toggle drops whole (ignored, no state change).
         assert store.apply_remote(self.feature_env("tasks", True, hlc=(15, 0))) is False
         assert store.is_feature_enabled(WS_A, "tasks") is False
-        assert store.feature_rows(WS_A) == [("tasks", False, 20, 0, ACTOR)]
+        assert store.feature_rows(WS_A) == [("tasks", False, 20, 0, ACTOR, None)]
+
+    def test_settings_ride_the_whole_row_lww(self, store: LocalStore) -> None:
+        """The optional settings record rides the row LWW (appliers.ts
+        ``lwwWriteFeatureRow`` parity, store.test.ts "workspace.feature.set
+        settings"): a winning payload with settings persists them, an
+        old-shape winning payload stores NULL (settings are gone — absent is
+        distinct from the empty record), and a stale settings op drops whole."""
+        sources = (1727200010000, 0)
+        settings = {"citekeyPattern": "[auth:lower][year]", "autoCitekey": True}
+        env = make_env(
+            "workspace.feature.set",
+            {"feature": "sources", "enabled": True, "settings": settings},
+            hlc=sources,
+        )
+        assert store.apply_remote(env) is True
+        assert store.feature_rows(WS_A) == [("sources", True, 1727200010000, 0, ACTOR, settings)]
+        # Old shape wins: no settings key, so the row stores NULL.
+        assert store.apply_remote(self.feature_env("sources", True, hlc=(1727200010100, 0))) is True
+        assert store.feature_rows(WS_A) == [("sources", True, 1727200010100, 0, ACTOR, None)]
+        # An empty record is a REAL value, not absent: it round-trips as {}.
+        empty_env = make_env(
+            "workspace.feature.set",
+            {"feature": "sources", "enabled": True, "settings": {}},
+            hlc=(1727200010200, 0),
+        )
+        assert store.apply_remote(empty_env) is True
+        assert store.feature_rows(WS_A) == [("sources", True, 1727200010200, 0, ACTOR, {})]
+        # A stale settings op loses the LWW compare: the row is untouched.
+        stale_env = make_env(
+            "workspace.feature.set",
+            {"feature": "sources", "enabled": False, "settings": {"citekeyPattern": "[stale]"}},
+            hlc=(1727200010150, 0),
+        )
+        assert store.apply_remote(stale_env) is False
+        assert store.feature_rows(WS_A) == [("sources", True, 1727200010200, 0, ACTOR, {})]
+        assert store.is_feature_enabled(WS_A, "sources") is True
 
     def test_disable_cascades_through_the_extends_children(self, store: LocalStore) -> None:
         self._seed_calendar_family(store)
@@ -2722,7 +2758,7 @@ class TestWorkspaceFeatureToggle:
         for env in (*base, reenable, routed_delete):
             backward.apply_remote(env)
         for instance in (forward, backward):
-            assert instance.feature_rows(WS_A) == [("tasks", True, 40, 0, ACTOR)]
+            assert instance.feature_rows(WS_A) == [("tasks", True, 40, 0, ACTOR, None)]
             assert instance.node(WS_A, self.TASK_CLASS).is_active is True
             assert instance.node(WS_A, uid("member")).class_ids == (self.TASK_CLASS,)
             assert raw_rows(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(1,)]

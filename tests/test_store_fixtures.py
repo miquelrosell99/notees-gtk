@@ -567,10 +567,14 @@ class TestWorkspaceFeatureSetFixture:
     task-family ensure on every enable payload, so both delivery orders
     converge byte-identical (the archival bits normalize to the current row
     state on every path). The journal pair rides
-    the same LWW row — surfaces-only, no class bits derived."""
+    the same LWW row — surfaces-only, no class bits derived. The settings
+    tail: the intermediate old-shape re-enable clears the
+    sources settings to NULL under the same whole-row LWW comparator and the
+    final envelope's record wins — identically under the reversed replay."""
 
     TASKS_DISABLE = "0192a000-0000-7000-8000-000000000602"
     TASK_CLASS = "00000000-0000-0000-0001-000000000012"
+    SOURCES_SETTINGS = {"citekeyPattern": "[auth:lower][year]", "autoCitekey": True}
 
     def _load(self) -> list[RelayEnvelope]:
         return [RelayEnvelope.model_validate(item) for item in load_fixture("workspace-feature-set.json")]
@@ -600,6 +604,18 @@ class TestWorkspaceFeatureSetFixture:
                 instance,
                 "SELECT feature, enabled FROM workspace_feature ORDER BY feature",
             ) == [("events", 0), ("journal", 1), ("sources", 1), ("tasks", 0)]
+            # The settings tail converges on the final sources winner's
+            # record; the tasks winner's old-shape payload stored NULL.
+            assert raw(
+                instance,
+                "SELECT settings FROM workspace_feature WHERE feature = 'sources'",
+            ) == [(json.dumps(self.SOURCES_SETTINGS, ensure_ascii=False, separators=(",", ":")),)]
+            assert raw(
+                instance,
+                "SELECT settings FROM workspace_feature WHERE feature = 'tasks'",
+            ) == [(None,)]
+            assert instance.feature_rows(WS)[2][0:2] == ("sources", True)
+            assert instance.feature_rows(WS)[2][5] == self.SOURCES_SETTINGS
             # The losing enable still authored the family: the task class and
             # its six schemas exist, archived per the winning disable.
             assert raw(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(0,)]

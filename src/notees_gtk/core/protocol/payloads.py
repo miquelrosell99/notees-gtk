@@ -594,10 +594,26 @@ class WorkspaceFeatureSetPayload(_Strict):
     wire compat. LWW by envelope HLC on (workspace,
     feature); the derived ``workspace_feature`` table stores the winning row
     and an ABSENT row means enabled (F2).
+
+    The optional ``settings`` record (op-types.ts ``settings:
+    z.record(z.unknown()).optional()`` — the Sources
+    library's citekey config et al.) is the per-feature configuration blob:
+    record-shaped, feature-scoped vocabulary — the protocol pins only "a JSON
+    object". It rides the same whole-row LWW: a payload WITHOUT ``settings``
+    stores NULL and reads back absent (distinct from the empty record).
     """
 
     feature: Literal["tasks", "events", "meetings", "sources", "persons", "journal"]
     enabled: bool
+    # zod parity: an explicit null is rejected, not "absent" (the
+    # PropertySetPayload elementId precedent).
+    settings: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check_settings_not_null(self) -> WorkspaceFeatureSetPayload:
+        if "settings" in self.model_fields_set and self.settings is None:
+            raise ValueError("workspace.feature.set 'settings' must be a record when present")
+        return self
 
 
 #: The external-ref key cap (the ``EXTERNAL_REF_MAX_LENGTH`` op-types.ts
