@@ -24,6 +24,8 @@ from notees_gtk.core.protocol.payloads import (
     build_class_reorder,
     build_class_unassign,
     build_class_update,
+    build_external_ref_delete,
+    build_external_ref_set,
     build_object_create,
     build_object_move,
     build_object_update,
@@ -970,3 +972,42 @@ class TestPropertyDisplayPositions:
         option = payload.options[0]
         assert option.icon == "mdiCircle"
         assert set(option.model_dump()) == {"id", "label", "icon"}  # stripped, never rejected
+
+
+class TestExternalRefPayloads:
+    """The external_ref.* payloads (owner requirement 2026-10-23 — the
+    importer/sync-plugin mapping substrate): the caller-namespaced ``ref``
+    key is opaque to the protocol but length-capped (1..512 — the
+    ``EXTERNAL_REF_MAX_LENGTH`` op-types.ts parity), ``nodeId`` is a bare
+    uuid with no referential integrity, and both schemas are strict — extra
+    keys fail loud like any retired key."""
+
+    REF = "gcal:event:abc123@google.com"
+
+    def test_builders_emit_the_mapping_ops(self) -> None:
+        assert build_external_ref_set(self.REF, UUID_1) == {"ref": self.REF, "nodeId": UUID_1}
+        assert build_external_ref_delete(self.REF) == {"ref": self.REF}
+
+    def test_ref_length_bounds_enforced(self) -> None:
+        validate_payload("external_ref.set", {"ref": "x", "nodeId": UUID_1})
+        validate_payload("external_ref.set", {"ref": "x" * 512, "nodeId": UUID_1})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.set", {"ref": "", "nodeId": UUID_1})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.set", {"ref": "x" * 513, "nodeId": UUID_1})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.delete", {"ref": ""})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.delete", {"ref": "x" * 513})
+
+    def test_node_id_must_be_a_uuid(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.set", {"ref": self.REF, "nodeId": "not-a-uuid"})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.set", {"ref": self.REF})
+
+    def test_extra_keys_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.set", {"ref": self.REF, "nodeId": UUID_1, "kind": "event"})
+        with pytest.raises(ValidationError):
+            validate_payload("external_ref.delete", {"ref": self.REF, "nodeId": UUID_1})

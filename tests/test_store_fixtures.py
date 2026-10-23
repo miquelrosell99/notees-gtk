@@ -118,6 +118,8 @@ _CONVERGENCE_TABLES = (
     "property_value_tombstone",
     "property_value_element_tombstone",
     "workspace_feature",
+    "external_ref",
+    "external_ref_tombstone",
 )
 
 
@@ -1393,3 +1395,81 @@ class TestPropertyValidationRulesFixture:
             "SELECT value, id FROM property_value WHERE node_id = ? AND property_schema_id = ? ORDER BY rowid",
             (self.OWNER, self.KEYWORDS),
         ) == [(json.dumps("good"), self.GOOD_ELEMENT)]
+
+
+class TestExternalRefFixture:
+    """Replay of external-ref.json (owner requirement 2026-10-23 — the
+    importer/sync-plugin mapping substrate): two node creates, eight
+    ``external_ref.set`` writes racing on four refs (a move, a delete race),
+    two ``external_ref.delete`` writes, and the permanent ``object.delete``
+    purge of node A. Mirrors the monorepo external-ref.test.ts fixture
+    assertions: the racing-set and set-beats-stale-delete-after-reorder
+    scenarios converge identically under either delivery order of the
+    mapping ops, and the hard delete purges node A's live rows while the
+    ref tombstones survive (keyed by ref)."""
+
+    A = "0192a000-0000-7000-8000-000000000b10"
+    B = "0192a000-0000-7000-8000-000000000b11"
+    REF_GCAL = "gcal:event:abc123@google.com"
+    REF_DEF456 = "gcal:event:def456@google.com"
+    REF_GHI789 = "gcal:event:ghi789@google.com"
+    REF_READWISE = "readwise:highlight:12345"
+    REF_READITLATER = "readitlater:entry:7788"
+
+    @staticmethod
+    def _envelopes() -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("external-ref.json")]
+
+    def test_full_replay_lands_the_final_mapping_state(self, store: LocalStore) -> None:
+        envelopes = self._envelopes()
+        for envelope in envelopes:
+            assert store.apply_remote(envelope) is True
+        # Idempotent replay: every envelope dedupes to False.
+        assert [store.apply_remote(envelope) for envelope in envelopes] == [False] * len(envelopes)
+        self._assert_final_state(store)
+
+    def test_mapping_ops_converge_under_reversed_delivery(self, tmp_path: Path) -> None:
+        envelopes = self._envelopes()
+        creates, mapping_ops, purge = envelopes[:2], envelopes[2:-1], envelopes[-1]
+        forward = LocalStore(tmp_path / "forward.db")
+        for envelope in [*creates, *mapping_ops, purge]:
+            assert forward.apply_remote(envelope) is True
+        backward = LocalStore(tmp_path / "backward.db")
+        for envelope in [*creates, *reversed(mapping_ops), purge]:
+            # Reversed delivery drops the lower-tuple racing sets by LWW
+            # (e.g. the readitlater A-set against the already-standing
+            # higher-tuple B-set) — convergence, not a bug.
+            backward.apply_remote(envelope)
+        for instance in (forward, backward):
+            self._assert_final_state(instance)
+            instance.close()
+
+    def _assert_final_state(self, store: LocalStore) -> None:
+        """The post-purge derived state both delivery orders must reach
+        (the monorepo external-ref.test.ts fixture assertions, extended by
+        the fixture's def456 delete + ghi789 purge)."""
+        # The gcal mapping MOVED A -> B (…050400 beat …050200); readitlater
+        # moved A -> B too — its racing pair is the two sets (…050700 from
+        # the laptop vs …050750 from the phone; the higher tuple wins), with
+        # no delete in the fixture.
+        assert store.resolve_external_ref(WS, self.REF_GCAL) == self.B
+        assert store.resolve_external_ref(WS, self.REF_READITLATER) == self.B
+        # The two deletes tombstoned readwise and def456 (ghi789's sibling).
+        assert store.resolve_external_ref(WS, self.REF_READWISE) is None
+        assert store.resolve_external_ref(WS, self.REF_DEF456) is None
+        # ghi789 rode node A and died with its purge (the hard-delete purge).
+        assert store.resolve_external_ref(WS, self.REF_GHI789) is None
+        # The reverse read: A is purged (no live rows), B carries both refs sorted.
+        assert store.external_refs_of(WS, self.A) == []
+        assert store.external_refs_of(WS, self.B) == [self.REF_GCAL, self.REF_READITLATER]
+        # The ref tombstones survive the node's purge (keyed by ref).
+        assert raw(
+            store,
+            "SELECT ref FROM external_ref_tombstone WHERE workspace_id = ? ORDER BY ref",
+            (WS,),
+        ) == [(self.REF_DEF456,), (self.REF_READWISE,)]
+        assert raw(
+            store,
+            "SELECT ref, node_id FROM external_ref WHERE workspace_id = ? ORDER BY ref",
+            (WS,),
+        ) == [(self.REF_GCAL, self.B), (self.REF_READITLATER, self.B)]

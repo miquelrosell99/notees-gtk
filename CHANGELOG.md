@@ -6,6 +6,60 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-23
+
+- **feat(protocol,store): the external_ref.* op family — the importer/
+  sync-plugin external-id mapping substrate (main-repo lockstep, owner
+  requirement 2026-10-23; GTK lockstep port).** Two new wire ops ported
+  from the monorepo's external-id mappings slice (packages/protocol/src/
+  op-types.ts, packages/store/src/appliers.ts + schema.ts parity):
+  `external_ref.set {ref, nodeId}` and `external_ref.delete {ref}` — the
+  durable per-workspace `externalId -> nodeId` map (a Google Calendar event
+  UID, a Readwise highlight id) so importer/sync re-runs update the mapped
+  node instead of duplicating it. (1) The op registry gains both ops (24
+  known op types — the op-types.ts `OP_PAYLOAD_SCHEMAS` parity); the strict
+  payload schemas cap the opaque caller-namespaced `ref` key at 1..512
+  chars (`EXTERNAL_REF_MAX_LENGTH` parity) and require a uuid `nodeId`
+  with no referential integrity (the `property_value` precedent) — extra
+  keys fail loud like any retired key; the builders
+  `build_external_ref_set`/`build_external_ref_delete` ride along. (2) The
+  store gains the derived tables at SCHEMA_VERSION 20 (web schema v30
+  parity, purely additive — the v8 migration precedent): `external_ref`
+  (PK (workspace_id, ref), envelope causality columns, index on node_id) +
+  `external_ref_tombstone` (the `property_value_tombstone` precedent). The
+  appliers converge on the TS reference exactly: one LIVE mapping per ref,
+  LWW by the full envelope (hlc, actor) against the single standing
+  live-or-tombstone record — a re-set MOVES the mapping, a stale write
+  drops untouched, a winning set supersedes the tombstone, a winning
+  delete (UNMAPPED refs included) lands the tombstone that kills stale
+  concurrent sets under any delivery order. A node's hard delete
+  (`object.delete {permanent: true}` and `trash.empty`) purges its live
+  rows (the subtreeIds pattern); soft-trash keeps them; the ref tombstones
+  survive the purge (keyed by ref). Reads: `resolve_external_ref`
+  (absent/tombstoned -> None) and `external_refs_of` (sorted — the
+  `externalRefsOf` reverse scan). (3) The canonical fixture
+  `external-ref.json` re-vendors byte-identical (sha256
+  9cf46b1b630be8db109cf999f451242ca880398eb43c2decc79068994145a47e, the
+  convergence-gate corpus). Tests: the fixture replay suite replays the
+  12-envelope scenario (racing sets, the move, both deletes, the permanent
+  purge) asserting the same final derived state under forward and reversed
+  mapping-op delivery plus idempotent replay, with both new tables in the
+  byte-deterministic convergence dump; new store suites cover the LWW
+  move/stale-drop/actor-tiebreak, the tombstone-kills-stale-set and
+  delete-of-unmapped-ref semantics, the hard-delete purge vs soft-trash
+  retention, the tombstones-survive-purge invariant, the unsynced-node
+  (no-referential-integrity) read, and apply-time payload rejections; new
+  payload suites pin the ref bounds, the uuid shape, and the strict
+  extra-key rejection; the envelope round-trip and op-registry parity
+  suites cover the new ops. **Verification:** `uv run pytest` 912 passed /
+  4 skipped; `ruff check` + `mypy src` clean; the vendored
+  `external-ref.json` is sha256-identical to the monorepo's. Note: the
+  full-corpus `diff -r` against the monorepo also shows pre-existing drift
+  from OTHER in-flight monorepo slices (a longer
+  `object-delete-class-routing.json` + the new `property-assign.json`) —
+  that re-vendor belongs to those slices' GTK ports, not this one. Flutter
+  convergence is the remaining leg of the lockstep law.
+
 ## 2026-10-22
 
 - **feat(protocol,store): the classes gallery + the archival `active` bit +

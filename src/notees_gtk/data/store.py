@@ -41,8 +41,15 @@ rich token stream on content writes — create-as-main and promotion remain
 the lossy boundaries), the class conversion capability (``class.create``
 on an existing node DECLARES it a class: the identity bit flips, a parented
 node is cut to a root, the render bit clears, absent registry fields
-preserve), and the M38 ``asset`` property type (node-typed values validated
-as asset-node references — the filter is implicit in the type).
+preserve), the M38 ``asset`` property type (node-typed values validated
+as asset-node references — the filter is implicit in the type), and the
+2026-10-23 ``external_ref.*`` family (the importer/sync-plugin external-id
+mapping substrate — one LIVE mapping per ``(workspace, ref)`` key, LWW by
+envelope ``(hlc, actor)``, the delete side keeping a per-ref tombstone that
+kills stale concurrent sets under any delivery order, the reads
+:meth:`resolve_external_ref` / :meth:`external_refs_of`, and the hard-delete
+purge of a subtree's live rows — soft-trash keeps them, the tombstones
+survive either way).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -176,7 +183,22 @@ _log = logging.getLogger(__name__)
 #: monorepo's migrate-drop-binding-required.mts, Path B — appended
 #: propertySchema.update compensation per affected schema) + the epoch
 #: bump, so the backfill is deliberately NULL.
-SCHEMA_VERSION = 19
+#: v18 (owner ruling 2026-10-21; web schema v25→v26 parity): `sequence`
+#: retires from the binding — class panels render alphabetically.
+#: v19 (owner ruling 2026-10-21; web schema v26→v27 parity): the `readonly`
+#: render contract retires from the property schema — never user
+#: configuration, so clients derive readonly-ness from the system property
+#: list instead of storing it.
+#: v20 (owner requirement 2026-10-23; web schema v30 parity): the
+#: ``external_ref.*`` op family — the importer/sync-plugin external-id
+#: mapping substrate (SCHEMA.md "External-id mappings"). Purely additive:
+#: the ``external_ref`` live-row table (PK (workspace_id, ref), LWW by
+#: envelope (hlc, actor)) + the ``external_ref_tombstone`` table (the
+#: property_value_tombstone precedent — a winning delete records its
+#: causality per ref, killing stale concurrent sets under any delivery
+#: order); a node's hard delete purges its live rows (applier-side, the
+#: subtreeIds pattern), soft-trash keeps them.
+SCHEMA_VERSION = 20
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -880,6 +902,8 @@ class LocalStore:
             "collection.member.add": lambda env: self._apply_collection_member(env, present=1, add_wins=True),
             "collection.member.remove": lambda env: self._apply_collection_member(env, present=0, add_wins=False),
             "workspace.feature.set": self._apply_workspace_feature_set,
+            "external_ref.set": self._apply_external_ref_set,
+            "external_ref.delete": self._apply_external_ref_delete,
         }
         self._migrate()
 
@@ -1660,6 +1684,11 @@ class LocalStore:
             "property_value_tombstone",
             "property_value_element_tombstone",
             "node_asset",
+            # External-id mappings are OWNED rows (a hard-deleted node leaves
+            # no mapping behind — soft-trash keeps them); the ref tombstones
+            # survive, keyed by ref, bounding garbage to the ref name
+            # (SCHEMA.md "External-id mappings", appliers.ts parity).
+            "external_ref",
         ):
             self._conn.execute(f"DELETE FROM {table} WHERE node_id IN ({placeholders})", ids)
         self._conn.execute(
@@ -3451,6 +3480,129 @@ class LocalStore:
         ).fetchall()
         return [(str(r[0]), bool(r[1]), int(r[2]), int(r[3]), r[4]) for r in rows]
 
+    # ------------------------------------------------------------- external_ref.*
+    #
+    # External-id mappings for importer/sync plugins (owner requirement
+    # 2026-10-23 — the plugin mapping substrate, SCHEMA.md "External-id
+    # mappings"): a durable per-workspace ``externalId -> nodeId`` map carried
+    # by the log. LWW by envelope (hlc, actor) on the (workspace, ref) key
+    # against the single standing live-or-tombstone record: a re-set MOVES
+    # the mapping, a racing pair converges on the higher tuple under either
+    # delivery order, and a stale write (full tuple <= the standing record)
+    # is dropped untouched. The delete side keeps a tombstone per ref — a
+    # delete of an UNMAPPED ref still lands it — so a stale set delivered
+    # after the winning delete is dropped on every replica and wipe -> replay
+    # converges. At most one of {live row, tombstone} stands per key: a
+    # winning set deletes the tombstone, a winning delete deletes the live
+    # row. ``nodeId`` carries no referential integrity (the property_value
+    # precedent — the mapping may name a node another device has not synced
+    # yet); a node's HARD delete purges its live rows (the subtreeIds pattern
+    # in ``_permanently_delete_subtree``), soft-trash keeps them; the ref
+    # tombstones survive their node's purge (keyed by ref).
+
+    def _external_ref_record(
+        self, workspace_id: str, ref: str
+    ) -> tuple[str, str | None, int, int, str | None] | None:
+        """The one live-or-tombstone record per (workspace, ref), ``None``
+        when neither exists (the ``externalRefRecord`` appliers.ts parity)."""
+        row = self._conn.execute(
+            "SELECT node_id, hlc_physical, hlc_logical, actor_id FROM external_ref"
+            " WHERE workspace_id = ? AND ref = ?",
+            (workspace_id, ref),
+        ).fetchone()
+        if row is not None:
+            return ("live", str(row[0]), int(row[1]), int(row[2]), row[3])
+        row = self._conn.execute(
+            "SELECT hlc_physical, hlc_logical, actor_id FROM external_ref_tombstone"
+            " WHERE workspace_id = ? AND ref = ?",
+            (workspace_id, ref),
+        ).fetchone()
+        if row is not None:
+            return ("tombstone", None, int(row[0]), int(row[1]), row[2])
+        return None
+
+    def _apply_external_ref_set(self, env: RelayEnvelope) -> bool:
+        """Upsert one LIVE mapping per ref (lockstep with the TS reference's
+        ``applyExternalRefSet``, ``packages/store/src/appliers.ts``).
+
+        LWW by the full envelope (hlc, actor) against the standing
+        live-or-tombstone record: a stale write leaves state untouched; a
+        winning set re-targets the mapping (a move — re-importing onto a
+        different node is legal) and supersedes any standing tombstone.
+        """
+        ref = str(env.payload["ref"])
+        node_id = str(env.payload["nodeId"])
+        record = self._external_ref_record(env.workspace_id, ref)
+        if record is not None and not self._incoming_wins(env, record[2], record[3], record[4]):
+            return False  # a stale write (full tuple <= the standing record)
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO external_ref
+                     (ref, workspace_id, node_id, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(workspace_id, ref) DO UPDATE SET
+                     node_id = excluded.node_id, hlc_physical = excluded.hlc_physical,
+                     hlc_logical = excluded.hlc_logical, actor_id = excluded.actor_id""",
+                (ref, env.workspace_id, node_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+            )
+            # The winning set supersedes any standing tombstone (the invariant).
+            self._conn.execute(
+                "DELETE FROM external_ref_tombstone WHERE workspace_id = ? AND ref = ?",
+                (env.workspace_id, ref),
+            )
+        return True
+
+    def _apply_external_ref_delete(self, env: RelayEnvelope) -> bool:
+        """The LWW delete side (lockstep with ``applyExternalRefDelete``):
+        the winning delete takes the live row down (when one stands) and
+        records its causality on the per-ref tombstone — a delete of an
+        UNMAPPED ref still lands the tombstone, which is what kills stale
+        concurrent sets delivered later."""
+        ref = str(env.payload["ref"])
+        record = self._external_ref_record(env.workspace_id, ref)
+        if record is not None and not self._incoming_wins(env, record[2], record[3], record[4]):
+            return False
+        with self._conn:
+            if record is not None and record[0] == "live":
+                self._conn.execute(
+                    "DELETE FROM external_ref WHERE workspace_id = ? AND ref = ?",
+                    (env.workspace_id, ref),
+                )
+            self._conn.execute(
+                """INSERT INTO external_ref_tombstone
+                     (ref, workspace_id, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(workspace_id, ref) DO UPDATE SET
+                     hlc_physical = excluded.hlc_physical, hlc_logical = excluded.hlc_logical,
+                     actor_id = excluded.actor_id
+                   WHERE excluded.hlc_physical > hlc_physical
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical > hlc_logical)
+                      OR (excluded.hlc_physical = hlc_physical AND excluded.hlc_logical = hlc_logical
+                          AND excluded.actor_id > COALESCE(actor_id, ''))""",
+                (ref, env.workspace_id, env.hlc.physical, env.hlc.logical, env.actor_id),
+            )
+        return True
+
+    @_synchronized
+    def resolve_external_ref(self, workspace_id: str, ref: str) -> str | None:
+        """The mapped node id for ``ref`` — ``None`` when absent or tombstoned
+        (the ``resolveExternalRef`` store.ts parity)."""
+        row = self._conn.execute(
+            "SELECT node_id FROM external_ref WHERE workspace_id = ? AND ref = ?",
+            (workspace_id, ref),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    @_synchronized
+    def external_refs_of(self, workspace_id: str, node_id: str) -> list[str]:
+        """Every ref mapped to ``node_id``, sorted (the ``externalRefsOf``
+        store.ts parity — the reverse read scans the derived table)."""
+        rows = self._conn.execute(
+            "SELECT ref FROM external_ref WHERE workspace_id = ? AND node_id = ? ORDER BY ref",
+            (workspace_id, node_id),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
     # -------------------------------------------------------------- node cache
 
     @_synchronized
@@ -4537,6 +4689,44 @@ CREATE TABLE IF NOT EXISTS workspace_feature (
 );
 """
 
+_EXTERNAL_REF_DDL = """
+-- External-id mappings for importer/sync plugins (the external_ref.* ops,
+-- owner requirement 2026-10-23 — the plugin mapping substrate, SCHEMA.md
+-- "External-id mappings"): one LIVE mapping per (workspace_id, ref), LWW by
+-- envelope (hlc, actor) on the ref key, so a re-set moves the mapping and
+-- racing writes converge on the higher tuple; a node may carry MANY refs
+-- (the reverse read scans by node_id). No referential integrity by design
+-- (the property_value precedent): a mapping may name a node another device
+-- has not synced yet. A node's HARD delete purges its live rows (the
+-- subtreeIds pattern in the object.delete/trash.empty appliers); soft-trash
+-- keeps them.
+CREATE TABLE IF NOT EXISTS external_ref (
+    ref TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (workspace_id, ref)
+);
+CREATE INDEX IF NOT EXISTS idx_external_ref_node ON external_ref (node_id);
+
+-- The delete side of the ref-key LWW (the property_value_tombstone
+-- precedent): every winning delete records its causality — including a
+-- delete of an UNMAPPED ref — so a stale set delivered after the winning
+-- delete is dropped on every replica and wipe -> replay converges under any
+-- delivery order. Keyed by (workspace, ref) only: the tombstones of a
+-- hard-deleted node's refs survive it (they bound garbage to that ref name).
+CREATE TABLE IF NOT EXISTS external_ref_tombstone (
+    ref TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    hlc_physical INTEGER NOT NULL DEFAULT 0,
+    hlc_logical INTEGER NOT NULL DEFAULT 0,
+    actor_id TEXT,
+    PRIMARY KEY (workspace_id, ref)
+);
+"""
+
 
 def _migrate_v8(conn: sqlite3.Connection) -> None:
     """Per-workspace feature toggles (web schema v9→v10 parity).
@@ -4544,6 +4734,16 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     that already ran the DDL; existing databases gain the empty table
     (empty = all features enabled)."""
     conn.executescript(_WORKSPACE_FEATURE_DDL)
+
+
+def _migrate_v20(conn: sqlite3.Connection) -> None:
+    """v20 — the external_ref.* op family (owner requirement 2026-10-23;
+    web schema v30 parity): the external-id mapping substrate — the live-row
+    table + the delete tombstone (the property_value_tombstone precedent).
+    Purely additive — CREATE IF NOT EXISTS is a no-op for fresh databases
+    that already ran the canonical aux DDL; existing databases gain the two
+    empty tables (the v8 migration precedent)."""
+    conn.executescript(_EXTERNAL_REF_DDL)
 
 
 def _migrate_v9(conn: sqlite3.Connection) -> None:
@@ -4701,7 +4901,7 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 #: a complete database is untouched and a partial one converges to the full
 #: table set. ``_NODES_DDL`` is deliberately excluded — the node table's
 #: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
-_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL
+_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL
 
 
 def _migrate_v13(conn: sqlite3.Connection) -> None:
@@ -5030,4 +5230,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (17, _migrate_v17),
     (18, _migrate_v18),
     (19, _migrate_v19),
+    (20, _migrate_v20),
 )

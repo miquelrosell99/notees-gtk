@@ -88,6 +88,8 @@ WIRE_TABLES = {
     "collection_member",
     "trash",
     "workspace_feature",
+    "external_ref",
+    "external_ref_tombstone",
 }
 
 
@@ -4946,3 +4948,187 @@ class TestPropertyScope:
             "SELECT value FROM property_value WHERE node_id = ? AND property_schema_id = ? ORDER BY idx",
             (NODE, multi_schema),
         ) == [(json.dumps("good"),)]
+
+
+class TestExternalRef:
+    """The external_ref.* appliers (owner requirement 2026-10-23 — the
+    importer/sync-plugin mapping substrate): one LIVE mapping per
+    (workspace, ref), LWW by the full envelope (hlc, actor) against the
+    single standing live-or-tombstone record; the delete side keeps a
+    per-ref tombstone (a delete of an UNMAPPED ref still lands it) so a
+    stale set delivered after the winning delete drops on every replica; a
+    node's hard delete purges its live rows, soft-trash keeps them; ref
+    tombstones survive their node's purge (keyed by ref)."""
+
+    REF_GCAL = "gcal:event:abc123@google.com"
+    REF_READWISE = "readwise:highlight:12345"
+
+    @staticmethod
+    def ref_env(op_type: str, ref: str, *, hlc: tuple[int, int], node_id: str | None = None) -> RelayEnvelope:
+        payload: dict[str, Any] = {"ref": ref}
+        if node_id is not None:
+            payload["nodeId"] = node_id
+        return make_env(op_type, payload, hlc=hlc)
+
+    def test_set_resolves_and_many_refs_ride_one_node_sorted(self, store: LocalStore) -> None:
+        other = uid("node-2")
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        store.apply_remote(create_env(other, hlc=(2, 0), name="Event B"))
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) is None
+        assert store.external_refs_of(WS_A, NODE) == []
+
+        assert store.apply_remote(self.ref_env("external_ref.set", self.REF_READWISE, hlc=(10, 0), node_id=NODE))
+        assert store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(11, 0), node_id=NODE))
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) == NODE
+        assert store.resolve_external_ref(WS_A, self.REF_READWISE) == NODE
+        assert store.external_refs_of(WS_A, NODE) == [self.REF_GCAL, self.REF_READWISE]
+        assert store.external_refs_of(WS_A, other) == []
+
+    def test_a_reset_moves_the_mapping_lww(self, store: LocalStore) -> None:
+        other = uid("node-2")
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        store.apply_remote(create_env(other, hlc=(2, 0), name="Event B"))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=NODE))
+        assert store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(20, 0), node_id=other)) is True
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) == other
+        assert store.external_refs_of(WS_A, NODE) == []
+        assert store.external_refs_of(WS_A, other) == [self.REF_GCAL]
+        # A stale re-set (full tuple <= the standing record) drops untouched.
+        assert (
+            store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(15, 0), node_id=NODE)) is False
+        )
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) == other
+
+    def test_racing_sets_converge_on_the_higher_tuple_under_both_orders(self, tmp_path: Path) -> None:
+        other = uid("node-2")
+        # Same HLC, different actor: the higher actor id wins the tie —
+        # under either delivery order (two fresh replicas).
+        low = make_env(
+            "external_ref.set",
+            {"ref": self.REF_GCAL, "nodeId": NODE},
+            hlc=(10, 0),
+            actor_id="actor-aaa",
+        )
+        high = make_env(
+            "external_ref.set",
+            {"ref": self.REF_GCAL, "nodeId": other},
+            hlc=(10, 0),
+            actor_id="actor-zzz",
+        )
+        for name, first, second in (("forward", low, high), ("backward", high, low)):
+            instance = LocalStore(tmp_path / f"{name}.db")
+            instance.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+            instance.apply_remote(create_env(other, hlc=(2, 0), name="Event B"))
+            instance.apply_remote(first)
+            instance.apply_remote(second)
+            assert instance.resolve_external_ref(WS_A, self.REF_GCAL) == other
+            instance.close()
+
+    def test_delete_keeps_a_tombstone_that_kills_a_stale_set(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=NODE))
+        assert store.apply_remote(self.ref_env("external_ref.delete", self.REF_GCAL, hlc=(20, 0))) is True
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) is None
+        assert store.external_refs_of(WS_A, NODE) == []
+        # The stale set (older than the winning delete) drops on every replica.
+        assert (
+            store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(15, 0), node_id=NODE)) is False
+        )
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) is None
+        # A strictly newer set revives the mapping and supersedes the tombstone.
+        assert store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(30, 0), node_id=NODE)) is True
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) == NODE
+        assert raw_rows(
+            store, "SELECT COUNT(*) FROM external_ref_tombstone WHERE workspace_id = ? AND ref = ?", (WS_A, self.REF_GCAL)
+        ) == [(0,)]
+
+    def test_delete_of_an_unmapped_ref_still_lands_the_tombstone(self, store: LocalStore) -> None:
+        assert store.apply_remote(self.ref_env("external_ref.delete", self.REF_READWISE, hlc=(20, 0))) is True
+        assert store.resolve_external_ref(WS_A, self.REF_READWISE) is None
+        assert raw_rows(
+            store,
+            "SELECT hlc_physical, hlc_logical, actor_id FROM external_ref_tombstone"
+            " WHERE workspace_id = ? AND ref = ?",
+            (WS_A, self.REF_READWISE),
+        ) == [(20, 0, ACTOR)]
+        # The pre-delete set is stale against the tombstone — dropped.
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        assert (
+            store.apply_remote(self.ref_env("external_ref.set", self.REF_READWISE, hlc=(15, 0), node_id=NODE))
+            is False
+        )
+        assert store.resolve_external_ref(WS_A, self.REF_READWISE) is None
+
+    def test_hard_delete_purges_live_rows_soft_trash_keeps_them(self, store: LocalStore) -> None:
+        other = uid("node-2")
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        store.apply_remote(create_env(other, hlc=(2, 0), name="Event B"))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=NODE))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_READWISE, hlc=(11, 0), node_id=NODE))
+        # One ref is deleted before the purge: its tombstone must survive
+        # the node's purge (keyed by ref, bounding garbage to the ref name).
+        store.apply_remote(self.ref_env("external_ref.delete", self.REF_READWISE, hlc=(12, 0)))
+        # Soft trash: the mappings ride (a restore re-activates the node, mappings intact).
+        assert (
+            store.apply_remote(
+                make_env("object.delete", {"objectId": NODE}, hlc=(20, 0), affected=(NODE,))
+            )
+            is True
+        )
+        assert store.external_refs_of(WS_A, NODE) == [self.REF_GCAL]
+        # Hard delete (trash.empty purges the trashed root): live rows die with it.
+        assert store.apply_remote(make_env("trash.empty", {}, hlc=(30, 0))) is True
+        assert store.external_refs_of(WS_A, NODE) == []
+        assert raw_rows(store, "SELECT COUNT(*) FROM external_ref WHERE node_id = ?", (NODE,)) == [(0,)]
+        # The ref tombstone survives the node's purge.
+        assert raw_rows(
+            store, "SELECT COUNT(*) FROM external_ref_tombstone WHERE workspace_id = ? AND ref = ?",
+            (WS_A, self.REF_READWISE),
+        ) == [(1,)]
+        assert store.external_refs_of(WS_A, other) == []
+
+    def test_permanent_object_delete_purges_only_the_subtrees_rows(self, store: LocalStore) -> None:
+        other = uid("node-2")
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        store.apply_remote(create_env(other, hlc=(2, 0), name="Event B"))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=NODE))
+        store.apply_remote(self.ref_env("external_ref.set", self.REF_READWISE, hlc=(11, 0), node_id=other))
+        store.apply_remote(
+            make_env("object.delete", {"objectId": NODE, "permanent": True}, hlc=(20, 0), affected=(NODE,))
+        )
+        # Only the purged subtree's live rows die; the sibling's mapping rides.
+        assert store.external_refs_of(WS_A, NODE) == []
+        assert store.external_refs_of(WS_A, other) == [self.REF_READWISE]
+
+    def test_invalid_payloads_fail_loud_at_apply_time(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(NODE, hlc=(1, 0), name="Event A"))
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(self.ref_env("external_ref.set", "", hlc=(10, 0), node_id=NODE))
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(self.ref_env("external_ref.set", "x" * 513, hlc=(10, 0), node_id=NODE))
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(make_env("external_ref.set", {"ref": self.REF_GCAL}, hlc=(10, 0)))
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(
+                make_env("external_ref.set", {"ref": self.REF_GCAL, "nodeId": "not-a-uuid"}, hlc=(10, 0))
+            )
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(
+                make_env(
+                    "external_ref.set",
+                    {"ref": self.REF_GCAL, "nodeId": NODE, "kind": "event"},
+                    hlc=(10, 0),
+                )
+            )
+        with pytest.raises(EnvelopeValidationError):
+            store.apply_remote(self.ref_env("external_ref.delete", "", hlc=(10, 0)))
+        # Nothing landed.
+        assert store.external_refs_of(WS_A, NODE) == []
+
+    def test_mapping_to_an_unsynced_node_resolves_anyway(self, store: LocalStore) -> None:
+        # No referential integrity (the property_value precedent): the mapping
+        # may name a node another device has not synced yet.
+        ghost = uid("ghost-node")
+        assert store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=ghost)) is True
+        assert store.resolve_external_ref(WS_A, self.REF_GCAL) == ghost
+        assert store.external_refs_of(WS_A, ghost) == [self.REF_GCAL]

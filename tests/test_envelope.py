@@ -76,6 +76,8 @@ class TestOpTypeRegistry:
                     "collection.member.add",
                     "collection.member.remove",
                     "workspace.feature.set",
+                    "external_ref.set",
+                    "external_ref.delete",
                 }
             )
             == KNOWN_OP_TYPES
