@@ -8,6 +8,53 @@ history.
 
 ## 2026-10-23
 
+- **feat(protocol,store): the source-library seed roster — renames, 30 new
+  source type-classes, the authorship model, and the archival-is-not-absence
+  hierarchy rebuild (main-repo source-library lockstep port, owner
+  2026-10-23).** The monorepo's source-library slice reshaped the system-seed
+  manifest (packages/domain/src/seeds.ts + source-class-bindings.ts); this is
+  the GTK static-seed-knowledge port plus the one applier correction the new
+  seed state forces. (1) Renames, keys only — the fixed UUIDs stay:
+  ``article``/``weblink``/``movie`` become ``journal_article``/``web_page``/
+  ``film`` (…0026/…0034/…0035); ``paper`` (…0025) is WITHDRAWN (Zotero has no
+  "paper" — nodes migrate to journal_article), the id a dead slot never
+  reused. (2) 30 NEW source type-classes (…0048–…0065 hex, alphabetical by
+  key), ALL extends source — the sources family the toggle archives/revives
+  grows from 11 to 40 (base + 39 children), and their seeds.ts mdi icons +
+  display titles join the static decorations map. (3)
+  ``SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES`` parity: the 18-name archived-by-
+  default long tail (seed knowledge — GTK seeds nothing; the server authors
+  the archival flips from it). (4) The authorship model: ``authors`` RETYPED
+  object→text (multi, still …0012, local to source, no targetClassFilter);
+  ``linkedAuthors`` REINSTATED as the node-typed experiment at its NEW pool
+  UUID …0006-…0001 (object, multi, targetClassFilter [agent] — the 2026-09-27
+  …0025 withdrawal stays burned); ``editors`` new at …0006-…0002 (text,
+  multi). (5) The applier correction (appliers.ts ``rebuildClassHierarchy``
+  parity, owner ruling 2026-10-23): the class_hierarchy closure rebuild was
+  restricted to ``active = 1`` class rows, so ANY archived class (feature
+  toggle-off or the new archived-by-default seeds) silently lost its entire
+  extends closure on the next setExtends — archival is VISIBILITY state, not
+  an absence (an archived-by-default type still IS-A source for queries,
+  scope eligibility, and the effective-properties reach), so the rebuild now
+  walks EVERY class row and the default reads keep filtering the bit. Not
+  ported (structural): the 85-property bibliographic pool and
+  SYSTEM_SOURCE_CLASS_BINDINGS — the GTK client has no seed manifest and no
+  binding rows (seeding is server-side; binding/config rows arrive as ops the
+  generic appliers already apply); the class-side knowledge above is what the
+  GTK feature map and lock authority resolve through. No wire change, so no
+  fixture re-vendor (the corpus diff against the monorepo is empty for this
+  slice). Tests: test_seed_parity grows the source-library roster pins (fixed
+  ids contiguous …0048–…0065, withdrawn-slot disjointness, static-map
+  icons/titles drift guard, the archived-by-default set) and replays the
+  server seed op stream end to end (39 creates + extends edges + the 18
+  archival flips asserting the derived active bits, then a later unrelated
+  setExtends rebuild asserting the archived classes KEEP their closure — the
+  regression the applier fix closes); the authorship trio replays through
+  propertySchema.create with the retyped authors / reinstated linkedAuthors /
+  new editors rows asserted; test_features pins the 40-strong sources family
+  and the 18-name archived set. **Verification:** `uv run pytest` 919 passed
+  / 4 skipped; `uv run ruff check` clean; `uv run mypy src` clean.
+
 - **feat(protocol,store): the external_ref.* op family — the importer/
   sync-plugin external-id mapping substrate (main-repo lockstep, owner
   requirement 2026-10-23; GTK lockstep port).** Two new wire ops ported

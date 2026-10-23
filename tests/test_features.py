@@ -69,25 +69,88 @@ class TestFamilySets:
         assert family_class_names("events") == ("event", "birthday", "meeting", "trip")
         assert managed_class_ids("events") == (EVENT, BIRTHDAY, MEETING, TRIP)
 
-    def test_sources_family_is_the_eleven_strong_family(self) -> None:
-        """weblink joined the source tree (owner ruling 2026-10-07): the
-        family the SOURCES toggle archives now includes it, so disabling
-        `source` hides weblinks with the rest of the family."""
+    def test_sources_family_is_the_forty_strong_family(self) -> None:
+        """The source-library roster (owner 2026-10-23): web_page (the renamed
+        weblink, a source child since 2026-10-07) plus the 30 new Zotero-faithful
+        type-classes all extend source — the family the SOURCES toggle archives
+        is the base + 39 children, and paper (…0025) left the roster with its
+        2026-10-23 withdrawal (nodes migrate to journal_article)."""
         assert family_class_names("sources") == (
             "source",
-            "article",
+            "artwork",
+            "audio_recording",
+            "bill",
+            "blog_post",
             "book",
+            "book_section",
+            "computer_program",
             "conference",
+            "conference_paper",
+            "dataset",
+            "dictionary_entry",
             "document",
-            "movie",
-            "paper",
+            "email",
+            "encyclopedia_article",
+            "film",
+            "forum_post",
+            "hearing",
+            "instant_message",
+            "interview",
+            "journal_article",
+            "letter",
+            "magazine_article",
+            "manuscript",
+            "map",
+            "newspaper_article",
+            "patent",
+            "podcast",
+            "preprint",
+            "presentation",
+            "radio_broadcast",
+            "report",
             "song",
+            "standard",
+            "statute",
             "thesis",
+            "tv_broadcast",
             "tv_series",
-            "weblink",
+            "video_recording",
+            "web_page",
         )
-        assert len(managed_class_ids("sources")) == 11
-        assert system_class_uuid("weblink") == "00000000-0000-0000-0001-000000000034"
+        assert len(managed_class_ids("sources")) == 40
+        assert system_class_uuid("web_page") == "00000000-0000-0000-0001-000000000034"
+        assert system_class_uuid("journal_article") == "00000000-0000-0000-0001-000000000026"
+        assert system_class_uuid("film") == "00000000-0000-0000-0001-000000000035"
+
+    def test_archived_by_default_set_is_the_eighteen_strong_long_tail(self) -> None:
+        """SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES parity (seeds.ts): the 18 new
+        type-classes that seed archived — the everyday types stay enabled."""
+        from notees_gtk.core.protocol.features import SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES  # noqa: PLC0415
+
+        assert SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES == (
+            "artwork",
+            "bill",
+            "blog_post",
+            "computer_program",
+            "dataset",
+            "dictionary_entry",
+            "email",
+            "encyclopedia_article",
+            "forum_post",
+            "hearing",
+            "instant_message",
+            "interview",
+            "letter",
+            "manuscript",
+            "map",
+            "patent",
+            "radio_broadcast",
+            "statute",
+        )
+        archived = set(SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES)
+        assert archived <= set(family_class_names("sources"))
+        # The everyday types stay enabled by default.
+        assert archived.isdisjoint({"book_section", "magazine_article", "newspaper_article", "preprint", "report", "standard", "podcast", "conference_paper", "audio_recording", "video_recording", "tv_broadcast", "film", "web_page", "journal_article"})
 
     def test_single_class_families(self) -> None:
         assert family_class_names("tasks") == ("task",)
@@ -111,9 +174,12 @@ class TestGatingWalk:
         assert gating_features_for_class("organization") == ()
         assert gating_features_for_class("asset") == ()
 
-    def test_weblink_gates_on_sources(self) -> None:
-        """The source-family child: its chrome hides when SOURCES is off."""
-        assert gating_features_for_class("weblink") == ("sources",)
+    def test_web_page_gates_on_sources(self) -> None:
+        """The source-family child: its chrome hides when SOURCES is off
+        (web_page is the renamed weblink — same fixed UUID …0034)."""
+        assert gating_features_for_class("web_page") == ("sources",)
+        for name in ("artwork", "journal_article", "film", "patent"):
+            assert gating_features_for_class(name) == ("sources",)
 
     def test_trip_gates_on_events(self) -> None:
         """The #14 follow-up: trip extends event, so its chrome hides when
@@ -181,7 +247,7 @@ class TestAlwaysOnAndAncestors:
     def test_always_on_list(self) -> None:
         for name in ("year", "month", "day", "asset", "highlight", "collection", "agent", "organization"):
             assert is_always_on_system_class(name)
-        for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "weblink", "trip"):
+        for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "web_page", "trip"):
             assert not is_always_on_system_class(name)
         # The #14 follow-up's four plain seeds are unmanaged, not always-on
         # (features.ts parity — they are absent from the TS always-on list).
@@ -203,9 +269,13 @@ class TestAlwaysOnAndAncestors:
         assert system_class_ancestors("birthday") == frozenset({"event"})
         assert system_class_ancestors("trip") == frozenset({"event"})
         assert system_class_ancestors("book") == frozenset({"source"})
-        assert system_class_ancestors("weblink") == frozenset({"source"})
+        assert system_class_ancestors("web_page") == frozenset({"source"})
         assert system_class_ancestors("person") == frozenset({"agent"})
         assert system_class_ancestors("event") == frozenset()
+        # The source-library roster (owner 2026-10-23): every new type-class
+        # extends source; paper's edge left the map with its withdrawal.
+        for name in ("artwork", "audio_recording", "patent", "tv_broadcast", "video_recording"):
+            assert system_class_ancestors(name) == frozenset({"source"})
         # The #14 follow-up's four plain seeds extend nothing.
         for name in ("definition", "idea", "place", "project"):
             assert system_class_ancestors(name) == frozenset()
