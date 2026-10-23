@@ -2400,8 +2400,17 @@ class LocalStore:
         """Full, deterministic rebuild of the class_hierarchy closure from the
         class_extends edge set (m2m). Rows are inserted per class in sorted id
         order with sorted ancestor order, so replay converges to identical
-        bytes. Historical cycles terminate via the visited set."""
-        classes = [str(row[0]) for row in self._conn.execute("SELECT id FROM class WHERE active = 1 ORDER BY id")]
+        bytes. Historical cycles terminate via the visited set.
+
+        EVERY class row participates — archival (``class.active = 0``, the
+        gallery/picker visibility bit) is NOT an absence: an archived class
+        must still resolve through extends for class:/classAny queries, the
+        family-members read, scope eligibility, and the effective-properties
+        reach (the source-library slice — an
+        archived-by-default type still IS-A source; appliers.ts
+        ``rebuildClassHierarchy`` parity). The default reads filter the bit;
+        the closure never does."""
+        classes = [str(row[0]) for row in self._conn.execute("SELECT id FROM class ORDER BY id")]
         edges = self._conn.execute(
             "SELECT class_id, parent_class_id FROM class_extends ORDER BY class_id, parent_class_id"
         ).fetchall()

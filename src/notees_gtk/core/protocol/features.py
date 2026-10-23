@@ -39,7 +39,10 @@ mirroring the TS record; superseding F4 — the retired ``class.delete`` op):
 - The base system stays always-on (F1): journals (year/month/day), assets,
   the structural + admonition classes, and the classes of the DROPPED
   pre-reshape features (readItLater/library/collections/people → highlight,
-  weblink, collection, agent, organization, …) — never feature-managed.
+  the web-link class, collection, agent, organization, …) — never
+  feature-managed. (The web-link class is ``web_page`` since the
+  source-library rename, 2026-10-23 — and it left this set when it became a
+  source-family child in the 2026-10-07 convergence; it IS feature-managed.)
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from typing import Literal, TypeGuard
 __all__ = [
     "ALWAYS_ON_SYSTEM_CLASSES",
     "LOCKED_SYSTEM_CLASSES",
+    "SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES",
     "SYSTEM_CLASS_DISPLAY_NAMES",
     "SYSTEM_CLASS_EXTENDS_IDS",
     "SYSTEM_CLASS_ICONS",
@@ -98,7 +102,7 @@ FamilyFeature = Literal["tasks", "events", "meetings", "sources", "persons"]
 #: never rename, never regenerate, never reuse): the family-relevant ids the
 #: feature map resolves through (the applier's flip list and F4 routing), the
 #: two ids the property/applier semantics resolve through (``asset`` — the
-#: implicit filter of an asset-typed property schema, M38 — and ``weblink`` —
+#: implicit filter of an asset-typed property schema, M38 — and ``web_page`` —
 #: the source-family child, the 2026-10-07 convergence), the #14 follow-up
 #: five (the deploy catalog's missing everyday
 #: classes, plain seeds per the meeting-system precedent), and the base-system
@@ -128,8 +132,12 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "cloze": "00000000-0000-0000-0001-000000000022",
     "source": "00000000-0000-0000-0001-000000000023",
     "book": "00000000-0000-0000-0001-000000000024",
-    "paper": "00000000-0000-0000-0001-000000000025",
-    "article": "00000000-0000-0000-0001-000000000026",
+    # …0025 WITHDRAWN 2026-10-23 (source-library roster; Zotero has no "paper"
+    # nodes migrate to journal_article) — never reuse.
+    # Source-library renames (slice 1): the keys become
+    # Zotero-faithful, the UUIDs stay fixed (never rename the ids, never
+    # regenerate, never reuse).
+    "journal_article": "00000000-0000-0000-0001-000000000026",
     "thesis": "00000000-0000-0000-0001-000000000027",
     "document": "00000000-0000-0000-0001-000000000028",
     "agent": "00000000-0000-0000-0001-000000000029",
@@ -137,8 +145,8 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "organization": "00000000-0000-0000-0001-000000000031",
     "collection": "00000000-0000-0000-0001-000000000032",
     "highlight": "00000000-0000-0000-0001-000000000033",
-    "weblink": "00000000-0000-0000-0001-000000000034",
-    "movie": "00000000-0000-0000-0001-000000000035",
+    "web_page": "00000000-0000-0000-0001-000000000034",
+    "film": "00000000-0000-0000-0001-000000000035",
     "song": "00000000-0000-0000-0001-000000000036",
     "tv_series": "00000000-0000-0000-0001-000000000037",
     "conference": "00000000-0000-0000-0001-000000000038",
@@ -153,6 +161,41 @@ _SYSTEM_CLASS_UUIDS: dict[str, str] = {
     "place": "00000000-0000-0000-0001-000000000045",
     "project": "00000000-0000-0000-0001-000000000046",
     "trip": "00000000-0000-0000-0001-000000000047",
+    # Source-library roster (slice 1): 30 NEW source
+    # type-classes, the Zotero-faithful long tail. Slots …0048–…0065 (hex —
+    # the TASK_STATUS_OPTION_UUIDS precedent), assigned ALPHABETICALLY BY KEY
+    # for determinism (seeds.ts …0048-…0065 parity; the domain test pins the
+    # exact map). All extend source (SYSTEM_CLASS_EXTENDS below).
+    "artwork": "00000000-0000-0000-0001-000000000048",
+    "audio_recording": "00000000-0000-0000-0001-000000000049",
+    "bill": "00000000-0000-0000-0001-00000000004a",
+    "blog_post": "00000000-0000-0000-0001-00000000004b",
+    "book_section": "00000000-0000-0000-0001-00000000004c",
+    "computer_program": "00000000-0000-0000-0001-00000000004d",
+    "conference_paper": "00000000-0000-0000-0001-00000000004e",
+    "dataset": "00000000-0000-0000-0001-00000000004f",
+    "dictionary_entry": "00000000-0000-0000-0001-000000000050",
+    "email": "00000000-0000-0000-0001-000000000051",
+    "encyclopedia_article": "00000000-0000-0000-0001-000000000052",
+    "forum_post": "00000000-0000-0000-0001-000000000053",
+    "hearing": "00000000-0000-0000-0001-000000000054",
+    "instant_message": "00000000-0000-0000-0001-000000000055",
+    "interview": "00000000-0000-0000-0001-000000000056",
+    "letter": "00000000-0000-0000-0001-000000000057",
+    "magazine_article": "00000000-0000-0000-0001-000000000058",
+    "manuscript": "00000000-0000-0000-0001-000000000059",
+    "map": "00000000-0000-0000-0001-00000000005a",
+    "newspaper_article": "00000000-0000-0000-0001-00000000005b",
+    "patent": "00000000-0000-0000-0001-00000000005c",
+    "podcast": "00000000-0000-0000-0001-00000000005d",
+    "preprint": "00000000-0000-0000-0001-00000000005e",
+    "presentation": "00000000-0000-0000-0001-00000000005f",
+    "radio_broadcast": "00000000-0000-0000-0001-000000000060",
+    "report": "00000000-0000-0000-0001-000000000061",
+    "standard": "00000000-0000-0000-0001-000000000062",
+    "statute": "00000000-0000-0000-0001-000000000063",
+    "tv_broadcast": "00000000-0000-0000-0001-000000000064",
+    "video_recording": "00000000-0000-0000-0001-000000000065",
 }
 
 #: The task class icon (seeds.ts ``SYSTEM_CLASS_ICONS`` subset — the
@@ -165,11 +208,10 @@ SYSTEM_CLASS_ICONS_TASK = "mdiCheckboxMarkedCircleOutline"
 #: table is authored by ops and may not exist on a fresh replica.
 _SYSTEM_CLASS_EXTENDS: dict[str, tuple[str, ...]] = {
     "book": ("source",),
-    "paper": ("source",),
-    "article": ("source",),
+    "journal_article": ("source",),
     "thesis": ("source",),
     "document": ("source",),
-    "movie": ("source",),
+    "film": ("source",),
     "song": ("source",),
     "tv_series": ("source",),
     "conference": ("source",),
@@ -177,15 +219,49 @@ _SYSTEM_CLASS_EXTENDS: dict[str, tuple[str, ...]] = {
     "organization": ("agent",),
     "meeting": ("event",),
     "birthday": ("event",),
-    # The web link IS a source (convergence): a
-    # bookmarked page is a cited web source — weblink inherits the source
+    # The web page IS a source (convergence): a
+    # bookmarked page is a cited web source — web_page inherits the source
     # family's bibliographic bindings, and disabling `source` hides
-    # weblinks with the rest of the family.
-    "weblink": ("source",),
+    # web pages with the rest of the family.
+    "web_page": ("source",),
     # A trip IS an event (the #14 follow-up): a trip
     # is calendar-bound, so the events toggle cascades to it — this map is
     # the cascade authority (seeds.ts ``SYSTEM_CLASS_EXTENDS`` parity).
     "trip": ("event",),
+    # Source-library roster (slice 1): the 30-new source
+    # type-classes ALL extend source — the Zotero-faithful long tail inherits
+    # the family's bibliographic bindings; the sources toggle archives/revives
+    # them with the family (seeds.ts ``SYSTEM_CLASS_EXTENDS`` parity).
+    "audio_recording": ("source",),
+    "artwork": ("source",),
+    "bill": ("source",),
+    "blog_post": ("source",),
+    "book_section": ("source",),
+    "computer_program": ("source",),
+    "conference_paper": ("source",),
+    "dataset": ("source",),
+    "dictionary_entry": ("source",),
+    "email": ("source",),
+    "encyclopedia_article": ("source",),
+    "forum_post": ("source",),
+    "hearing": ("source",),
+    "instant_message": ("source",),
+    "interview": ("source",),
+    "letter": ("source",),
+    "magazine_article": ("source",),
+    "manuscript": ("source",),
+    "map": ("source",),
+    "newspaper_article": ("source",),
+    "patent": ("source",),
+    "podcast": ("source",),
+    "preprint": ("source",),
+    "presentation": ("source",),
+    "radio_broadcast": ("source",),
+    "report": ("source",),
+    "standard": ("source",),
+    "statute": ("source",),
+    "tv_broadcast": ("source",),
+    "video_recording": ("source",),
 }
 
 #: The frozen extends parent set per system class UUID (name-keyed
@@ -211,28 +287,130 @@ def is_system_class_id(class_id: str) -> bool:
     ``isSystemClassId``)."""
     return class_id in SYSTEM_CLASS_EXTENDS_IDS
 
-#: The #14 follow-up five's seed decorations (seeds.ts ``SYSTEM_CLASS_ICONS``
-#: / ``SYSTEM_CLASS_DISPLAY_NAMES`` subset — the GTK map's classes only).
-#: The server seed authors the display titles into the class nodes' text
-#: content (title-is-content) and the icons onto the class rows.
+#: The seed decorations (seeds.ts ``SYSTEM_CLASS_ICONS`` / ``SYSTEM_CLASS_DISPLAY_NAMES``
+#: subset — the GTK map's seed-converged classes only: the #14 follow-up five,
+#: the source-library roster's renamed + 30-new classes). The server seed
+#: authors the display titles into the class nodes' text content
+#: (title-is-content) and the icons onto the class rows.
 SYSTEM_CLASS_ICONS: dict[str, str] = {
+    # The #14 follow-up five.
     "definition": "mdiBookOpenPageVariant",
     "idea": "mdiThoughtBubbleOutline",
     "place": "mdiMapMarkerOutline",
     "project": "mdiBriefcaseOutline",
     "trip": "mdiAirplane",
+    # Source-library roster (slice 1) — the seeds.ts icons
+    # for the renamed + 30-new source type-classes, pinned verbatim.
+    "journal_article": "mdiNewspaper",
+    "web_page": "mdiLinkVariant",
+    "film": "mdiMovieOpenOutline",
+    "audio_recording": "mdiMicrophone",
+    "artwork": "mdiPaletteOutline",
+    "bill": "mdiScriptTextOutline",
+    "blog_post": "mdiPostOutline",
+    "book_section": "mdiTableOfContents",
+    "computer_program": "mdiCodeBraces",
+    "conference_paper": "mdiTextBoxOutline",
+    "dataset": "mdiDatabaseOutline",
+    "dictionary_entry": "mdiBookAlphabet",
+    "email": "mdiEmailOutline",
+    "encyclopedia_article": "mdiLibrary",
+    "forum_post": "mdiForumOutline",
+    "hearing": "mdiGavel",
+    "instant_message": "mdiMessageTextOutline",
+    "interview": "mdiAccountVoice",
+    "letter": "mdiMailboxOutline",
+    "magazine_article": "mdiNewspaperVariant",
+    "manuscript": "mdiScriptOutline",
+    "map": "mdiMapOutline",
+    "newspaper_article": "mdiTextBoxMultipleOutline",
+    "patent": "mdiStamp",
+    "podcast": "mdiPodcast",
+    "preprint": "mdiFileClockOutline",
+    "presentation": "mdiPresentationPlay",
+    "radio_broadcast": "mdiRadio",
+    "report": "mdiFileChartOutline",
+    "standard": "mdiFileCheckOutline",
+    "statute": "mdiScaleBalance",
+    "tv_broadcast": "mdiTelevision",
+    "video_recording": "mdiVideoOutline",
 }
 
-#: The display titles the seed authors for the five (seeds.ts
+#: The display titles the seed authors for the decorated classes (seeds.ts
 #: ``SYSTEM_CLASS_DISPLAY_NAMES`` subset; the raw keys stay code-facing
 #: vocabulary — these are the human wordings).
 SYSTEM_CLASS_DISPLAY_NAMES: dict[str, str] = {
+    # The #14 follow-up five.
     "definition": "Definition",
     "idea": "Idea",
     "place": "Place",
     "project": "Project",
     "trip": "Trip",
+    # Source-library roster (slice 1).
+    "journal_article": "Journal article",
+    "web_page": "Web page",
+    "film": "Film",
+    "audio_recording": "Audio recording",
+    "artwork": "Artwork",
+    "bill": "Bill",
+    "blog_post": "Blog post",
+    "book_section": "Book section",
+    "computer_program": "Computer program",
+    "conference_paper": "Conference paper",
+    "dataset": "Dataset",
+    "dictionary_entry": "Dictionary entry",
+    "email": "Email",
+    "encyclopedia_article": "Encyclopedia article",
+    "forum_post": "Forum post",
+    "hearing": "Hearing",
+    "instant_message": "Instant message",
+    "interview": "Interview",
+    "letter": "Letter",
+    "magazine_article": "Magazine article",
+    "manuscript": "Manuscript",
+    "map": "Map",
+    "newspaper_article": "Newspaper article",
+    "patent": "Patent",
+    "podcast": "Podcast",
+    "preprint": "Preprint",
+    "presentation": "Presentation",
+    "radio_broadcast": "Radio broadcast",
+    "report": "Report",
+    "standard": "Standard",
+    "statute": "Statute",
+    "tv_broadcast": "TV broadcast",
+    "video_recording": "Video recording",
 }
+
+#: Source-library roster (slice 1): the new source
+#: type-classes that seed ARCHIVED (``active = false``) — the long tail nobody
+#: wants in a fresh workspace's gallery and pickers. EIGHTEEN names: the
+#: everyday types (book_section, magazine_article, newspaper_article,
+#: preprint, report, standard, podcast, the broadcasts, the conference trio,
+#: audio/video) stay ENABLED by default. Seed knowledge only — the GTK client
+#: seeds nothing (seeding is server-side); the server seed authors the
+#: archival flips from this set (seeds.ts ``SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES``
+#: parity) and nothing here consumes it yet.
+SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES: tuple[str, ...] = (
+    "artwork",
+    "bill",
+    "blog_post",
+    "computer_program",
+    "dataset",
+    "dictionary_entry",
+    "email",
+    "encyclopedia_article",
+    "forum_post",
+    "hearing",
+    "instant_message",
+    "interview",
+    "letter",
+    "manuscript",
+    "map",
+    "patent",
+    "radio_broadcast",
+    "statute",
+)
 
 
 def system_class_ancestors(name: str) -> frozenset[str]:
@@ -302,8 +480,9 @@ def feature_for_base_class(name: str) -> FamilyFeature | None:
 #: table, cloze, whiteboard, the admonition set) plus the classes of the
 #: DROPPED pre-reshape features (highlight, collection, agent, organization).
 #: The five family bases and their extends-children are NOT here — they are
-#: the toggle set, weblink included since it became a source-family child
-#: (2026-10-07). The retired `class` meta class (…0001, withdrawn
+#: the toggle set, web_page (the renamed weblink) included since it became a
+#: source-family child (2026-10-07); the 30 source-library type-classes join
+#: it the same way (all extends source). The retired `class` meta class (…0001, withdrawn
 #: 2026-10-07) left the manifest with its retirement — it is nobody's
 #: anchor anymore. The #14 follow-up five are not
 #: here either: trip rides the events family through its extends edge, and
@@ -401,8 +580,9 @@ def gating_features_for_class(name: str) -> tuple[WorkspaceFeature, ...]:
     every family-base ANCESTOR (the static extends walk). Empty for
     always-on/unmanaged classes. A class's chrome shows only when EVERY
     listed feature is enabled (a meeting surface hides when MEETINGS or
-    EVENTS is off; a birthday surface hides when EVENTS is off; book/paper/…
-    hide when SOURCES is off)."""
+    EVENTS is off; a birthday surface hides when EVENTS is off; the source
+    family (book/journal_article/web_page/the 30 type-classes/…) hides when
+    SOURCES is off)."""
     gating: list[WorkspaceFeature] = []
     own = feature_for_base_class(name)
     if own is not None:
