@@ -107,6 +107,8 @@ __all__ = [
     "build_class_reorder",
     "build_class_unassign",
     "build_class_update",
+    "build_external_ref_delete",
+    "build_external_ref_set",
     "build_object_create",
     "build_object_delete",
     "build_object_move",
@@ -598,6 +600,35 @@ class WorkspaceFeatureSetPayload(_Strict):
     enabled: bool
 
 
+#: The external-ref key cap (the ``EXTERNAL_REF_MAX_LENGTH`` op-types.ts
+#: parity): ``ref`` is the caller-namespaced ``<provider>:<kind>:<externalId>``
+#: key — opaque to the protocol — capped at 512 chars; empty/oversize fail loud.
+EXTERNAL_REF_MAX_LENGTH = 512
+
+
+class ExternalRefSetPayload(_Strict):
+    """External-id mapping write (the importer/
+    sync-plugin substrate, SCHEMA.md "External-id mappings").
+
+    One LIVE mapping per ``ref``, LWW by envelope ``(hlc, actor)`` on the
+    ``(workspace, ref)`` key — a re-set MOVES the mapping and racing sets
+    converge on the higher tuple. ``nodeId`` is a bare uuid with NO
+    referential integrity (the ``property_value`` precedent): the mapping may
+    name a node another device has not synced yet.
+    """
+
+    ref: str = Field(min_length=1, max_length=EXTERNAL_REF_MAX_LENGTH)
+    node_id: UUID = Field(alias="nodeId")
+
+
+class ExternalRefDeletePayload(_Strict):
+    """The LWW delete side of the ref key — a tombstone per ``(workspace,
+    ref)`` lands even for an UNMAPPED ref, killing a stale concurrent set
+    delivered after the winning delete on every replica."""
+
+    ref: str = Field(min_length=1, max_length=EXTERNAL_REF_MAX_LENGTH)
+
+
 #: Registry mirroring ``OP_PAYLOAD_SCHEMAS`` (op-types.ts) one-for-one.
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "object.create": ObjectCreatePayload,
@@ -624,6 +655,8 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "collection.member.add": CollectionMemberAddPayload,
     "collection.member.remove": CollectionMemberRemovePayload,
     "workspace.feature.set": WorkspaceFeatureSetPayload,
+    "external_ref.set": ExternalRefSetPayload,
+    "external_ref.delete": ExternalRefDeletePayload,
 }
 
 
@@ -874,3 +907,20 @@ def build_workspace_feature_set(feature: str, enabled: bool) -> dict[str, Any]:
     enabled (F2).
     """
     return _validated("workspace.feature.set", {"feature": feature, "enabled": enabled})
+
+
+def build_external_ref_set(ref: str, node_id: str) -> dict[str, Any]:
+    """Build an ``external_ref.set`` payload (importer/sync-plugin id mapping).
+
+    ``ref`` is the caller-namespaced ``<provider>:<kind>:<externalId>`` key
+    (opaque to the protocol, 1..512 chars); ``node_id`` is the mapped node —
+    no referential integrity on the wire (the ``property_value`` precedent).
+    One LIVE mapping per ref: LWW by envelope ``(hlc, actor)``, a re-set moves.
+    """
+    return _validated("external_ref.set", {"ref": ref, "nodeId": node_id})
+
+
+def build_external_ref_delete(ref: str) -> dict[str, Any]:
+    """Build an ``external_ref.delete`` payload — the LWW delete side; the
+    derived tombstone lands even when the ref is unmapped."""
+    return _validated("external_ref.delete", {"ref": ref})

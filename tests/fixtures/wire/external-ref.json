@@ -1,0 +1,230 @@
+{
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000c10",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050000,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:50.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000b10",
+        "contentAst": [{ "type": "text", "text": "Imported event A" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c11",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050100,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b11"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:50.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000b11",
+        "contentAst": [{ "type": "text", "text": "Imported event B" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c12",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050200,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.200Z",
+      "payload": {
+        "ref": "gcal:event:abc123@google.com",
+        "nodeId": "0192a000-0000-7000-8000-000000000b10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c13",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050300,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.300Z",
+      "payload": {
+        "ref": "readwise:highlight:12345",
+        "nodeId": "0192a000-0000-7000-8000-000000000b10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c14",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050400,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b11"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.400Z",
+      "payload": {
+        "ref": "gcal:event:abc123@google.com",
+        "nodeId": "0192a000-0000-7000-8000-000000000b11"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c15",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050500,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.delete",
+      "timestamp": "2026-09-24T12:00:50.500Z",
+      "payload": {
+        "ref": "readwise:highlight:12345"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c16",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050600,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.600Z",
+      "payload": {
+        "ref": "gcal:event:def456@google.com",
+        "nodeId": "0192a000-0000-7000-8000-000000000b10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c17",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050650,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.650Z",
+      "payload": {
+        "ref": "gcal:event:ghi789@google.com",
+        "nodeId": "0192a000-0000-7000-8000-000000000b10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c18",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050700,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.700Z",
+      "payload": {
+        "ref": "readitlater:entry:7788",
+        "nodeId": "0192a000-0000-7000-8000-000000000b10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c19",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200050750,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b11"],
+      "opType": "external_ref.set",
+      "timestamp": "2026-09-24T12:00:50.750Z",
+      "payload": {
+        "ref": "readitlater:entry:7788",
+        "nodeId": "0192a000-0000-7000-8000-000000000b11"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c1a",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050800,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "external_ref.delete",
+      "timestamp": "2026-09-24T12:00:50.800Z",
+      "payload": {
+        "ref": "gcal:event:def456@google.com"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000c1b",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200050900,
+        "logical": 0
+      },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000b10"],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:50.900Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000b10",
+        "permanent": true
+      }
+    }
+  ]
+}
