@@ -1233,6 +1233,65 @@ class TestIsEmbeddedParentPageFixture:
         assert store.node(WS, x) is None
 
 
+class TestClassParentlessRoleFixture:
+    """Replay of class-parentless-role.json (the class-level parentlessRole
+    render contract, owner 2026-10-24, web schema v31→v32 parity): the flag
+    is presence-writes / present-null-clears on BOTH the class node row and
+    the registry (the icon/color precedent), and the extends-aware effective
+    role derives at read time through class_hierarchy — mirroring the
+    monorepo store test."""
+
+    TASK = "0192a000-0000-7000-8000-0000000000d1"
+    EVENT = "0192a000-0000-7000-8000-0000000000d2"
+    TASK_NODE = "0192a000-0000-7000-8000-0000000000d3"
+    ERRAND = "0192a000-0000-7000-8000-0000000000d4"
+    #: The fixture's envelopes carry their own workspace id (…0000000000d0),
+    #: not the suite-default WS.
+    FIXTURE_WS = "0192a000-0000-7000-8000-0000000000d0"
+
+    def node_role(self, store: LocalStore, class_id: str) -> Any:
+        return raw(store, "SELECT parentless_role FROM nodes WHERE id = ?", (class_id,))[0][0]
+
+    def registry_role(self, store: LocalStore, class_id: str) -> Any:
+        return raw(store, "SELECT parentless_role FROM class WHERE id = ?", (class_id,))[0][0]
+
+    def test_the_fixture_lands_flag_set_update_and_present_null_clear_on_both_tables(
+        self, store: LocalStore
+    ) -> None:
+        (task_create, event_create, task_node_create, event_flag, event_clear, errand_create, errand_extends) = (
+            RelayEnvelope.model_validate(item) for item in load_fixture("class-parentless-role.json")
+        )
+        assert store.apply_remote(task_create) is True
+        assert store.apply_remote(event_create) is True
+        # Task seeds flagged "block" on the class node row AND the registry;
+        # Event carries no flag — NULL on both (the zero-migration default).
+        assert self.node_role(store, self.TASK) == "block"
+        assert self.registry_role(store, self.TASK) == "block"
+        assert self.node_role(store, self.EVENT) is None
+        assert self.registry_role(store, self.EVENT) is None
+        # The fixture's standalone task object applies cleanly (parentless,
+        # classed) — the population the role bends.
+        assert store.apply_remote(task_node_create) is True
+        node = store.node(self.FIXTURE_WS, self.TASK_NODE)
+        assert node is not None and node.is_class is False and node.parent_id is None
+        assert node.parentless_role is None  # meaningful on class rows only
+        # class.update presence writes, then present-null clears, both tables.
+        assert store.apply_remote(event_flag) is True
+        assert self.node_role(store, self.EVENT) == "block"
+        assert self.registry_role(store, self.EVENT) == "block"
+        assert store.apply_remote(event_clear) is True
+        assert self.node_role(store, self.EVENT) is None
+        assert self.registry_role(store, self.EVENT) is None
+        # Errand carries no flag of its own; the seeded extends edge to the
+        # flagged Task is what the read-time effective role derives from.
+        assert store.apply_remote(errand_create) is True
+        assert store.apply_remote(errand_extends) is True
+        assert self.node_role(store, self.ERRAND) is None
+        assert raw(
+            store, "SELECT 1 FROM class_hierarchy WHERE class_id = ? AND ancestor_id = ?", (self.ERRAND, self.TASK)
+        ) == [(1,)]
+
+
 class TestReplayIdempotence:
     def test_reapplying_the_whole_fixture_set_is_idempotent(self, store: LocalStore) -> None:
         envelopes = [RelayEnvelope.model_validate(item) for item in all_fixture_envelopes()]

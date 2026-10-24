@@ -72,6 +72,14 @@ List-style batch (owner 2026-10-16, web store v22→v23 parity):
 ``listStyle`` ("numbered"|"alpha"|"roman" — absent/null = bullet; a
 present null on update CLEARS, the icon/color precedent).
 
+Class-parentlessRole batch (owner 2026-10-24, web store v31→v32 parity):
+``class.create``/``class.update`` gain the optional nullable
+``parentlessRole`` ("page"|"block" — absent/null = "page", the
+zero-migration default; presence writes, present-null clears, exactly like
+``color``). The render contract is read only in the cascade's parentless
+branch (the ``is_embedded`` symmetry) and is extends-aware at read time
+(own flag OR any extends-ancestor's — one-way demote).
+
 Property-scope batch (owner ruling 2026-10-20, TS b8548e0e + 19baac4b):
 ``propertySchema.create`` RETIRES the display-only ``scope`` enum
 (rejected outright by the strict schema) and gains ``icon`` +
@@ -153,6 +161,12 @@ _DATE_PRECISION = Literal["year", "month", "day"]
 #: default; present-null on object.update CLEARS back to the bullet
 #: (the icon/color precedent).
 _LIST_STYLE = Literal["numbered", "alpha", "roman"]
+#: Class-level parentlessRole (owner 2026-10-24, SCHEMA.md "Node structure" —
+#: op-types.ts ``parentlessRole``): the render role of the class's PARENTLESS
+#: members — "block" = the Block role (block chrome, no document chrome)
+#: instead of a page. Absent/null = "page", the zero-migration default;
+#: presence writes, present-null clears, exactly like ``color``.
+_PARENTLESS_ROLE = Literal["page", "block"]
 _NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
 # The binding's value-display position — where a select/multi_select
 # (or boolean) value renders on a block row. A render contract only.
@@ -290,6 +304,13 @@ class ClassCreatePayload(_Strict):
     # Preset token or `#RRGGBB` hex (colors.py grammar); null = no color.
     color: ColorValue = Field(default=None)
     description: str | None = Field(default=None, max_length=4096)
+    # The parentless render role (owner 2026-10-24): "block" = a parentless
+    # member of the class renders in the Block role (block chrome, no
+    # document chrome); absent/null = "page", the default. Presence writes,
+    # present-null clears — exactly like `color`. Read by render only, never
+    # write-enforced (the render-contract law, PC1); extends-aware at read
+    # time (own flag OR any extends-ancestor's — one-way demote).
+    parentless_role: _PARENTLESS_ROLE | None = Field(default=None, alias="parentlessRole")
 
 
 class ClassUpdatePayload(_Strict):
@@ -300,6 +321,10 @@ class ClassUpdatePayload(_Strict):
     # the schema now accepts what the catalog always documented.
     color: ColorValue = Field(default=None)
     description: str | None = Field(default=None, max_length=4096)
+    # The parentless render role (class.create for the full contract):
+    # "block" = standalone instances render in the Block role; absent keeps,
+    # present-null clears back to the "page" default (the color contract).
+    parentless_role: _PARENTLESS_ROLE | None = Field(default=None, alias="parentlessRole")
 
 
 class ClassUnassignPayload(_Strict):
@@ -845,11 +870,15 @@ def build_class_create(
     icon: str | None = None,
     color: str | None = None,
     description: str | None = None,
+    parentless_role: str | None = None,
 ) -> dict[str, Any]:
     """Build a ``class.create`` payload (web ``WorkspaceClient.createClass``).
 
     The class's title IS its (text-only) content: the ``name`` convenience
     wraps into a single text token unless an explicit ``content_ast`` wins.
+    ``parentless_role`` ("page" | "block") is the parentless render role of
+    the class's standalone instances (owner 2026-10-24) — omitted = the
+    "page" default.
     """
     payload: dict[str, Any] = {"classId": class_id}
     if name is not None and content_ast is None:
@@ -862,6 +891,8 @@ def build_class_create(
         payload["color"] = color
     if description is not None:
         payload["description"] = description
+    if parentless_role is not None:
+        payload["parentlessRole"] = parentless_role
     return _validated("class.create", payload)
 
 
@@ -873,11 +904,14 @@ def build_class_update(
     icon: str | None = None,
     color: str | None | object = _UNSET,
     description: str | None = None,
+    parentless_role: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Build a ``class.update`` payload (same name convenience as create).
 
     ``color=None`` sends an explicit null that CLEARS the class color;
-    omitting ``color`` leaves it untouched.
+    omitting ``color`` leaves it untouched. ``parentless_role`` follows the
+    same keep-vs-clear contract: ``None`` clears the flag back to the
+    "page" default, omitting it keeps the stored role.
     """
     payload: dict[str, Any] = {"classId": class_id}
     if name is not None and content_ast is None:
@@ -890,6 +924,8 @@ def build_class_update(
         payload["color"] = color
     if description is not None:
         payload["description"] = description
+    if parentless_role is not _UNSET:
+        payload["parentlessRole"] = parentless_role
     return _validated("class.update", payload)
 
 

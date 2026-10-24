@@ -675,6 +675,7 @@ class TestObjectCreate:
             aliased_node_id=None,
             description=None,
             list_style=None,
+            parentless_role=None,
             is_active=True,
             content=json.dumps([{"type": "text", "text": "My Page"}]),
             content_plain="My Page",
@@ -1594,6 +1595,114 @@ class TestClassOps:
         store.apply_remote(class_env("class.create", uid("a"), hlc=(1, 0), name="A"))
         with pytest.raises(NotFoundError):
             store.apply_remote(extends_env(uid("a"), [uid("ghost")], hlc=(2, 0)))
+
+
+class TestClassParentlessRole:
+    """The class-level parentlessRole render contract (SCHEMA.md "Node
+    structure", owner 2026-10-24; store v22, web schema v31→v32 parity):
+    presence writes, present-null clears on BOTH the class node row and the
+    registry (the icon/color precedent); a re-issued flag-less class.create
+    (the seed/ensure re-run) preserves the stored flag; the parent-page
+    guard is flag-aware — a parentless node with an effectively-flagged
+    class is NOT a page. Mirrors the monorepo store.test.ts block."""
+
+    def test_class_create_maps_the_flag_to_both_tables_absent_is_null(self, store: LocalStore) -> None:
+        store.apply_remote(
+            class_env("class.create", uid("task"), hlc=(1, 0), name="Task", parentlessRole="block")
+        )
+        store.apply_remote(class_env("class.create", uid("event"), hlc=(2, 0), name="Event"))
+        row = store.node(WS_A, uid("task"))
+        assert row is not None and row.parentless_role == "block"
+        assert raw_rows(store, f"SELECT parentless_role FROM class WHERE id = '{uid('task')}'") == [("block",)]
+        row = store.node(WS_A, uid("event"))
+        assert row is not None and row.parentless_role is None
+        assert raw_rows(store, f"SELECT parentless_role FROM class WHERE id = '{uid('event')}'") == [(None,)]
+
+    def test_class_update_presence_writes_and_present_null_clears_both_tables(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", uid("event"), hlc=(1, 0), name="Event"))
+        store.apply_remote(class_env("class.update", uid("event"), hlc=(2, 0), parentlessRole="block"))
+        assert store.node(WS_A, uid("event")).parentless_role == "block"
+        assert raw_rows(store, f"SELECT parentless_role FROM class WHERE id = '{uid('event')}'") == [("block",)]
+        store.apply_remote(class_env("class.update", uid("event"), hlc=(3, 0), parentlessRole=None))
+        assert store.node(WS_A, uid("event")).parentless_role is None
+        assert raw_rows(store, f"SELECT parentless_role FROM class WHERE id = '{uid('event')}'") == [(None,)]
+        # An absent-flag update keeps the cleared state untouched.
+        store.apply_remote(class_env("class.update", uid("event"), hlc=(4, 0), description="long form"))
+        assert store.node(WS_A, uid("event")).parentless_role is None
+
+    def test_reissued_flag_less_class_create_preserves_the_stored_flag(self, store: LocalStore) -> None:
+        """The seed/ensure idempotent re-run: the registry conflict arm
+        COALESCEs the absent flag, and the node-row INSERT OR IGNORE +
+        LWW-gated update never touches an un-carried field."""
+        store.apply_remote(
+            class_env("class.create", uid("task"), hlc=(1, 0), name="Task", parentlessRole="block")
+        )
+        store.apply_remote(class_env("class.create", uid("task"), hlc=(2, 0), name="Task"))
+        assert store.node(WS_A, uid("task")).parentless_role == "block"
+        assert raw_rows(store, f"SELECT parentless_role FROM class WHERE id = '{uid('task')}'") == [("block",)]
+
+    def test_the_parent_page_guard_is_flag_aware(self, store: LocalStore) -> None:
+        """A parentless node whose classes effectively carry "block" is NOT
+        a page: an is_embedded = 0 (standalone) claim under it fails loud
+        (MoveGuardError), an embedded child stays legal, and promoting that
+        child is rejected by the same guard (the guard must see the same
+        role render sees, owner 2026-10-24)."""
+        store.apply_remote(
+            class_env("class.create", uid("task"), hlc=(1, 0), name="Task", parentlessRole="block")
+        )
+        store.apply_remote(
+            create_env(uid("standalone-task"), class_ids=(uid("task"),), hlc=(2, 0), name="Fix sink")
+        )
+        # An EMBEDDED child under the block-role parentless node stays legal.
+        store.apply_remote(create_env(uid("child"), parent_id=uid("standalone-task"), hlc=(3, 0), name="detail"))
+        # A standalone claim under it fails loud and is never applied.
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(
+                create_env(
+                    uid("wanted"),
+                    parent_id=uid("standalone-task"),
+                    is_embedded=False,
+                    hlc=(4, 0),
+                    name="claim",
+                )
+            )
+        assert store.node(WS_A, uid("wanted")) is None
+        # Promotion of the embedded child is rejected by the same guard.
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(update_env(uid("child"), hlc=(5, 0), isEmbedded=False))
+
+    def test_the_effective_flag_is_extends_aware_and_page_never_demotes(self, store: LocalStore) -> None:
+        """The demote is a one-way extends-aware read (own flag OR any
+        extends-ancestor's, via the class_hierarchy closure): Errand extends
+        the flagged Task, so an Errand-classed parentless node is not a
+        page either, while an explicit "page" flag keeps a class's members
+        pages."""
+        store.apply_remote(
+            class_env("class.create", uid("task"), hlc=(1, 0), name="Task", parentlessRole="block")
+        )
+        store.apply_remote(class_env("class.create", uid("errand"), hlc=(2, 0), name="Errand"))
+        store.apply_remote(extends_env(uid("errand"), [uid("task")], hlc=(3, 0)))
+        store.apply_remote(create_env(uid("errand-node"), class_ids=(uid("errand"),), hlc=(4, 0), name="Buy milk"))
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(
+                create_env(
+                    uid("under-errand"),
+                    parent_id=uid("errand-node"),
+                    is_embedded=False,
+                    hlc=(5, 0),
+                    name="claim",
+                )
+            )
+        # An explicit "page" flag does NOT demote: a standalone claim stays legal.
+        store.apply_remote(
+            class_env("class.create", uid("project"), hlc=(6, 0), name="Project", parentlessRole="page")
+        )
+        store.apply_remote(create_env(uid("proj-node"), class_ids=(uid("project"),), hlc=(7, 0), name="Rebuild"))
+        store.apply_remote(
+            create_env(uid("under-proj"), parent_id=uid("proj-node"), is_embedded=False, hlc=(8, 0), name="phase")
+        )
+        row = store.node(WS_A, uid("under-proj"))
+        assert row is not None and row.is_embedded is False
 
 
 class TestClassPropertyBindings:

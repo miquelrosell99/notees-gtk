@@ -204,7 +204,14 @@ _log = logging.getLogger(__name__)
 #: the winning payload carried no settings — distinct from the empty
 #: record). Purely additive — the guarded ALTER is a no-op for fresh
 #: databases whose canonical aux DDL already carries the column.
-SCHEMA_VERSION = 21
+#: v22 (owner 2026-10-24; web schema v31→v32 parity — the class-level
+#: ``parentlessRole`` render contract, SCHEMA.md "Node structure"): the
+#: node table gains ``parentless_role`` TEXT and the class registry gains
+#: ``parentless_role`` TEXT (both NULL = the "page" default; meaningful on
+#: class rows only — the icon/color two-table precedent, mapped by
+#: class.create/update). Purely additive guarded ALTERs, no-ops for fresh
+#: v22 creates.
+SCHEMA_VERSION = 22
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -247,6 +254,10 @@ _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     # was taken from a post-list-style store; older snapshots lack the
     # column and the mapping skips them (the cache default NULL wins).
     "list_style": "list_style",
+    # Class-level parentlessRole (web schema v32): rides along when the
+    # snapshot was taken from a post-flag store; older snapshots lack the
+    # column and the mapping skips it (the cache default NULL wins).
+    "parentless_role": "parentless_role",
     "content": "content",
     "created_at": "created_at",
     "is_active": "is_active",
@@ -338,6 +349,12 @@ class NodeRow:
     # Per-block list style (the listStyle wire node field): "numbered" |
     # "alpha" | "roman", or ``None`` = the bullet default.
     list_style: str | None
+    # Class-level parentlessRole (the class.create/update wire field, owner
+    # 2026-10-24): "block" = a parentless member of the class renders in the
+    # Block role, or ``None`` = the "page" default. Meaningful on class rows
+    # only (the icon/color two-table precedent); extends-aware at read time
+    # (own flag OR any extends-ancestor's — one-way demote).
+    parentless_role: str | None
     is_active: bool
     content: str | None
     content_plain: str
@@ -449,13 +466,15 @@ def _envelope_ts(env: RelayEnvelope) -> str:
 def _class_node_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Map a ``class.*`` payload onto the class-node upsert field names.
 
-    ``color`` keeps wire PRESENCE: the key lands in the result only when the
-    payload carried it, so an explicit ``null`` (clear) survives the mapping
-    instead of collapsing into "absent".
+    ``color`` and ``parentless_role`` keep wire PRESENCE: the key lands in
+    the result only when the payload carried it, so an explicit ``null``
+    (clear) survives the mapping instead of collapsing into "absent".
     """
     fields: dict[str, Any] = {"content_ast": payload.get("contentAst"), "icon": payload.get("icon")}
     if "color" in payload:
         fields["color"] = payload["color"]
+    if "parentlessRole" in payload:
+        fields["parentless_role"] = payload["parentlessRole"]
     return fields
 
 
@@ -1193,18 +1212,52 @@ class LocalStore:
         ).fetchone()
         return None if row is None else (None if row[0] is None else str(row[0]))
 
+    def _row_is_parentless_block(self, row: tuple[Any, ...]) -> bool:
+        """True when ANY of the row's classes effectively carries
+        parentlessRole "block" — its own flag OR an extends-ancestor's via
+        the class_hierarchy closure (the one-way demote, owner 2026-10-24;
+        ``appliers.ts rowIsParentlessBlock`` parity — the same EXISTS the
+        query compiler flattens). No/empty class context = False (the
+        "page" default)."""
+        raw_class_ids = row[6]
+        try:
+            class_ids = [str(item) for item in json.loads(raw_class_ids)] if raw_class_ids else []
+        except (TypeError, ValueError):
+            return False
+        if not class_ids:
+            return False
+        placeholders = ", ".join("?" for _ in class_ids)
+        return (
+            self._conn.execute(
+                f"""SELECT 1 FROM class_hierarchy ch
+                    JOIN nodes c ON c.id = ch.ancestor_id
+                    WHERE ch.class_id IN ({placeholders})
+                      AND c.parentless_role = 'block'
+                    LIMIT 1""",
+                class_ids,
+            ).fetchone()
+            is not None
+        )
+
     def _is_page_row(self, row: tuple[Any, ...]) -> bool:
         """True when the node row renders with document chrome under the
         recursive parent-page rule (owner ruling 2026-10-15, carried into
-        Revision 12): a class never does (ClassView), a parentless non-class
-        row always does (the flag is unread), and a parented row does exactly
-        when ``is_embedded = 0`` (the standalone claim) AND its parent also
-        renders with document chrome. Cycles are impossible (subtree moves
-        are guarded); a missing parent row is a defensive "not a page"."""
+        Revision 12): a class never does (ClassView); a parentless non-class
+        row does — UNLESS one of its classes effectively carries
+        parentlessRole "block" (owner 2026-10-24; the guard must see the
+        same role render sees, or a standalone claim could be stored under a
+        block-role parent — an impossible RENDERED state); and a parented row
+        does exactly when ``is_embedded = 0`` (the standalone claim) AND its
+        parent also renders with document chrome. Cycles are impossible
+        (subtree moves are guarded); a missing parent row is a defensive
+        "not a page"."""
         if bool(row[3]):
             return False
         if row[2] is None:
-            return True
+            # The parentless branch reads the class-level parentlessRole
+            # demote (owner 2026-10-24); the embedding flag stays read only
+            # for parented rows (the is_embedded symmetry).
+            return not self._row_is_parentless_block(row)
         if int(row[4]) != 0:
             return False
         parent = self._node_row(str(row[1]), str(row[2]))
@@ -2094,10 +2147,10 @@ class LocalStore:
             self._conn.execute(
                 """INSERT OR IGNORE INTO nodes
                      (workspace_id, id, is_class, is_embedded, parent_id, class_ids, name, content, content_plain,
-                      icon, color,
+                      icon, color, parentless_role,
                       is_active, created_at, updated_at, created_by, updated_by,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, 1, 0, NULL, '[]', NULL, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 1, 0, NULL, '[]', NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     env.workspace_id,
                     class_id,
@@ -2105,6 +2158,7 @@ class LocalStore:
                     content_plain,
                     fields.get("icon"),
                     fields.get("color"),
+                    fields.get("parentless_role"),
                     ts,
                     ts,
                     env.actor_id,
@@ -2133,6 +2187,12 @@ class LocalStore:
             if "color" in fields:
                 sets.append("color = ?")
                 values.append(fields["color"])
+            # parentless_role carries the same presence semantics (a
+            # present null clears back to the "page" default — the color
+            # contract, owner 2026-10-24).
+            if "parentless_role" in fields:
+                sets.append("parentless_role = ?")
+                values.append(fields["parentless_role"])
             if not sets:
                 return
             sets.extend(("updated_at = ?", "updated_by = ?", "hlc_physical = ?", "hlc_logical = ?", "actor_id = ?"))
@@ -2182,14 +2242,25 @@ class LocalStore:
         title_text = plaintext_excerpt(payload["contentAst"]) if payload.get("contentAst") is not None else None
         with self._conn:
             self._conn.execute(
-                """INSERT INTO class (id, workspace_id, name, icon, color, description, active, created_at, updated_at)
-                   VALUES (?, ?, COALESCE(?, ''), ?, ?, NULL, 1, ?, ?)
+                """INSERT INTO class (id, workspace_id, name, icon, color, description, parentless_role, active, created_at, updated_at)
+                   VALUES (?, ?, COALESCE(?, ''), ?, ?, NULL, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = COALESCE(NULLIF(excluded.name, ''), class.name),
                      icon = COALESCE(excluded.icon, class.icon),
                      color = COALESCE(excluded.color, class.color),
-                     description = class.description, active = 1, updated_at = excluded.updated_at""",
-                (class_id, env.workspace_id, title_text, payload.get("icon"), payload.get("color"), ts, ts),
+                     description = class.description,
+                     parentless_role = COALESCE(excluded.parentless_role, class.parentless_role),
+                     active = 1, updated_at = excluded.updated_at""",
+                (
+                    class_id,
+                    env.workspace_id,
+                    title_text,
+                    payload.get("icon"),
+                    payload.get("color"),
+                    payload.get("parentlessRole"),
+                    ts,
+                    ts,
+                ),
             )
             if title_text is None:
                 # Title-less declaration (the conversion path — a bare
@@ -2254,6 +2325,12 @@ class LocalStore:
             if "color" in payload:
                 sets.append("color = ?")
                 values.append(payload["color"])
+            # parentless_role is nullable with the same contract (TS parity:
+            # ``p.parentlessRole !== undefined``): a present null clears the
+            # flag back to the "page" default, absence keeps it.
+            if "parentlessRole" in payload:
+                sets.append("parentless_role = ?")
+                values.append(payload["parentlessRole"])
             if not sets:
                 return False
             sets.append("updated_at = ?")
@@ -3664,7 +3741,8 @@ class LocalStore:
         """
         sql = (
             "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style,"
+            " parentless_role"
             " FROM nodes WHERE workspace_id = ?"
         )
         params: list[Any] = [workspace_id]
@@ -3688,7 +3766,8 @@ class LocalStore:
         rows = self._conn.execute(
             """SELECT n.id, n.workspace_id, n.parent_id, n.is_class, n.is_embedded, n.name, n.class_ids, n.tag_ids,
                       n.icon, n.color, n.is_active, n.content, n.content_plain,
-                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description, n.list_style
+                      n.cover_asset_id, n.banner_asset_id, n.aliased_node_id, n.description, n.list_style,
+                      n.parentless_role
                FROM nodes n
                JOIN node_child_order o ON o.child_id = n.id
                WHERE n.workspace_id = ? AND o.parent_id = ? AND n.is_active = 1
@@ -3702,7 +3781,8 @@ class LocalStore:
         """Return one cached node row, or ``None`` when unknown."""
         row = self._conn.execute(
             "SELECT id, workspace_id, parent_id, is_class, is_embedded, name, class_ids, tag_ids, icon, color,"
-            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style"
+            " is_active, content, content_plain, cover_asset_id, banner_asset_id, aliased_node_id, description, list_style,"
+            " parentless_role"
             " FROM nodes WHERE workspace_id = ? AND id = ?",
             (workspace_id, node_id),
         ).fetchone()
@@ -3739,6 +3819,7 @@ class LocalStore:
             aliased_node_id=row[15],
             description=row[16],
             list_style=row[17],
+            parentless_role=row[18],
         )
 
     @_synchronized
@@ -4325,6 +4406,15 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- NUMBER is never stored — clients derive it at render time from the
     -- contiguous run of same-style siblings.
     list_style TEXT,
+    -- Class-level parentlessRole (owner 2026-10-24, web schema v31→v32
+    -- parity — the class.create/update wire field): "block" = a parentless
+    -- member of the class renders in the Block role instead of with
+    -- document chrome; NULL = the "page" default. Meaningful on class rows
+    -- only (mapped by class.create/update, the icon/color two-table
+    -- precedent); read by render only (the render-contract law, PC1 — no
+    -- write-path enforcement) and extends-aware at read time via
+    -- class_hierarchy (own flag OR any ancestor's — one-way demote).
+    parentless_role TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     content TEXT,
     content_plain TEXT NOT NULL DEFAULT '',
@@ -4401,6 +4491,11 @@ CREATE TABLE IF NOT EXISTS class (
     icon TEXT,
     color TEXT,
     description TEXT,
+    -- Class-level parentlessRole (owner 2026-10-24, web schema v31→v32
+    -- parity): the render contract mirrored from the class node row like
+    -- icon/color — "block" = parentless members render in the Block role,
+    -- NULL = the "page" default.
+    parentless_role TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT
@@ -5270,6 +5365,21 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v22(conn: sqlite3.Connection) -> None:
+    """v22 — the class-level parentlessRole render contract (owner
+    2026-10-24; web schema v31→v32 parity, SCHEMA.md "Node structure"):
+    the node table gains ``parentless_role`` TEXT and the class registry
+    gains ``parentless_role`` TEXT — "block" = a parentless member of the
+    class renders in the Block role; NULL = the "page" default (the
+    zero-migration default, so the backfill is deliberately NULL).
+    Meaningful on class rows only (the icon/color two-table precedent).
+    Purely additive — the column guards keep the ALTERs idempotent for
+    fresh v22 creates (the v16 precedent).
+    """
+    LocalStore._add_column_if_missing(conn, "nodes", "parentless_role", "TEXT")
+    LocalStore._add_column_if_missing(conn, "class", "parentless_role", "TEXT")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -5293,4 +5403,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (19, _migrate_v19),
     (20, _migrate_v20),
     (21, _migrate_v21),
+    (22, _migrate_v22),
 )

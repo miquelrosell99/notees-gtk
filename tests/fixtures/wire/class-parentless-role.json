@@ -1,0 +1,178 @@
+{
+  "comment": "Class-level parentlessRole (SCHEMA.md \"Node structure\", owner 2026-10-24): class.create/class.update carry the OPTIONAL NULLABLE parentlessRole \u2014 \"block\" = a parentless member of the class renders in the Block role (block chrome, no document chrome) instead of with document chrome; absent/null = \"page\", the zero-migration default. Presence writes, present-null clears, exactly like color. The flag is a RENDER CONTRACT read only in the cascade's parentless branch (the is_embedded symmetry: the embedding flag is read only for parented nodes) \u2014 the applier maps it without validating (PC1), and it is EXTENDS-AWARE at read time: a class effectively carries \"block\" when its own flag OR any extends-ancestor's is \"block\" (one-way demote; no per-level unflag). This fixture pins the payload shapes: Task seeds flagged block; Event is flagged by a class.update, then CLEARED by a present-null update (back to the page default); Errand carries no flag of its own but extends the flagged Task \u2014 its effective role derives from the chain, not from a stored value. The standalone task object.create is the population the role bends: a parentless node created with classIds [Task] reads Block-role on every client.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000301",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d1"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d1",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Task"
+          }
+        ],
+        "parentlessRole": "block"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000302",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d2"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d2",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Event"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000303",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d3"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-0000000000d3",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Call the electrician"
+          }
+        ],
+        "classIds": [
+          "0192a000-0000-7000-8000-0000000000d1"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000304",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d2"
+      ],
+      "opType": "class.update",
+      "timestamp": "2026-09-24T12:00:07.300Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d2",
+        "parentlessRole": "block"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000305",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d2"
+      ],
+      "opType": "class.update",
+      "timestamp": "2026-09-24T12:00:07.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d2",
+        "parentlessRole": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000306",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d4"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:07.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d4",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Errand"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000307",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-0000000000d0",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200007600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000d4"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:07.600Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-0000000000d4",
+        "parentClassIds": [
+          "0192a000-0000-7000-8000-0000000000d1"
+        ]
+      }
+    }
+  ]
+}

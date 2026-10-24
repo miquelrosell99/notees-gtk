@@ -228,6 +228,55 @@ class TestColorGrammar:
             build_class_update(UUID_1, color="not-a-color")
 
 
+class TestClassParentlessRole:
+    """The class-level parentlessRole render contract (owner 2026-10-24):
+    ``class.create``/``class.update`` carry the optional nullable
+    ``parentlessRole`` — "page" | "block"; absent/null = "page", the
+    zero-migration default. Presence writes, present-null clears, exactly
+    like ``color`` (the zod ``z.enum(["page", "block"]).nullish()``
+    parity — the lockstep payload acceptance; pre-change clients reject the
+    key, which gates mixed writers)."""
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    @pytest.mark.parametrize("role", ["page", "block"])
+    def test_every_enum_value_accepted(self, op_type: str, role: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "parentlessRole": role})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_null_clears(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "parentlessRole": None})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_absent_still_validates(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "icon": "📄"})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    @pytest.mark.parametrize("bad", ["Block", "BLOCK", "widget", "", "page "])
+    def test_garbage_rejected(self, op_type: str, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {"classId": UUID_1, "parentlessRole": bad})
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update", "object.move"])
+    def test_object_ops_reject_the_key_outright(self, op_type: str) -> None:
+        """Strict-schema parity: the flag is a class-only field (the
+        ``extra="forbid"`` law — pre-change clients reject it too)."""
+        key = "objectId"
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {key: UUID_1, "parentlessRole": "block"})
+
+    def test_builder_emits_the_flag_only_when_set(self) -> None:
+        assert build_class_create(UUID_1, name="Task", parentless_role="block") == {
+            "classId": UUID_1,
+            "contentAst": [{"type": "text", "text": "Task"}],
+            "parentlessRole": "block",
+        }
+        assert "parentlessRole" not in build_class_create(UUID_1, name="Task")
+        # Update: keep-vs-clear — explicit None sends the clear, omitting keeps.
+        assert build_class_update(UUID_1, parentless_role=None) == {"classId": UUID_1, "parentlessRole": None}
+        assert "parentlessRole" not in build_class_update(UUID_1, icon="📄")
+        assert build_class_update(UUID_1, parentless_role="block") == {"classId": UUID_1, "parentlessRole": "block"}
+
+
 class TestWireNodeFields:
     """M27: ``object.update`` carries the optional nullable ``coverAssetId``
     / ``bannerAssetId`` / ``aliasedNodeId`` node fields — presence writes,

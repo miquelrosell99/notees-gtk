@@ -36,6 +36,7 @@ def row(node_id: str, *, aliased_node_id: str | None = None) -> NodeRow:
         aliased_node_id=aliased_node_id,
         description=None,
         list_style=None,
+        parentless_role=None,
         is_active=True,
         content=None,
         content_plain="",
