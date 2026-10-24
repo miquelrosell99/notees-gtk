@@ -6,6 +6,55 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-24
+
+- **feat(protocol,store): class-level `parentlessRole` — the parentless
+  branch of the render cascade bends to class config (main-repo lockstep
+  port).** The monorepo shipped the class-level
+  parentlessRole render contract (SCHEMA.md "Node structure"; TS store
+  schema v31→v32; `packages/domain` `SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK`):
+  `class.create`/`class.update` gain the OPTIONAL NULLABLE `parentlessRole`
+ `"page" | "block"`; absent/null = "page", the zero-migration default.
+  Presence writes, present-null clears, exactly like `color`. GTK port:
+  (1) the strict `ClassCreatePayload`/`ClassUpdatePayload` accept the key
+  (zod `z.enum(["page", "block"]).nullish()` parity — the lockstep payload
+  acceptance; pre-change clients reject it, gating mixed writers), and the
+  builders follow the web `WorkspaceClient` (`createClass` opts,
+  `updateClass` keep-vs-clear with explicit-null clear); (2) the derived
+  schema gains `parentless_role` TEXT on BOTH the node table and the class
+  registry (meaningful on class rows only — the icon/color two-table
+  precedent), fresh databases via the canonical DDL, existing databases via
+  the guarded `SCHEMA_VERSION` 21→22 migration (web schema v31→v32
+  parity); the class.create applier maps presence/present-null to both
+  tables (create-time value rides the node-row INSERT; the registry
+  conflict arm COALESCEs, so a re-issued flag-less class.create — the
+  seed/ensure re-run — preserves the stored flag); `class.update` keys off
+  payload presence like `color`; (3) the parent-page guard is flag-aware:
+  `_is_page_row`'s parentless branch now demotes a parentless node whose
+  classes EFFECTIVELY carry "block" (own flag OR any extends-ancestor's via
+  the class_hierarchy closure — one-way demote, no per-level unflag), so a
+  standalone (is_embedded = 0) claim under a block-role parentless node
+  fails loud (MoveGuardError — same guard, corrected predicate, no new
+  error type); the embedding flag stays read only for parented rows (the
+  symmetry); (4) `NodeRow` exposes `parentless_role` (TS `StoreNodeRow`
+  parity) and the snapshot verbatim columns ride it when present; (5) the
+  seed-manifest roster `SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK` lands in
+  features.py (seeds.ts parity — the 14 flagged names; meeting/birthday
+  deliberately absent, inheriting the demote through event); the GTK
+  client authors no seed envelopes, so no emission path changes. The
+  `class-parentless-role.json` fixture re-vendored byte-identical (sha256
+  `11779e2ce5a896b34942201cb3234655f46e6068a557c49f0d33d27685cab494`).
+  Tests: fixture replay (flag set + present-null clear on both tables,
+  Errand-extends-Task effective inheritance derives at read); applier unit
+  tests (create-with-flag maps to both tables, absent = NULL, update
+  set/clear, re-issued flag-less create preserves, the flag-aware guard
+  rejects a standalone claim under a block-role parentless node and a
+  promotion of its embedded child, explicit "page" never demotes);
+  payload-shape tests (enum/null/garbage/object-op rejection, builder
+  emission rules).
+  **Verification:** `uv sync && uv run pytest && uv run ruff check &&
+  uv run mypy src` — all green (see the session report for counts).
+
 ## 2026-10-23
 
 - **feat(protocol,store): the workspace.feature.set settings payload — the

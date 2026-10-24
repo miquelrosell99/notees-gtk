@@ -57,6 +57,7 @@ __all__ = [
     "SYSTEM_CLASS_DISPLAY_NAMES",
     "SYSTEM_CLASS_EXTENDS_IDS",
     "SYSTEM_CLASS_ICONS",
+    "SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK",
     "TASK_FAMILY_SEED",
     "TASK_PRIORITY_OPTION_UUIDS",
     "TASK_STATUS_OPTION_UUIDS",
@@ -280,6 +281,37 @@ SYSTEM_CLASS_EXTENDS_IDS: dict[str, tuple[str, ...]] = {
     class_id: tuple(_SYSTEM_CLASS_UUIDS[parent] for parent in _SYSTEM_CLASS_EXTENDS.get(name, ()))
     for name, class_id in _SYSTEM_CLASS_UUIDS.items()
 }
+
+#: The class-level parentlessRole "block" seed roster (seeds.ts
+#: ``SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK`` parity): system
+#: classes whose PARENTLESS members render in the Block role — standalone
+#: captures (tasks, quotes, highlights, assets, comments, cloze) and small
+#: structural elements (queries, templates, tables, code, cards,
+#: definitions, ideas, events) surface through queries/collections/
+#: search-blocks instead of the Pages chrome. The server seed and the web
+#: ensure paths emit the flag on class.create; clients receive it through
+#: catch-up like any other op (the GTK client authors no seed envelopes).
+#: ``meeting`` and ``birthday`` are deliberately ABSENT — they inherit the
+#: demote through ``event`` via ``_SYSTEM_CLASS_EXTENDS`` (the effective
+#: flag derives at read time; one-way demote, no per-level unflag).
+SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK: frozenset[str] = frozenset(
+    {
+        "quote",
+        "code",
+        "asset",
+        "card",
+        "task",
+        "template",
+        "comment",
+        "table",
+        "cloze",
+        "highlight",
+        "query",
+        "definition",
+        "idea",
+        "event",
+    }
+)
 
 
 def is_system_class_id(class_id: str) -> bool:

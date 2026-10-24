@@ -67,6 +67,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-extends-system-lock.json",
     "wire/class-link-assertion.json",
     "wire/class-link.json",
+    "wire/class-parentless-role.json",
     "wire/class-property-active.json",
     "wire/class-property-defaults.json",
     "wire/class-unassign.json",
