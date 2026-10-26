@@ -1089,8 +1089,8 @@ class TestObjectMove:
         row = store.node(WS_A, uid("c"))
         assert row is not None
         assert row.parent_id is None
-        # Moves never write the render bit: the bit stays inline (unread for
-        # parentless nodes — benign by construction).
+        # Unparenting never writes the render bit: the bit stays inline (unread
+        # for parentless nodes — benign by construction).
         assert row.is_embedded is True
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(0,)]
 
@@ -1101,7 +1101,7 @@ class TestObjectMove:
         row = store.node(WS_A, uid("sub"))
         assert row is not None
         assert row.parent_id is None
-        # Moves never write the bit: parentless-with-bit-set is benign.
+        # Unparenting never writes the bit: parentless-with-bit-set is benign.
         assert row.is_embedded is False
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('sub')}'") == [(0,)]
 
@@ -1145,6 +1145,89 @@ class TestObjectMove:
         assert store.apply_remote(move_env(uid("c"), parent_id=uid("q"), hlc=(4, 0))) is False
         assert store.node(WS_A, uid("c")).parent_id == uid("p")
         assert raw_rows(store, f"SELECT COUNT(*) FROM node_child_order WHERE child_id = '{uid('c')}'") == [(1,)]
+
+    def test_first_parenting_of_a_parentless_embedded_node_acquires_the_standalone_claim(
+        self, store: LocalStore
+    ) -> None:
+        """Treat-as-main on first parenting: an orphan
+        block (un-parented with the bit still 1) reads as a page while
+        parentless; parenting it must keep it one — the move acquires the
+        standalone claim."""
+        store.apply_remote(create_env(uid("page"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("block"), parent_id=uid("page"), hlc=(2, 0)))
+        store.apply_remote(create_env(uid("orphan"), parent_id=uid("block"), content="orphan", hlc=(3, 0)))
+        store.apply_remote(move_env(uid("orphan"), parent_id=None, hlc=(4, 0)))
+        row = store.node(WS_A, uid("orphan"))
+        assert row is not None
+        assert row.parent_id is None
+        # Un-parenting never writes the bit: the orphan stays embedded-flagged.
+        assert row.is_embedded is True
+        # Parenting it (the breadcrumbs "Add parent" gesture) acquires the claim.
+        assert store.apply_remote(move_env(uid("orphan"), parent_id=uid("page"), hlc=(5, 0))) is True
+        row = store.node(WS_A, uid("orphan"))
+        assert row is not None
+        assert row.parent_id == uid("page")
+        assert row.is_embedded is False
+
+    def test_treat_as_main_acquisition_stringifies_rich_content(self, store: LocalStore) -> None:
+        """The acquired standalone claim stringifies the content in the same
+        op — the same lossy main-role boundary as the object.update
+        promotion."""
+        store.apply_remote(create_env(uid("page"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("block"), parent_id=uid("page"), hlc=(2, 0)))
+        rich = [{"type": "text", "text": "see "}, {"type": "mention", "targetNodeId": uid("someone")}]
+        store.apply_remote(create_env(uid("orphan"), parent_id=uid("block"), content=rich, hlc=(3, 0)))
+        store.apply_remote(move_env(uid("orphan"), parent_id=None, hlc=(4, 0)))
+        store.apply_remote(move_env(uid("orphan"), parent_id=uid("page"), hlc=(5, 0)))
+        row = store.node(WS_A, uid("orphan"))
+        assert row is not None
+        assert row.is_embedded is False
+        content = json.loads(row.content or "")
+        # The mention folds into the single text-only token.
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert row.content_plain == content[0]["text"]
+
+    def test_treat_as_main_fails_loud_when_the_parent_lacks_document_chrome(self, store: LocalStore) -> None:
+        """A page cannot be parented under a class or an embedded block: the
+        acquisition answers to the parent-page condition and the rejected
+        moves leave the flag untouched."""
+        store.apply_remote(create_env(uid("page"), parent_id=None, hlc=(1, 0)))
+        store.apply_remote(create_env(uid("block"), parent_id=uid("page"), hlc=(2, 0)))
+        store.apply_remote(create_env(uid("orphan"), parent_id=uid("block"), content="orphan", hlc=(3, 0)))
+        store.apply_remote(move_env(uid("orphan"), parent_id=None, hlc=(4, 0)))
+        with pytest.raises(MoveGuardError, match="renders as a main page while parentless"):
+            store.apply_remote(move_env(uid("orphan"), parent_id=uid("block"), hlc=(5, 0)))
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(6, 0), name="Tag"))
+        with pytest.raises(MoveGuardError, match="renders as a main page while parentless"):
+            store.apply_remote(move_env(uid("orphan"), parent_id=uid("cls-1"), hlc=(7, 0)))
+        # The rejected moves left the flag untouched.
+        row = store.node(WS_A, uid("orphan"))
+        assert row is not None
+        assert row.parent_id is None
+        assert row.is_embedded is True
+
+    def test_parentless_block_role_class_member_keeps_the_bit_on_parenting(self, store: LocalStore) -> None:
+        """A parentless member of a parentlessRole "block" class is a
+        block-role citizen by the 2026-10-24 contract — the treat-as-main
+        claim stays inert for it, so it keeps the bit and stays a block."""
+        store.apply_remote(class_env("class.create", uid("task-cls"), hlc=(1, 0), name="Task", parentlessRole="block"))
+        store.apply_remote(create_env(uid("page"), parent_id=None, hlc=(2, 0)))
+        store.apply_remote(
+            create_env(
+                uid("orphan-task"),
+                parent_id=uid("page"),
+                class_ids=(uid("task-cls"),),
+                content="fix sink",
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(move_env(uid("orphan-task"), parent_id=None, hlc=(4, 0)))
+        store.apply_remote(move_env(uid("orphan-task"), parent_id=uid("page"), hlc=(5, 0)))
+        row = store.node(WS_A, uid("orphan-task"))
+        assert row is not None
+        assert row.parent_id == uid("page")
+        assert row.is_embedded is True
 
 
 #: The system class a date-chain node is locked to, by precision (seeds.ts

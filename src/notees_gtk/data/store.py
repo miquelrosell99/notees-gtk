@@ -1895,15 +1895,51 @@ class LocalStore:
         # Parent-page condition (Revision 12): a
         # standalone node (is_embedded = 0) renders with document chrome only
         # under a page parent, so moving one under a class or an embedded
-        # block establishes an illegal parented state and fails loud (moves
-        # never write the flag — the alternative, silently clearing it, would
-        # rewrite render state behind the user's back).
+        # block establishes an illegal parented state and fails loud (the
+        # standalone arm never writes the flag — the alternative, silently
+        # clearing it, would rewrite render state behind the user's back; the
+        # treat-as-main acquisition below is the one exception, and it only
+        # ever sets the bit, never clears it).
         if parent_id is not None and int(row[4]) == 0:
             parent = self._node_row(env.workspace_id, parent_id)
             if parent is None or not self._is_page_row(parent):
                 raise MoveGuardError(
                     f"{op_type}: node {object_id} is standalone (is_embedded = 0);"
                     " it can only move under a parent that renders with document chrome",
+                    op_type,
+                )
+        # Treat-as-main on first parenting: a parentless
+        # non-class node renders with document chrome by the second cascade
+        # branch REGARDLESS of is_embedded, so a node left parentless with the
+        # bit still 1 — an extracted-to-page block, a block whose parent was
+        # removed — reads as a page until something parents it, and the
+        # untouched bit would then demote it to an embedded block. The first
+        # parenting therefore ACQUIRES the standalone claim (is_embedded = 0):
+        # the node stays a page. The acquisition answers to the same
+        # parent-page condition as any standalone claim (a page cannot be
+        # parented under a class or an embedded block — fail loud) and
+        # stringifies content in the same op, mirroring the object.update
+        # promotion (the lossy main-role boundary). Parentless members of a
+        # parentlessRole "block" class are block-role citizens by the
+        # 2026-10-24 contract — the claim stays inert for them, so they keep
+        # the bit and stay blocks.
+        claims_main = (
+            row[2] is None
+            and parent_id is not None
+            and not bool(row[3])
+            and int(row[4]) == 1
+            and not self._row_is_parentless_block(row)
+        )
+        if claims_main:
+            # claims_main guarantees parent_id is not None; the class arm of
+            # the render check reads it narrowed.
+            new_parent_id = str(parent_id)
+            parent = self._node_row(env.workspace_id, new_parent_id)
+            if parent is None or not self._is_page_row(parent):
+                raise MoveGuardError(
+                    f"{op_type}: node {object_id} renders as a main page while parentless;"
+                    " parenting it requires a parent that renders with document chrome"
+                    f" (parent {new_parent_id} is a class or an embedded block)",
                     op_type,
                 )
         # Date-chain parenting lock (SCHEMA.md "Datetime"): a date node may
@@ -1920,19 +1956,33 @@ class LocalStore:
 
         # Parent/position are row-level LWW by envelope (hlc, actor): the whole
         # move publishes or drops — a position write never outlives a newer
-        # parent write and vice versa. Moves never write the render bit: a
-        # parentless non-class node renders with document chrome by the second
-        # cascade branch regardless of is_embedded (unread there).
+        # parent write and vice versa. Treat-as-main on first parenting is the
+        # one exception to "moves never write the render bit" (see above): the
+        # acquired standalone claim rides the winning move's UPDATE — a stale
+        # move still drops whole, flag included.
         if not self._incoming_wins(env, row[12], row[13], row[14]):
             return False
 
+        sets = ["parent_id = ?"]
+        values: list[Any] = [parent_id]
+        if claims_main:
+            # The acquired standalone claim: 1 -> 0 plus the content stringify
+            # (the same lossy main-role boundary as the object.update
+            # promotion, content_plain projection included).
+            flattened = json.dumps(stringify_content_ast(parse_content_ast(row[10])), ensure_ascii=False)
+            sets.append("is_embedded = 0")
+            sets.append("content = ?")
+            values.append(flattened)
+            sets.append("content_plain = ?")
+            values.append(plaintext_excerpt(parse_content_ast(flattened)))
+
         with self._conn:
             self._conn.execute(
-                """UPDATE nodes SET parent_id = ?, updated_at = ?, updated_by = ?,
+                f"""UPDATE nodes SET {", ".join(sets)}, updated_at = ?, updated_by = ?,
                        hlc_physical = ?, hlc_logical = ?, actor_id = ?
                    WHERE workspace_id = ? AND id = ?""",
                 (
-                    parent_id,
+                    *values,
                     _envelope_ts(env),
                     env.actor_id,
                     env.hlc.physical,

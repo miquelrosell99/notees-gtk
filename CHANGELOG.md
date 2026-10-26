@@ -6,6 +6,40 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-26
+
+- **fix(store): `object.move` keeps a parentless main node a page — the
+  first parenting acquires the standalone claim (treat-as-main; the GTK port of the monorepo's fix, reference commit
+  867c25134, completing the three-implementation lockstep).** The
+  monorepo's TS reference shipped the treat-as-main semantics on
+  2026-10-26: `object.move` never wrote `is_embedded`, so a node left
+  parentless with the bit still 1 (an extracted-to-page block, or a block
+  un-parented via "Remove parent") rendered as a page while parentless but
+  silently demoted to an embedded block the moment a parent was assigned.
+  GTK port: in `_apply_object_move`, after the existing placement guards,
+  the first parenting of such a node now (1) computes `claims_main` —
+  parentless → parented, non-class, `is_embedded = 1`, and NOT a member of
+  an effectively parentlessRole "block" class (extends-aware, the same
+  check `_is_page_row`'s parentless arm uses); (2) fails loud with
+  MoveGuardError when the new parent does not render with document chrome
+  (a class or an embedded block) — a page cannot be parented under either;
+  (3) on the winning move, sets `is_embedded = 0` AND stringifies the
+  content in the same UPDATE — the same lossy flatten the object.update
+  promotion (1→0) performs (content_plain projection included); the
+  acquisition rides the row-level LWW gate, so a stale move still drops
+  whole. Parented→parented moves still never touch the flag; unparenting
+  is unchanged. Applier comments updated (the "moves never write the flag"
+  wording now carries the treat-as-main exception, mirroring the TS
+  comment). No wire change — the fixture corpus is untouched. Tests: four
+  new applier unit tests mirroring the monorepo's (`tests/test_store.py`
+  `TestObjectMove`): the orphan's first parenting acquires the claim; the
+  acquisition stringifies rich content (text + mention) to a single
+  text-only token; parenting under an embedded block or a class raises
+  MoveGuardError and leaves the flag untouched; a parentless
+  parentlessRole-"block" class member keeps `is_embedded = 1`.
+  **Verification:** `uv sync && uv run pytest && uv run ruff check &&
+  uv run mypy src` — all green.
+
 ## 2026-10-24
 
 - **feat(protocol,store): class-level `parentlessRole` — the parentless
