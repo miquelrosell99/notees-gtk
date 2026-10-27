@@ -32,10 +32,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Pango
 
+from notees_gtk.ui.node_picker import NodeEntry, pop_node_picker
+
 __all__ = ["build_aliases_section", "build_aliased_node_row"]
 
 #: (node id, display label) pairs — the chrome's row records.
-AliasEntry = tuple[str, str]
+AliasEntry = NodeEntry
 
 
 def build_aliases_section(aliases: Sequence[AliasEntry], on_open_node: Callable[[str], None]) -> Gtk.Widget:
@@ -84,66 +86,10 @@ def build_aliased_node_row(
     row_box.append(main_button)
 
     change_button = Gtk.Button(label="Change…", has_frame=False, tooltip_text="Re-point the alias")
-    change_button.connect("clicked", lambda _b: _pop_target_picker(change_button, candidates, on_repoint))
+    change_button.connect("clicked", lambda _b: pop_node_picker(change_button, candidates, on_repoint))
     row_box.append(change_button)
 
     clear_button = Gtk.Button(label="Clear", has_frame=False, tooltip_text="Clear the alias target")
     clear_button.connect("clicked", lambda _b: on_repoint(None))
     row_box.append(clear_button)
     return row_box
-
-
-def _pop_target_picker(
-    anchor: Gtk.Widget,
-    candidates: Sequence[AliasEntry],
-    on_pick: Callable[[str | None], None],
-) -> None:
-    """Show the re-point picker: a search entry over the candidate rows.
-
-    The candidate set is the pure filter's output (the alias itself and
-    every already-aliased node excluded); an empty set renders an explicit
-    empty state rather than a dead list.
-    """
-    popover = Gtk.Popover()
-    popover.set_parent(anchor)
-
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=6, margin_bottom=6)
-    popover.set_child(box)
-
-    if not candidates:
-        empty = Gtk.Label(label="No available nodes", margin_start=12, margin_end=12)
-        empty.add_css_class("dim-label")
-        box.append(empty)
-        popover.popup()
-        return
-
-    search = Gtk.SearchEntry(margin_start=6, margin_end=6)
-    box.append(search)
-    list_box = Gtk.ListBox(css_classes=["navigation-sidebar"], selection_mode=Gtk.SelectionMode.NONE)
-    for candidate_id, label in candidates:
-        candidate_row = Gtk.ListBoxRow()
-        candidate_row.node_id = candidate_id
-        candidate_label = Gtk.Label(label=label, xalign=0, margin_start=6, margin_end=6)
-        candidate_row.set_child(candidate_label)
-        list_box.append(candidate_row)
-    scrolled = Gtk.ScrolledWindow(max_content_height=320, min_content_height=120, propagate_natural_height=True)
-    scrolled.set_child(list_box)
-    box.append(scrolled)
-
-    def on_row_activated(_list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
-        popover.popdown()
-        on_pick(str(row.node_id))
-
-    def on_search_changed(entry: Gtk.SearchEntry) -> None:
-        needle = entry.get_text().strip().lower()
-        child = list_box.get_first_child()
-        while child is not None:
-            if isinstance(child, Gtk.ListBoxRow):
-                label = child.get_child()
-                text = label.get_text().lower() if isinstance(label, Gtk.Label) else ""
-                child.set_visible(needle == "" or needle in text)
-            child = child.get_next_sibling()
-
-    list_box.connect("row-activated", on_row_activated)
-    search.connect("search-changed", on_search_changed)
-    popover.popup()

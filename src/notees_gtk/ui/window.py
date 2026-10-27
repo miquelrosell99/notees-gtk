@@ -26,15 +26,19 @@ from gi.repository import Adw, GLib, Gtk
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, AuthenticationError, NoteesClient
 from notees_gtk.core.protocol.clock import Clock
+from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.sync.engine import SyncEngine
-from notees_gtk.data.errors import CycleError
+from notees_gtk.data.errors import CycleError, MoveGuardError
 from notees_gtk.data.store import LocalStore, NodeRow
 from notees_gtk.ui import config_store
 from notees_gtk.ui.alias_ops import alias_repoint_candidates, alias_update_envelope
 from notees_gtk.ui.ast_render import ast_to_plaintext, ast_to_view
+from notees_gtk.ui.brand import content_colors
 from notees_gtk.ui.editor import EditorView
 from notees_gtk.ui.login import LoginView
 from notees_gtk.ui.page_view import PageViewWidget
+from notees_gtk.ui.tag_ops import tag_assign_candidates, tag_assign_envelope, tag_pills, tag_unassign_envelope
+from notees_gtk.ui.tags import build_tags_row
 from notees_gtk.ui.tree import NodeTreeSidebar, node_display_name
 from notees_gtk.ui.worker import run_in_worker
 
@@ -254,10 +258,35 @@ class NoteesWindow(Adw.ApplicationWindow):
             aliases=self._alias_entries(row),
             aliased_main=self._aliased_main_entry(row),
             repoint_candidates=self._repoint_candidates(node_id) if row.aliased_node_id is not None else (),
+            tags_row=self._tags_row(row),
             on_open_node=self._open_node,
             on_repoint=partial(self._on_alias_repoint, node_id),
         )
         self._editor.open_node(node_id, ast_to_plaintext(row.content))
+
+    def _tags_row(self, row: NodeRow) -> Gtk.Widget:
+        """The window-built Tags row for ``row``: pill records alphabetical
+        by tag title with effective colors, candidate pages for the add
+        picker (label-sorted), both from the pure
+        :mod:`notees_gtk.ui.tag_ops` filters over the live rows."""
+        store = self._require_store()
+        assert store is not None and self._workspace_id is not None
+        rows = store.nodes(self._workspace_id)
+        by_id = {node_row.id: node_row for node_row in rows}
+        extends = store.class_extends_edges()
+        candidates = [
+            (candidate.id, node_display_name(candidate))
+            for candidate in tag_assign_candidates(rows, row.id, by_id, extends)
+        ]
+        candidates.sort(key=lambda entry: (entry[1].lower(), entry[0]))
+        return build_tags_row(
+            pills=tag_pills(row.tag_ids, by_id, extends, node_display_name),
+            candidates=candidates,
+            colors=content_colors(dark=Adw.StyleManager.get_default().get_dark()),
+            on_open_tag=self._open_node,
+            on_assign=partial(self._on_tag_assign, row.id),
+            on_unassign=partial(self._on_tag_unassign, row.id),
+        )
 
     def _alias_entries(self, row: NodeRow) -> list[tuple[str, str]]:
         """(id, label) for every live node whose alias-terminal is this one
@@ -338,6 +367,69 @@ class NoteesWindow(Adw.ApplicationWindow):
     def _after_alias_write(self, node_id: str) -> None:
         self._refresh_sidebar()
         self._show_node(node_id)
+
+    # ------------------------------------------------------------------ tags
+
+    def _on_tag_assign(self, node_id: str, tag_id: str) -> None:
+        """Assign a page as a tag: the OR-Set add carrier (a re-issued
+        ``object.create`` over the node's own id), built from the row the
+        pure helper reads."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        row = store.node(self._workspace_id, node_id)
+        if row is None:
+            return
+        envelope = tag_assign_envelope(
+            workspace_id=self._workspace_id,
+            actor_id=config_store.load_actor_id() or config_store.GTK_ACTOR_ID,
+            device_id=config_store.ensure_device_id(),
+            node=row,
+            tag_id=tag_id,
+            clock=self._clock,
+        )
+        self._enqueue_tag_write(node_id, envelope, "Tag assigned")
+
+    def _on_tag_unassign(self, node_id: str, tag_id: str) -> None:
+        """Remove a tag: the ``tag.unassign`` OR-Set tombstone."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        envelope = tag_unassign_envelope(
+            workspace_id=self._workspace_id,
+            actor_id=config_store.load_actor_id() or config_store.GTK_ACTOR_ID,
+            device_id=config_store.ensure_device_id(),
+            node_id=node_id,
+            tag_id=tag_id,
+            clock=self._clock,
+        )
+        self._enqueue_tag_write(node_id, envelope, "Tag removed")
+
+    def _enqueue_tag_write(self, node_id: str, envelope: RelayEnvelope, message: str) -> None:
+        """The tag-write outbox seam — exactly the alias write's flow:
+        enqueue, optimistically apply to the local mirror (the toggle-free
+        refresh after the sync already renders the new membership; op-id
+        dedupe makes the server echo harmless), then push the outbox on a
+        worker thread. The applier's structural guards (the date-chain lock
+        a tag carrier could trip on a fresh replica) fail loud to a toast.
+        """
+        store = self._require_store()
+        if store is None:
+            return
+        store.enqueue(envelope)
+        try:
+            store.apply_remote(envelope)
+        except (CycleError, MoveGuardError) as exc:
+            self.show_toast(str(exc))
+            return
+        self.show_toast(f"{message} — syncing…")
+        engine = self._engine
+        if engine is not None:
+            run_in_worker(
+                engine.sync, on_done=lambda _result: self._after_alias_write(node_id), on_error=self._on_sync_error
+            )
+        else:
+            self._show_node(node_id)
 
     def _resolve_name(self, target_id: str) -> str | None:
         """Store-backed node-link resolution: first line of the target's content."""

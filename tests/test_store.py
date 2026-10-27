@@ -4303,6 +4303,26 @@ class TestAliasNodesOf:
         assert store.alias_nodes_of(WS_A, self.CHAIN) == []
 
 
+class TestClassExtendsEdges:
+    """The ``class_extends`` derived read (the tag chrome's chain input):
+    class id → sorted direct parents; empty when no class ops ran."""
+
+    A = uid("cee-a")
+    B = uid("cee-b")
+    C = uid("cee-c")
+
+    def test_edges_follow_the_replay_order_and_empty_is_empty(self, store: LocalStore) -> None:
+        assert store.class_extends_edges() == {}
+        for class_id in (self.C, self.A, self.B):
+            store.apply_remote(class_env("class.create", class_id, hlc=(1, 0), name="C"))
+        store.apply_remote(extends_env(self.A, [self.C, self.B], hlc=(2, 0)))
+        store.apply_remote(extends_env(self.B, [self.C], hlc=(3, 0)))
+        assert store.class_extends_edges() == {self.A: (self.B, self.C), self.B: (self.C,)}
+        # A replace (empty parent set) empties the class's entry entirely.
+        store.apply_remote(extends_env(self.B, [], hlc=(4, 0)))
+        assert store.class_extends_edges() == {self.A: (self.B, self.C)}
+
+
 class TestAssetPropertyType:
     """M38 unit semantics (mirrors the monorepo store test): values validate
     as asset-node references — the implicit filter is the asset class;

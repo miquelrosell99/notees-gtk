@@ -7,7 +7,9 @@ dimmed placeholders for block-scale tokens (asset/embed/query/whiteboard).
 
 Above the content the widget renders the node-alias chrome (when the window
 passes it — see :mod:`notees_gtk.ui.aliases`): the Aliases section on an
-aliased node's view and the Aliased-node row on the alias's own view.
+aliased node's view and the Aliased-node row on the alias's own view. The
+window-built Tags row (see :mod:`notees_gtk.ui.tags`) renders between the
+title and the alias chrome.
 """
 
 from __future__ import annotations
@@ -112,6 +114,7 @@ class PageViewWidget(Gtk.Box):
         aliases: Sequence[AliasEntry] = (),
         aliased_main: AliasEntry | None = None,
         repoint_candidates: Sequence[AliasEntry] = (),
+        tags_row: Gtk.Widget | None = None,
         on_open_node: Callable[[str], None] | None = None,
         on_repoint: Callable[[str | None], None] | None = None,
     ) -> None:
@@ -120,6 +123,8 @@ class PageViewWidget(Gtk.Box):
         The alias chrome (both directions of the ``aliasedNodeId`` relation)
         renders above the content when supplied: the Aliases section on the
         aliased node's view, the Aliased-node row on the alias's own view.
+        ``tags_row`` is the window-built Tags row widget (pills + add
+        picker); it renders under the title, above the alias chrome.
         """
         while child := self._content.get_first_child():
             self._content.remove(child)
@@ -134,6 +139,9 @@ class PageViewWidget(Gtk.Box):
             heading.add_css_class("page-title")
             self._content.append(heading)
             self._content.append(Gtk.Separator())
+
+        if tags_row is not None:
+            self._content.append(tags_row)
 
         if aliased_main is not None and on_repoint is not None:
             self._content.append(

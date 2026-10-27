@@ -6,6 +6,52 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-27
+
+- **feat(ui): first-class tag management in the page view — the Tags row
+  (pills + add picker + per-pill remove) at web parity.** Tags are
+  first-class and node-scoped: any page can be assigned as a tag to pages
+  AND blocks (the applier side — the tag OR-Set, the re-issued
+  ``object.create`` carrier, ``tag.unassign`` — already shipped; this slice
+  is the GTK chrome on top, no applier or wire change, the fixture corpus
+  untouched). The web reference (``apps/web/src/features/metadata/
+  TagsRow.tsx``, ``client-writes.ts assignTag/unassignTag``,
+  ``client-reads-refs.ts effectiveNodeColor``, ``shared.ts contrastFor``)
+  was mirrored: (1) a Tags row under the page title on every opened node's
+  view — the GTK view renders one node's own content (no child-block rows),
+  so the web's two surfaces (the page-header row and the dedicated block
+  row) collapse into this single row; pills render alphabetically by tag
+  title with the tag's EFFECTIVE color as the surface (own color, else the
+  first assigned class's extends-chain color, resolved through the web
+  ``PRESET_HEX`` table for the ten preset tokens) and a luminance-threshold
+  contrast foreground (Pango spans, the inline class-chip mechanism);
+  (2) assign: an Add pill pops the page picker (pages only — the pure
+  ``rendersWithDocumentChrome`` port matching the store's ``_is_page_row``
+  rule, parentlessRole-"block" demote and extends-aware — minus the node
+  itself and its already-assigned tags) and writes the OR-Set add carrier, a
+  re-issued ``object.create`` over the node's own id carrying the single tag
+  (``parentId``/``contentAst`` ride for replicas that missed the original
+  create); (3) remove: the per-pill × writes the ``tag.unassign``
+  tombstone. The write path mirrors the alias chrome's exactly:
+  ``store.enqueue`` → optimistic ``apply_remote`` (op-id dedupe makes the
+  server echo harmless) → outbox push on a worker thread; applier guard
+  failures toast. No undo machinery exists in the GTK UI (the undo journal
+  is a web-client concern), so there is no undo to mirror. Architecture: the
+  pure logic lives in the new headless ``ui/tag_ops.py`` (envelopes, pill
+  ordering, color/contrast resolution, the page filter — importable without
+  the ``ui`` extra, the ``alias_ops.py`` precedent); the GTK row widget is
+  the new ``ui/tags.py``; the search-over-rows picker is extracted from the
+  alias chrome into the shared ``ui/node_picker.py`` (``aliases.py``
+  refactored onto it — one picker implementation); the page view renders
+  the window-built row between the title and the alias chrome; the store
+  gains one derived read, ``class_extends_edges()`` (the tag resolvers'
+  chain input, ``client-reads-refs.ts`` parity — no applier change).
+  **Verification:** `uv sync && uv run pytest && uv run ruff check &&
+  uv run mypy src` — all green (988 passed, 4 skipped: the live e2e module
+  and the GTK-import smoke, both self-skipping on this headless box; 27 new
+  tests: ``tests/test_tag_ops.py`` + ``TestClassExtendsEdges`` in
+  ``tests/test_store.py``).
+
 ## 2026-10-26
 
 - **fix(store): `object.move` keeps a parentless main node a page — the

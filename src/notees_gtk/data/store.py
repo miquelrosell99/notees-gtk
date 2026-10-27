@@ -3775,6 +3775,25 @@ class LocalStore:
     # -------------------------------------------------------------- node cache
 
     @_synchronized
+    def class_extends_edges(self) -> dict[str, tuple[str, ...]]:
+        """The ``class_extends`` edge set as a derived read: class id → its
+        direct extends parents, sorted by parent id (the replay order the
+        hierarchy rebuild writes).
+
+        The pure UI resolvers (:mod:`notees_gtk.ui.tag_ops` — the tag pill's
+        effective-color and the tag picker's page filter walk the chain
+        client-side over ``nodes()`` rows; the web reads walk the same table
+        per lookup, ``client-reads-refs.ts effectiveClassColor`` parity).
+        """
+        edges = self._conn.execute(
+            "SELECT class_id, parent_class_id FROM class_extends ORDER BY class_id, parent_class_id"
+        ).fetchall()
+        parents_by_id: dict[str, list[str]] = {}
+        for class_id, parent_id in edges:
+            parents_by_id.setdefault(str(class_id), []).append(str(parent_id))
+        return {class_id: tuple(parents) for class_id, parents in parents_by_id.items()}
+
+    @_synchronized
     def nodes(self, workspace_id: str, parent_id: str | None = None, include_inactive: bool = False) -> list[NodeRow]:
         """List cached node rows, optionally filtered by parent.
 

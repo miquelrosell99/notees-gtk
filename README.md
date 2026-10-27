@@ -11,6 +11,7 @@ First-class GTK4/libadwaita desktop client for [Notees](https://github.com/mique
 - **Workspaces** — switch between server workspaces from the sidebar.
 - **Plain-text editing** — a fast split view (page tree + editor) rendered from the note AST.
 - **Node aliases** — an aliased page lists its aliases (Open jumps to the alias itself); an alias names its main and can be re-pointed or cleared from its own view.
+- **Tags** — assign any page as a tag to pages and blocks: the Tags row under the title shows the assigned tags as color pills (alphabetical, the tag's effective color), with an add picker over pages and a per-pill remove.
 - **Local session** — credentials and sync state stay on your machine under `~/.config/notees-gtk/` and `~/.local/share/notees-gtk/`.
 
 ## Requirements
