@@ -70,6 +70,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-parentless-role.json",
     "wire/class-property-active.json",
     "wire/class-property-defaults.json",
+    "wire/class-property-pinned.json",
     "wire/class-unassign.json",
     "wire/code-block.json",
     "wire/embed-ref-view.json",

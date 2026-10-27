@@ -2075,6 +2075,163 @@ class TestClassPropertyBindings:
         assert raw_rows(store, "SELECT COUNT(*) FROM class_property") == [(0,)]
 
 
+class TestClassPropertyPinned:
+    """The binding row's binary TIER flag (additive 2026-10-27): pinned
+    properties render FIRST in class property lists — alphabetical within
+    each tier, then the unpinned tier, also alphabetical; a classification,
+    never a stored order (the effective.ts ``pinnedBySchema`` parity)."""
+
+    def test_pinned_tier_sorts_first_alphabetical_within_tier_unbound_last(self, store: LocalStore) -> None:
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        # The pinned tier: "mango" then "zebra" — alphabetical WITHIN the
+        # tier, though "apple" precedes both by name.
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-m"), "name": "mango", "type": "text", "defaultValue": "dm"},
+                hlc=(2, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-m"), "pinned": True},
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-z"), "name": "zebra", "type": "text", "defaultValue": "dz"},
+                hlc=(4, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-z"), "pinned": True},
+                hlc=(5, 0),
+            )
+        )
+        # The unpinned tier after the pinned one, alphabetical within itself.
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-a"), "name": "apple", "type": "text", "defaultValue": "da"},
+                hlc=(6, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-a")},
+                hlc=(7, 0),
+            )
+        )
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(uid("cls-1"),), hlc=(8, 0), name="Buy milk"))
+        assert [(row.schema.name, row.pinned, row.source) for row in store.get_effective_properties(member)] == [
+            ("mango", True, "default"),
+            ("zebra", True, "default"),
+            ("apple", False, "default"),
+        ]
+        # An unbound authored row stays LAST: no winning binding, so the tier
+        # flag reads False — even though "aaa" precedes everything by name.
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-u"), "name": "aaa", "type": "text"},
+                hlc=(9, 0),
+            )
+        )
+        store.apply_remote(property_set_env(member, uid("ps-u"), value="u", hlc=(10, 0)))
+        assert [
+            (row.schema.name, row.pinned, row.source, row.bound_by)
+            for row in store.get_effective_properties(member)
+        ] == [
+            ("mango", True, "default", uid("cls-1")),
+            ("zebra", True, "default", uid("cls-1")),
+            ("apple", False, "default", uid("cls-1")),
+            ("aaa", False, "authored", None),
+        ]
+
+    def test_pinned_flag_rides_the_extends_aware_winning_binding(self, store: LocalStore) -> None:
+        """The tier flag threads through the winner query: a pinned binding
+        on an ANCESTOR class supplies the flag to the subclass member's
+        derived row (the diamond-rule winner supplies boundBy AND pinned)."""
+        store.apply_remote(class_env("class.create", uid("cls-parent"), hlc=(1, 0), name="Parent"))
+        store.apply_remote(class_env("class.create", uid("cls-child"), hlc=(2, 0), name="Child"))
+        store.apply_remote(extends_env(uid("cls-child"), [uid("cls-parent")], hlc=(3, 0)))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "impact", "type": "text", "defaultValue": "i"},
+                hlc=(4, 0),
+            )
+        )
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-parent"), "propertySchemaId": uid("ps-1"), "pinned": True},
+                hlc=(5, 0),
+            )
+        )
+        member = uid("member")
+        store.apply_remote(create_env(member, class_ids=(uid("cls-child"),), hlc=(6, 0), name="Feature x"))
+        assert [
+            (row.schema.name, row.pinned, row.bound_by) for row in store.get_effective_properties(member)
+        ] == [("impact", True, uid("cls-parent"))]
+
+    def test_pinned_patch_semantics_match_active(self, store: LocalStore) -> None:
+        """Omitted keeps the stored flag via COALESCE; an explicit false is a
+        real write (the flip re-tiers); a fresh insert defaults to the
+        unpinned tier."""
+        store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Task"))
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {"propertySchemaId": uid("ps-1"), "name": "impact", "type": "text"},
+                hlc=(2, 0),
+            )
+        )
+        sql = (
+            "SELECT active, pinned FROM class_property"
+            f" WHERE class_id = '{uid('cls-1')}' AND property_schema_id = '{uid('ps-1')}'"
+        )
+        # Fresh insert without pinned: the unpinned default (0).
+        store.apply_remote(
+            make_env("class.property.set", {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1")}, hlc=(3, 0))
+        )
+        assert raw_rows(store, sql) == [(1, 0)]
+        # Pin it.
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "pinned": True},
+                hlc=(4, 0),
+            )
+        )
+        assert raw_rows(store, sql) == [(1, 1)]
+        # An active-only patch keeps the stored pin.
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "active": False},
+                hlc=(5, 0),
+            )
+        )
+        assert raw_rows(store, sql) == [(0, 1)]
+        # The explicit-false flip re-tiers.
+        store.apply_remote(
+            make_env(
+                "class.property.set",
+                {"classId": uid("cls-1"), "propertySchemaId": uid("ps-1"), "pinned": False},
+                hlc=(6, 0),
+            )
+        )
+        assert raw_rows(store, sql) == [(0, 0)]
+
+
 class TestClassUnassign:
     def _seed_classed_node(self, store: LocalStore, *, node_id: str = uid("n-x")) -> None:
         store.apply_remote(class_env("class.create", uid("cls-x"), hlc=(1, 0), name="X"))

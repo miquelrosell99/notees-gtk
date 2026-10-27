@@ -930,6 +930,66 @@ class TestClassPropertyActiveFixture:
         assert [row.display for row in effective] == ["bullet"]
 
 
+class TestClassPropertyPinnedFixture:
+    """Replay of class-property-pinned.json (additive 2026-10-27): the
+    binding row's binary TIER flag. The web's pinned=true bind lands; the
+    phone's interleaved pin (a higher HLC than the first web write but
+    older than the flip) wins the row only transiently — the stored flag
+    tracks the NEWEST envelope, not the newest position in the file; the
+    flip re-tiers (pinned=false); the active-only patch keeps the stored
+    flag (COALESCE, the identical patch semantics as ``active``); the final
+    class.property.unset is a plain DELETE — pinning state never gates
+    removal. Both delivery orders of the racing pair converge (the general
+    replay suite replays every envelope under both orders; this fixture is
+    not REPLAY_EXCLUDED)."""
+
+    SCHEMA = "0192a000-0000-7000-8000-000000000f0b"
+    CLASS = "0192a000-0000-7000-8000-000000000f0c"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-property-pinned.json")]
+
+    def test_prefix_4_the_flip_re_tiers_the_stored_flag(self, store: LocalStore) -> None:
+        for env in self._load()[:5]:
+            assert store.apply_remote(env) is True
+        # The phone's interleaved pin (hlc …2300) beat the first web write
+        # (…2200) for the ROW, but the flip at …2400 is the newest envelope:
+        # the stored flag tracks the highest-HLC write, not the file order.
+        assert raw(
+            store,
+            "SELECT pinned, hlc_physical FROM class_property"
+            " WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [(0, 1727240022400)]
+
+    def test_prefix_6_active_only_patch_keeps_the_stored_flag(self, store: LocalStore) -> None:
+        # The prefix through envelope 6 (index 5): the active-only patch at
+        # …2500 is the NEWEST envelope in this prefix — the re-pin at …2600
+        # has not arrived yet.
+        for env in self._load()[:6]:
+            assert store.apply_remote(env) is True
+        # pinned omitted from the patch: COALESCE keeps the stored 0 while
+        # active updates — the identical keep semantics as ``active``.
+        assert raw(
+            store,
+            "SELECT active, pinned, hlc_physical FROM class_property"
+            " WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [(1, 0, 1727240022500)]
+
+    def test_full_replay_repin_then_unset_deletes_the_row(self, store: LocalStore) -> None:
+        for env in self._load()[:7]:
+            assert store.apply_remote(env) is True
+        assert raw(
+            store,
+            "SELECT pinned FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        ) == [(1,)]
+        assert store.apply_remote(self._load()[7]) is True
+        # The unset is a plain DELETE — pinning state never gates removal.
+        assert raw(store, "SELECT COUNT(*) FROM class_property") == [(0,)]
+
+
 class TestPropertyDateQualifierFixture:
     """Replay of property-date-qualifier.json (PC6): chain-created
     refs apply verbatim at idx 0; the legacy ISO-string startDate at idx 1

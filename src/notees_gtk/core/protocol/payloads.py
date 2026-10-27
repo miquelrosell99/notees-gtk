@@ -376,11 +376,25 @@ class ClassPropertySetPayload(_Strict):
     # keep the stored flag (the patch convention). zod parity: an explicit
     # JSON null is NOT ``undefined`` — the strict schema rejects it.
     active: bool | None = Field(default=None)
+    # The binary TIER flag (additive 2026-10-27): pinned properties render
+    # FIRST in class property lists (alphabetical within each tier) — a
+    # classification, never a stored order. Patch semantics identical to
+    # ``active``: omitted keeps the stored flag; explicit null rejects.
+    # StrictBool: zod ``z.boolean()`` parity — lax coercion would accept
+    # 1/0/"yes", the wire carries JSON booleans only (the object.update
+    # ``active`` precedent).
+    pinned: StrictBool | None = Field(default=None)
 
     @model_validator(mode="after")
     def _check_active_not_null(self) -> ClassPropertySetPayload:
         if "active" in self.model_fields_set and self.active is None:
             raise ValueError("class.property.set 'active' must be a boolean when present")
+        return self
+
+    @model_validator(mode="after")
+    def _check_pinned_not_null(self) -> ClassPropertySetPayload:
+        if "pinned" in self.model_fields_set and self.pinned is None:
+            raise ValueError("class.property.set 'pinned' must be a boolean when present")
         return self
 
 

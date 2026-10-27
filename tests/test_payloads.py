@@ -673,6 +673,43 @@ class TestPropertyWirePayloads:
         assert kept.active is None
         assert "active" not in kept.model_fields_set
 
+    def test_class_property_set_pinned_accepted(self) -> None:
+        validate_payload(
+            "class.property.set",
+            {"classId": UUID_1, "propertySchemaId": UUID_2, "pinned": True},
+        )
+        validate_payload(
+            "class.property.set",
+            {"classId": UUID_1, "propertySchemaId": UUID_2, "pinned": False},
+        )
+
+    def test_class_property_set_explicit_null_pinned_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="pinned"):
+            validate_payload(
+                "class.property.set",
+                {"classId": UUID_1, "propertySchemaId": UUID_2, "pinned": None},
+            )
+
+    @pytest.mark.parametrize("bad", ["yes", 1, 0])
+    def test_class_property_set_non_boolean_pinned_rejected(self, bad: Any) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(
+                "class.property.set",
+                {"classId": UUID_1, "propertySchemaId": UUID_2, "pinned": bad},
+            )
+
+    def test_class_property_set_pinned_false_is_a_real_write_shape(self) -> None:
+        """Patch semantics identical to ``active``: omitted keeps the stored
+        flag; an explicit False must not collapse into 'absent'."""
+        payload = PAYLOAD_SCHEMAS["class.property.set"].model_validate(
+            {"classId": UUID_1, "propertySchemaId": UUID_2, "pinned": False}
+        )
+        assert payload.pinned is False
+        assert "pinned" in payload.model_fields_set
+        kept = PAYLOAD_SCHEMAS["class.property.set"].model_validate({"classId": UUID_1, "propertySchemaId": UUID_2})
+        assert kept.pinned is None
+        assert "pinned" not in kept.model_fields_set
+
 
 class TestListStylePayload:
     """The per-block list style wire node field (web

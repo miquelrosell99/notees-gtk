@@ -211,7 +211,13 @@ _log = logging.getLogger(__name__)
 #: class rows only — the icon/color two-table precedent, mapped by
 #: class.create/update). Purely additive guarded ALTERs, no-ops for fresh
 #: v22 creates.
-SCHEMA_VERSION = 22
+#: v23 (web schema v33→v34 parity — the binding row's ``pinned`` tier flag,
+#: SCHEMA.md "Class properties"; the web v33 FTS mention cascade carries no
+#: derived-schema change here): ``class_property`` gains ``pinned``
+#: INTEGER NOT NULL DEFAULT 0 (0 = the unpinned default — existing rows
+#: converge by default, the v9 ``active`` precedent). Purely additive — the
+#: guarded ALTER is a no-op for fresh v23 creates.
+SCHEMA_VERSION = 23
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -428,6 +434,11 @@ class EffectiveProperty:
     # rows can carry eligible=False. Schema-less rows (schema deleted) read
     # True.
     eligible: bool = True
+    # The winning ACTIVE binding's tier flag (2026-10-27): True when the
+    # binding row supplying bound_by carries pinned = 1 — the property
+    # renders in the FIRST pin tier. False for rows with no winning binding
+    # (unbound authored rows) — a classification, never a stored order.
+    pinned: bool = False
 
 
 def _content_class_link_ids(tokens: Any) -> list[str]:
@@ -2576,8 +2587,9 @@ class LocalStore:
     # ------------------------------------------------------- class.property.*
 
     def _apply_class_property_set(self, env: RelayEnvelope) -> bool:
-        """Binding upsert — the genuinely per-class mechanic ONLY: the
-        ``active`` soft-unbind flag (row LWW by envelope HLC).
+        """Binding upsert — the genuinely per-class mechanics ONLY: the
+        ``active`` soft-unbind flag and the ``pinned`` binary tier flag
+        (row LWW by envelope HLC).
 
         (the property-definition surfaces batch):
         ``required`` and ``defaultValue`` left the binding entirely —
@@ -2623,22 +2635,28 @@ class LocalStore:
 
         # Omitted (absent) fields keep the stored value via COALESCE; an
         # explicit false is a real write. The binding row carries ONLY
-        # active — the render contracts (readonly/hideWhenEmpty/display) are
+        # active and pinned — the render contracts
+        # (readonly/hideWhenEmpty/display) are
         # PROPERTY-level and live on property_schema; the default value
         # lives there too and sequence retired
-        # outright.
+        # outright. pinned is the binary TIER flag (additive 2026-10-27):
+        # pinned properties render FIRST in class property lists — a
+        # classification, never a stored order (patch semantics identical
+        # to ``active``).
         active = None if "active" not in payload else (1 if payload["active"] else 0)
+        pinned = None if "pinned" not in payload else (1 if payload["pinned"] else 0)
         with self._conn:
             if existing is None:
                 self._conn.execute(
                     """INSERT INTO class_property
-                         (class_id, property_schema_id, active,
+                         (class_id, property_schema_id, active, pinned,
                           hlc_physical, hlc_logical, actor_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         class_id,
                         schema_id,
                         active if active is not None else 1,
+                        pinned if pinned is not None else 0,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -2648,10 +2666,12 @@ class LocalStore:
                 self._conn.execute(
                     """UPDATE class_property SET
                          active = COALESCE(?, active),
+                         pinned = COALESCE(?, pinned),
                          hlc_physical = ?, hlc_logical = ?, actor_id = ?
                        WHERE class_id = ? AND property_schema_id = ?""",
                     (
                         active,
+                        pinned,
                         env.hlc.physical,
                         env.hlc.logical,
                         env.actor_id,
@@ -3590,10 +3610,10 @@ class LocalStore:
             )
             self._conn.execute(
                 """INSERT OR IGNORE INTO class_property
-                     (class_id, property_schema_id,
+                     (class_id, property_schema_id, pinned,
                       hlc_physical, hlc_logical, actor_id)
-                   VALUES (?, ?, 0, 0, NULL)""",
-                (class_id, schema_id),
+                   VALUES (?, ?, ?, 0, 0, NULL)""",
+                (class_id, schema_id, 1 if entry.pinned is True else 0),
             )
 
     def _apply_workspace_feature_set(self, env: RelayEnvelope) -> bool:
@@ -4071,7 +4091,7 @@ class LocalStore:
             physical, logical = int(cls[1]), int(cls[2])
             for ancestor_id, distance in reach_of(class_id):
                 for binding in self._conn.execute(
-                    "SELECT property_schema_id"
+                    "SELECT property_schema_id, pinned"
                     " FROM class_property WHERE class_id = ? AND active = 1",
                     (ancestor_id,),
                 ).fetchall():
@@ -4087,6 +4107,13 @@ class LocalStore:
             # the port notes). Well-defined cases match exactly.
             winning_candidate = min(schema_candidates, key=lambda c: (c[0], c[1], c[2], c[3], c[4]))
             winner_by_schema[schema_id] = (winning_candidate[4], winning_candidate[5])
+        # The winning ACTIVE binding's tier flag per schema (effective.ts
+        # ``pinnedBySchema`` parity): True only when the winning binding row
+        # carries pinned = 1; schemas with no winning binding are absent
+        # (unpinned) — the tier flag threads into the sort below.
+        pinned_by_schema: dict[str, bool] = {
+            schema_id: bool(binding[1]) for schema_id, (_ancestor, binding) in winner_by_schema.items()
+        }
 
         def flag(value: Any) -> bool | None:
             return None if value is None else bool(value)
@@ -4179,6 +4206,7 @@ class LocalStore:
                 # the read tags them; callers decide how an ineligible row
                 # renders.
                 eligible=eligible_of(schema_id, schema),
+                pinned=pinned_by_schema.get(schema_id, False),
             )
 
         for schema_id, (class_id, _binding) in winner_by_schema.items():
@@ -4215,13 +4243,15 @@ class LocalStore:
                 hide_when_empty=schema.hide_when_empty if schema is not None else None,
                 display=schema.display if schema is not None else None,
                 eligible=True,
+                pinned=pinned_by_schema.get(schema_id, False),
             )
 
-        # Deterministic presentation order: PURE ALPHABETICAL by property
-        # name (binding ``sequence`` retired; class
-        # panels have no configurable order), unbound authored rows last;
-        # (idx, element id) as the tiebreak (PG5: concurrent adds may share
-        # an idx — the element id orders them identically on every replica).
+        # Deterministic presentation order: PINNED TIER FIRST (a binding
+        # row's ``pinned`` flag — a binary classification, never a stored
+        # order: alphabetical by property name within EACH tier), unbound
+        # authored rows last; (idx, element id) as the tiebreak (PG5:
+        # concurrent adds may share an idx — the element id orders them
+        # identically on every replica).
         def name_of(row: EffectiveProperty) -> str:
             return row.schema.name if row.schema is not None else row.property_schema_id
 
@@ -4229,6 +4259,7 @@ class LocalStore:
             rows_out.values(),
             key=lambda row: (
                 row.bound_by is None,
+                row.pinned is not True,
                 name_of(row),
                 row.idx,
                 row.element_id,
@@ -4743,10 +4774,15 @@ _CLASS_PROPERTY_DDL = """
 -- 'active' (PC4): the soft-unbind flag — an inactive row stops contributing
 -- to the effective read while the ROW survives; absent column means active,
 -- so existing rows converge with zero migration.
+-- 'pinned' (additive 2026-10-27): the binary TIER flag — pinned properties
+-- render FIRST in class property lists (alphabetical within each tier) — a
+-- classification, never a stored order; absent column means unpinned, so
+-- existing rows converge with zero migration (the 'active' precedent).
 CREATE TABLE IF NOT EXISTS class_property (
     class_id TEXT NOT NULL,
     property_schema_id TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0,
     hlc_physical INTEGER NOT NULL DEFAULT 0,
     hlc_logical INTEGER NOT NULL DEFAULT 0,
     actor_id TEXT,
@@ -5414,6 +5450,18 @@ def _migrate_v22(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "class", "parentless_role", "TEXT")
 
 
+def _migrate_v23(conn: sqlite3.Connection) -> None:
+    """v23 — the binding row's ``pinned`` tier flag (web schema v33→v34
+    parity, SCHEMA.md "Class properties"): ``class_property`` gains
+    ``pinned`` INTEGER NOT NULL DEFAULT 0 — pinned properties render FIRST
+    in class property lists (alphabetical within each tier), a binary
+    classification, never a stored order. 0 = the unpinned default, so
+    existing rows converge by default with no data backfill (the v9
+    ``active`` guarded-ALTER precedent). Purely additive — a no-op for
+    fresh v23 creates whose canonical DDL already carries the column."""
+    LocalStore._add_column_if_missing(conn, "class_property", "pinned", "INTEGER NOT NULL DEFAULT 0")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -5438,4 +5486,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (20, _migrate_v20),
     (21, _migrate_v21),
     (22, _migrate_v22),
+    (23, _migrate_v23),
 )

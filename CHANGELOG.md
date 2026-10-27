@@ -6,6 +6,46 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-27
+
+- **feat(protocol,store): `class.property.set` pinned — pin-tier property
+  ordering (the GTK lockstep port of the monorepo's additive wire change,
+  reference commits 08544be6e + 80bcb194e).** The binding row gains the
+  optional `pinned?: boolean` — a binary TIER flag: pinned properties render
+  FIRST in class property lists (alphabetical within each tier, then the
+  unpinned tier, also alphabetical). A classification, never a stored order —
+  `sequence` stays retired. GTK port: (1) the canonical fixture
+  `class-property-pinned.json` is vendored byte-identical (sha256 verified)
+  and registered in the envelope-list coverage corpus; (2)
+  `ClassPropertySetPayload` gains `pinned` as `StrictBool | None` (zod
+  `z.boolean().optional()` parity — explicit JSON null rejects, the `active`
+  house pattern; `model_fields_set` guards the omitted-keeps patch shape);
+  (3) the store's `class_property` DDL gains `pinned INTEGER NOT NULL
+  DEFAULT 0` with `SCHEMA_VERSION` 22→23 (web schema v33→v34 parity — the
+  web v33 FTS mention cascade carries no derived-schema change here): a
+  guarded additive ALTER, existing rows converge by default (the v9
+  `active` precedent), and `_apply_class_property_set` patches it with the
+  identical COALESCE semantics (`pinned = COALESCE(?, pinned)`; a fresh
+  insert defaults to the unpinned tier); (4) `get_effective_properties`
+  threads the extends-aware winning binding's flag into a new
+  `EffectiveProperty.pinned` attribute (False with no winning binding) and
+  the presentation order changes from `(bound_by is None, name, idx,
+  element_id)` to `(bound_by is None, pinned is not True, name, idx,
+  element_id)` — the effective.ts `pinnedBySchema` parity; (5) the
+  task-family seed-ensure writes the wiring-only `pinned` manifest field
+  (seeds.ts parity — no seed pins anything yet). The unset op is unchanged:
+  a plain DELETE, pinning state never gates removal. Tests: a per-fixture
+  replay class (the pin lands; the interleaved phone pin wins the row only
+  transiently — the stored flag tracks the newest envelope; the flip
+  re-tiers; the active-only patch keeps the stored flag; the unset deletes
+  the row) plus unit tests for the pin-tier sort (alphabetical within each
+  tier, unbound authored rows last, tiebreak unchanged), the
+  extends-aware winner threading, and the patch semantics; payload-shape
+  tests for accept/reject/null/omitted.
+  **Verification:** `uv run pytest` 971 passed / 4 skipped; `uv run ruff
+  check` + `uv run mypy src` clean. The fixture bytes are byte-pinned
+  against the monorepo corpus (sha256 match).
+
 ## 2026-10-26
 
 - **fix(store): `object.move` keeps a parentless main node a page — the

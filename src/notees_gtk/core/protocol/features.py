@@ -697,6 +697,10 @@ class TaskFamilySeedEntry:
     # to "bullet" (the status value rides the block bullet as an icon
     # button); the rest stay NULL ("panel", the properties section).
     display: Literal["panel", "bullet", "inline"] | None = None
+    # The binding row's binary TIER flag (seeds.ts ``TaskFamilySeedEntry``
+    # parity, additive 2026-10-27): pinned properties render FIRST in class
+    # property lists — wiring only, no seed pins anything yet.
+    pinned: bool = False
 
 
 #: The task-family seed-ensure manifest: six schemas + their task-class
