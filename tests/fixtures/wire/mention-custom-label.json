@@ -1,0 +1,77 @@
+{
+  "comment": "Mention custom label: the mention token's ONLY stored text is the optional customLabel — a one-off wording (\"the Republic\"). The link's visible text is NEVER captured: render computes it as customLabel ?? the target's current display name, so renames re-resolve and no stored text can drift. The retired captured-text keys (`text`, `displayText`) are rejected outright by the strict schema. Envelope 1 creates page P; envelope 2 creates a block whose content is a bare mention of P (renders P's current name) followed by a mention carrying customLabel (renders the label); envelope 3 clears the label (an object.update rewriting the stream to a single bare mention) — presence writes, absent = resolve the target name.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-00000000cc01",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000cc10"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000cc10",
+        "isEmbedded": false,
+        "classIds": [],
+        "contentAst": [{ "type": "text", "text": "P" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000cc02",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007001, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000cc11"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:07.001Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000cc11",
+        "classIds": [],
+        "contentAst": [
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-00000000cc10",
+            "linkId": "0192a000-0000-7000-8000-00000000cc20"
+          },
+          { "type": "text", "text": " — " },
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-00000000cc10",
+            "customLabel": "the Republic",
+            "linkId": "0192a000-0000-7000-8000-00000000cc21"
+          }
+        ],
+        "parentId": "0192a000-0000-7000-8000-00000000cc10"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-00000000cc03",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200007002, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000cc11"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:07.002Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000cc11",
+        "contentAst": [
+          {
+            "type": "mention",
+            "targetNodeId": "0192a000-0000-7000-8000-00000000cc10",
+            "linkId": "0192a000-0000-7000-8000-00000000cc20"
+          }
+        ]
+      }
+    }
+  ]
+}

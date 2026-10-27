@@ -21,7 +21,9 @@ from typing import Any
 import pytest
 
 from notees_gtk.core.protocol.clock import Hlc
+from notees_gtk.core.protocol.content import validate_content_ast
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.protocol.payloads import validate_payload
 from notees_gtk.data.errors import (
     CycleError,
     LockedSystemClassError,
@@ -49,11 +51,21 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 #: (LockedSystemClassError) after its accepting prefix — the arms are
 #: asserted deliberately in the routing suite below — the
 #: store.test.ts REPLAY_EXCLUDED_FIXTURES parity).
+#: GTK-main lockstep-pending additions (the TS reference parses and replays
+#: both; this client's wire models do not yet — remove from this set when the
+#: wire lands): class-property-pinned.json's class.property.set carries the
+#: `pinned` key, rejected outright by the strict payload schema on main
+#: (EnvelopeValidationError mid-replay); property-assign.json's
+#: property.assign/unassign/empty are unknown op types here (skipped
+#: unrecorded, which would also break the relay_operations idempotence
+#: count) — both are replayed deliberately in their own suites below.
 REPLAY_EXCLUDED = {
     "class-extends-cycle.json",
     "class-extends-system-lock.json",
+    "class-property-pinned.json",
     "is-embedded-parent-page.json",
     "object-delete-class-routing.json",
+    "property-assign.json",
     "property-validation-rules.json",
 }
 
@@ -1545,3 +1557,265 @@ class TestExternalRefFixture:
             "SELECT ref, node_id FROM external_ref WHERE workspace_id = ? ORDER BY ref",
             (WS,),
         ) == [(self.REF_GCAL, self.B), (self.REF_READITLATER, self.B)]
+
+
+class TestTagMembershipFixture:
+    """Replay of tag-membership.json (SCHEMA.md "Tags"): two parentless tag
+    pages, the content node seeded with tagIds [A], the re-issued
+    ``object.create`` assign carrier accumulating B without touching the
+    tree, the ``tag.unassign`` tombstone, and the newer re-issued create
+    resurrecting A (add-wins, the strictly-greater actor tiebreak) —
+    mirroring the monorepo store test."""
+
+    TAG_A = "0192a000-0000-7000-8000-000000000701"
+    TAG_B = "0192a000-0000-7000-8000-000000000702"
+    ITEM = "0192a000-0000-7000-8000-000000000703"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("tag-membership.json")]
+
+    def test_fixture_shape_seed_carrier_tombstone_and_newer_add(self) -> None:
+        """The wire-shape pins (mirroring the monorepo protocol test): tag
+        pages first, the seed, the bare re-issued-create carriers, the exact
+        {objectId, tagId} tombstone, the resurrection's newer HLC, and the
+        strict unassign schema."""
+        envelopes = self._load()
+        creates = [env for env in envelopes if env.op_type == "object.create"]
+        assert [env.payload["objectId"] for env in creates] == [
+            self.TAG_A,
+            self.TAG_B,
+            self.ITEM,
+            self.ITEM,
+            self.ITEM,
+        ]
+        assert creates[2].payload["tagIds"] == [self.TAG_A]
+        # The assign carrier is a RE-ISSUED object.create on the existing id:
+        # no content, no tree keys — just the id + the tagIds OR-Set seed.
+        assert creates[3].payload == {"objectId": self.ITEM, "tagIds": [self.TAG_B]}
+        assert creates[4].payload == {"objectId": self.ITEM, "tagIds": [self.TAG_A]}
+        unassign = next(env for env in envelopes if env.op_type == "tag.unassign")
+        assert unassign.payload == {"objectId": self.ITEM, "tagId": self.TAG_A}
+        # The resurrection add carries a strictly newer HLC than the tombstone.
+        assert unassign.hlc.physical < creates[4].hlc.physical
+        # Strict schema: an extra key on the unassign payload is rejected.
+        with pytest.raises(ValueError, match="Extra inputs"):
+            validate_payload("tag.unassign", {"objectId": self.ITEM, "tagId": self.TAG_A, "idx": 0})
+        physicals = [env.hlc.physical for env in envelopes]
+        assert physicals == sorted(physicals)
+
+    def test_seed_assign_carrier_unassign_tombstone_and_resurrection(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        # Tag pages + the seeded create: only A.
+        for env in envelopes[:3]:
+            assert store.apply_remote(env) is True
+        assert store.node(WS, self.ITEM).tag_ids == (self.TAG_A,)
+        # The re-issued create assign carrier accumulates B (recompute sorts
+        # by tag id); the tree is untouched (parentless, standalone). The
+        # re-create returns False (no tree mutation — the
+        # class-property-defaults envelope-6 precedent); the OR-Set upsert is
+        # its by-design side effect.
+        store.apply_remote(envelopes[3])
+        row = store.node(WS, self.ITEM)
+        assert row.tag_ids == (self.TAG_A, self.TAG_B)
+        assert (row.parent_id, row.is_embedded) == (None, False)
+        # The unassign tombstones A…
+        assert store.apply_remote(envelopes[4]) is True
+        assert store.node(WS, self.ITEM).tag_ids == (self.TAG_B,)
+        # …and the newer re-issued create resurrects it (add-wins).
+        store.apply_remote(envelopes[5])
+        assert store.node(WS, self.ITEM).tag_ids == (self.TAG_A, self.TAG_B)
+
+
+class TestMentionCustomLabelFixture:
+    """Replay of mention-custom-label.json (the mention reshape): the
+    mention token's ONLY stored text is the optional customLabel — envelope 2
+    writes a bare mention (resolves the target's current name) next to a
+    customLabel-carrying mention (renders the label), envelope 3 clears the
+    label by rewriting the stream to a single bare mention."""
+
+    PAGE = "0192a000-0000-7000-8000-00000000cc10"
+    BLOCK = "0192a000-0000-7000-8000-00000000cc11"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("mention-custom-label.json")]
+
+    def test_replay_lands_the_label_write_then_the_label_clear(self, store: LocalStore) -> None:
+        page, block, clear = self._load()
+        assert store.apply_remote(page) is True
+        assert store.apply_remote(block) is True
+        # The embedded block's content rides verbatim: the bare mention
+        # stores id only, the label mention stores customLabel — no captured
+        # link text anywhere.
+        assert json.loads(store.node(WS, self.BLOCK).content or "[]") == [
+            {
+                "type": "mention",
+                "targetNodeId": self.PAGE,
+                "linkId": "0192a000-0000-7000-8000-00000000cc20",
+            },
+            {"type": "text", "text": " — "},
+            {
+                "type": "mention",
+                "targetNodeId": self.PAGE,
+                "customLabel": "the Republic",
+                "linkId": "0192a000-0000-7000-8000-00000000cc21",
+            },
+        ]
+        # The clear is an ordinary object.update rewriting the stream to one
+        # bare mention (presence writes; absent label = resolve the target).
+        assert store.apply_remote(clear) is True
+        assert json.loads(store.node(WS, self.BLOCK).content or "[]") == [
+            {
+                "type": "mention",
+                "targetNodeId": self.PAGE,
+                "linkId": "0192a000-0000-7000-8000-00000000cc20",
+            }
+        ]
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "lockstep-pending: the mention customLabel reshape is not ported to main yet — "
+            "the content grammar still REQUIRES the retired captured `text` key and rejects "
+            "customLabel as an extra key (content.py); the plaintext flatten still reads "
+            "displayText ?? text instead of customLabel ?? the target's display name"
+        ),
+    )
+    def test_retired_captured_text_keys_rejected_custom_label_accepted(self) -> None:
+        """The strict grammar pins (mirroring the monorepo protocol test):
+        bare and customLabel-carrying mentions validate; the retired
+        captured-text keys fail loud."""
+        target = self.PAGE
+        validate_content_ast([{"type": "mention", "targetNodeId": target}])
+        validate_content_ast([{"type": "mention", "targetNodeId": target, "customLabel": "the Republic"}])
+        with pytest.raises(ValueError):
+            validate_content_ast([{"type": "mention", "targetNodeId": target, "text": "captured"}])
+        with pytest.raises(ValueError):
+            validate_content_ast([{"type": "mention", "targetNodeId": target, "displayText": "the Republic"}])
+
+
+class TestClassPropertyPinnedFixture:
+    """Replay of class-property-pinned.json (the binding row's pinned tier
+    flag, additive 2026-10-27): `pinned` rides ``class.property.set`` with
+    the `active` patch semantics (omitted keeps the stored flag), row LWW by
+    envelope HLC — the interleaved lower-HLC phone pin never wins — and
+    ``class.property.unset`` deletes the row outright regardless of pinning
+    state."""
+
+    SCHEMA = "0192a000-0000-7000-8000-000000000f0b"
+    CLASS = "0192a000-0000-7000-8000-000000000f0c"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("class-property-pinned.json")]
+
+    def _pinned(self, store: LocalStore) -> list[tuple[Any]]:
+        return raw(
+            store,
+            "SELECT pinned FROM class_property WHERE class_id = ? AND property_schema_id = ?",
+            (self.CLASS, self.SCHEMA),
+        )
+
+    def test_fixture_shape_patch_semantics_race_and_unset_pair(self) -> None:
+        """The wire-shape pins (mirroring the monorepo protocol test):
+        bind → pin → interleaved pin (lower HLC, race loser) → unpin →
+        active-only patch (pinned omitted) → pin back; the unset is the
+        bare {classId, propertySchemaId} pair."""
+        envelopes = self._load()
+        sets = [env for env in envelopes if env.op_type == "class.property.set"]
+        assert [env.payload.get("pinned") for env in sets] == [True, True, False, None, True]
+        # The interleaved phone pin loses the row LWW race: its HLC strictly
+        # precedes the next (winning) web write.
+        assert sets[1].hlc.physical < sets[2].hlc.physical
+        # The active-only patch (pinned omitted) keeps the stored flag.
+        assert sets[3].payload.get("active") is True
+        unset = next(env for env in envelopes if env.op_type == "class.property.unset")
+        assert sorted(unset.payload) == ["classId", "propertySchemaId"]
+        physicals = [env.hlc.physical for env in envelopes]
+        assert physicals == sorted(physicals)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "lockstep-pending: the `pinned` payload key is rejected outright by the strict "
+            "class.property.set schema on main (EnvelopeValidationError on the first pinned "
+            "envelope; the class_property table has no pinned column) — the applier work "
+            "rides the class-property-pinned lockstep branch"
+        ),
+    )
+    def test_pinned_flag_tracks_the_newest_envelope_and_unset_deletes(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for env in envelopes[:3]:  # schema, class, first pin (web, pinned=true)
+            assert store.apply_remote(env) is True
+        assert self._pinned(store) == [(1,)]
+        # The interleaved phone pin applies but never wins the row: the flag
+        # tracks the newest envelope's value, not the newest file position.
+        assert store.apply_remote(envelopes[3]) is True
+        assert self._pinned(store) == [(1,)]
+        assert store.apply_remote(envelopes[4]) is True  # the newer web unpin wins
+        assert self._pinned(store) == [(0,)]
+        # The active-only patch keeps the stored flag…
+        assert store.apply_remote(envelopes[5]) is True
+        assert self._pinned(store) == [(0,)]
+        # …a later pin flips it back…
+        assert store.apply_remote(envelopes[6]) is True
+        assert self._pinned(store) == [(1,)]
+        # …and the unset deletes the row outright, ignoring pinning state.
+        assert store.apply_remote(envelopes[7]) is True
+        assert self._pinned(store) == []
+
+
+class TestPropertyAssignFixture:
+    """Replay of property-assign.json (node-level property assignment):
+    concurrent assigns converge on ONE node_property presence row, the value
+    lands through an ordinary ``property.set``, ``property.unassign`` kills
+    the declaration while the authored value SURVIVES, the newer re-assign
+    revives the pin, and ``property.empty`` clears every authored value
+    while the declaration survives — the end state reads assigned and
+    valueless."""
+
+    SCHEMA = "0192a000-0000-7000-8000-000000000901"
+    ITEM = "0192a000-0000-7000-8000-000000000902"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("property-assign.json")]
+
+    def test_fixture_shape_bare_pair_ops_and_ordinary_value_carrier(self) -> None:
+        """The wire-shape pins (mirroring the monorepo protocol test): the
+        assignment family addresses the bare (node, schema) pair — no
+        value/order keys — and the value rides an ordinary property.set."""
+        envelopes = self._load()
+        assigns = [env for env in envelopes if env.op_type == "property.assign"]
+        unassigns = [env for env in envelopes if env.op_type == "property.unassign"]
+        empties = [env for env in envelopes if env.op_type == "property.empty"]
+        sets = [env for env in envelopes if env.op_type == "property.set"]
+        assert (len(assigns), len(unassigns), len(empties)) == (3, 1, 1)
+        for env in (*assigns, *unassigns, *empties):
+            assert sorted(env.payload) == ["objectId", "propertySchemaId"]
+            assert env.payload["objectId"] == self.ITEM
+        assert sets[0].payload["value"] == "https://example.org"
+        # The value arrives AFTER both assigns; the empty is the newest op.
+        assert assigns[1].hlc.physical < sets[0].hlc.physical
+        assert assigns[2].hlc.physical < empties[0].hlc.physical
+        physicals = [env.hlc.physical for env in envelopes]
+        assert physicals == sorted(physicals)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "lockstep-pending: property.assign/unassign/empty are not in the GTK op registry "
+            "on main — the ops skip as unknown (logged, unrecorded), the node_property table "
+            "and the assigned-empty effective row do not exist, and the property.set value "
+            "never dies; the authored value survives where the fixture pins it dead"
+        ),
+    )
+    def test_assignment_lifecycle_ends_assigned_and_valueless(self, store: LocalStore) -> None:
+        for envelope in self._load():
+            assert store.apply_remote(envelope) is True
+        # property.empty cleared every authored value (both tombstone
+        # families stamped at the empty's HLC)…
+        assert raw(store, "SELECT COUNT(*) FROM property_value WHERE node_id = ?", (self.ITEM,)) == [(0,)]
+        # …while the declaration survived: the effective read renders the
+        # assigned-empty row again (valueless, source "assigned").
+        effective = store.get_effective_properties(self.ITEM)
+        assert [(row.property_schema_id, row.value, row.source) for row in effective] == [
+            (self.SCHEMA, None, "assigned")
+        ]

@@ -1,0 +1,182 @@
+{
+  "comment": "class_property.pinned (additive 2026-10-27): the binding row's binary tier flag — pinned properties render FIRST in class property lists (alphabetical within each tier; a stored/configurable order stays retired, `sequence` never returns). A text schema binds to the Feature class with pinned=true; the phone's interleaved pin at a LOWER HLC loses the row LWW race (its pinned=true arrives between two web writes but never wins), so the stored flag tracks the newest envelope, not the newest position in the file. A later pin flips it back, an active-only patch (pinned omitted) keeps the stored flag (the identical patch semantics as `active`), and a final class.property.unset deletes the row outright — a plain DELETE ignoring the stored pinned value entirely (the unset payload schema is unchanged: exactly {classId, propertySchemaId}, strict — pinning state never gates removal). LOCKSTEP-PENDING: the pinned payload key ships inert until the GTK/Flutter releases parse it (the `active` precedent).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000f03",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022000,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:42.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "name": "impact",
+        "type": "text"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f04",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:42.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Feature"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f05",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:42.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "pinned": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f06",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f02",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727240022300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:42.300Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "pinned": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f07",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:42.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "pinned": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f08",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:42.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "active": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f09",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-24T12:00:42.600Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b",
+        "pinned": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000f0a",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000f00",
+      "actorId": "0192a000-0000-7000-8000-000000000f01",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727240022700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000f0c"
+      ],
+      "opType": "class.property.unset",
+      "timestamp": "2026-09-24T12:00:42.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000f0c",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000f0b"
+      }
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "comment": "Node-level property assignment: a laptop declares page <- URL with NO value; a phone assigns the same (node, schema) pair concurrently (presence LWW per pair — one row, the higher-HLC writer's causality wins, state identical either way); a value lands later through an ordinary property.set; the phone unassigns (the declaration dies, the authored value SURVIVES); the laptop re-assigns with a newer HLC and the declaration is back; finally the phone CLEARS the value with property.empty — every authored value dies (both tombstone families stamped at the empty's HLC), the ASSIGNMENT survives, and the effective read renders the assigned-empty row again. End state: assigned, valueless.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000910",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200010000, "logical": 0 },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-24T12:00:10.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901",
+        "name": "URL",
+        "type": "url",
+        "multi": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000911",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200010100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:10.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "classIds": [],
+        "tagIds": [],
+        "contentAst": [{ "type": "text", "text": "Assignee page" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000912",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200010200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.assign",
+      "timestamp": "2026-09-24T12:00:10.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000913",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200010700, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.assign",
+      "timestamp": "2026-09-24T12:00:10.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000914",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200011000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.set",
+      "timestamp": "2026-09-24T12:00:11.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901",
+        "value": "https://example.org",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000915",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200011500, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.unassign",
+      "timestamp": "2026-09-24T12:00:11.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000916",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200012000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.assign",
+      "timestamp": "2026-09-24T12:00:12.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000917",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000003",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200013000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000902"],
+      "opType": "property.empty",
+      "timestamp": "2026-09-24T12:00:13.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000902",
+        "propertySchemaId": "0192a000-0000-7000-8000-000000000901"
+      }
+    }
+  ]
+}

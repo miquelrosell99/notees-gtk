@@ -8,6 +8,36 @@ history.
 
 ## 2026-10-27
 
+- **chore(protocol,test): re-vendored 4 protocol fixtures from the main
+  monorepo (tags-api @ dc96188) + the GTK half of their expectation
+  coverage.** The corpus grows 40 → 44 files, byte-identical (sha256
+  verified): ``tag-membership.json`` (NEW — the tags OR-Set gate: tag pages,
+  the re-issued ``object.create`` assign carrier, the ``tag.unassign``
+  tombstone, the newer-HLC add-wins resurrection), ``class-property-pinned.json``,
+  ``mention-custom-label.json``, ``property-assign.json`` (three lagging).
+  Bookkeeping: all four join the round-trip list in ``tests/test_fixtures.py``;
+  ``class-property-pinned.json`` and ``property-assign.json`` join
+  ``REPLAY_EXCLUDED`` in ``tests/test_store_fixtures.py`` (GTK-main
+  lockstep-pending additions the TS list does not carry — removed when the
+  wire lands). New per-fixture suites in ``tests/test_store_fixtures.py``:
+  ``TestTagMembershipFixture`` (green — full replay with intermediate
+  tag_ids states, mirrors the monorepo store test), ``TestMentionCustomLabelFixture``
+  (green replay — the label write then the label clear land verbatim),
+  ``TestClassPropertyPinnedFixture`` and ``TestPropertyAssignFixture``
+  (fixture-shape pins green; the derived-state replay methods xfail strict —
+  the wire is lockstep-pending on main: the strict ``class.property.set``
+  schema rejects the ``pinned`` key outright, and ``property.assign`` /
+  ``property.unassign`` / ``property.empty`` are not in the GTK op registry
+  (skipped unrecorded, so the fixture's assigned-and-valueless end state —
+  the emptied value, the surviving declaration — does not derive). The
+  mention customLabel reshape (grammar acceptance, retired ``text``/
+  ``displayText`` rejection, the flatten resolving the target name) is
+  likewise unported; its grammar test xfails strict. The xfails flip hard
+  (strict) when the lockstep applier work lands — the pinned half already
+  rides the ``lockstep/class-property-pinned`` branch. **Verification:**
+  `uv sync && uv run pytest && uv run ruff check && uv run mypy src` — all
+  green.
+
 - **feat(ui): first-class tag management in the page view — the Tags row
   (pills + add picker + per-pill remove) at web parity.** Tags are
   first-class and node-scoped: any page can be assigned as a tag to pages
