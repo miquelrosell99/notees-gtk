@@ -140,7 +140,12 @@ _PROPERTY_TYPE = Literal[
     # a point {nodeId, time?} or a range {start: slot|null, end: slot|null}
     # (slot = {nodeId, time?}) anchored to the year/month/day node chain.
     "datetime",
-    "url",
+    # The dedicated `url` property type is retired (2026-10-28,
+    # op-types.ts ``PROPERTY_TYPES``): the seeded `url` property (…0024)
+    # survives retyped to `text` — legacy url values are plain strings,
+    # legal text values — and live logs converge by the monorepo's
+    # migrate-url-type-to-text.mts. Strict schemas reject the retired
+    # value outright.
     "email",
     "select",
     "multi_select",
@@ -478,7 +483,7 @@ class PropertySchemaCreatePayload(_Strict):
 class _ValidationRules(_Strict):
     """Value validation rules (v1 parity — op-types.ts
     ``validationRulesSchema``): ``{min?, max?, pattern?}``, all optional.
-    min/max apply to number schemas, pattern to text/url/email; the
+    min/max apply to number schemas, pattern to text/email; the
     applicability check runs at APPLY time against the schema's stored type
     and ``min <= max`` is a parse-time rule."""
 

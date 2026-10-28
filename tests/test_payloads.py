@@ -373,7 +373,10 @@ class TestUnifiedDatetimePropertyType:
     """The unified datetime property type (SCHEMA.md
     "Datetime"): the ``propertySchema.create`` type enum retires
     ``date``/``date_range`` and adds ``datetime`` — strict, the retired
-    values are rejected outright (the zod enum parity)."""
+    values are rejected outright (the zod enum parity). The dedicated
+    ``url`` type joins the retired list 2026-10-28 (the seeded `url`
+    property survives retyped to ``text`` — op-types.ts
+    ``PROPERTY_TYPES``)."""
 
     def test_property_schema_create_accepts_datetime(self) -> None:
         validate_payload(
@@ -392,7 +395,7 @@ class TestUnifiedDatetimePropertyType:
             },
         )
 
-    @pytest.mark.parametrize("retired", ["date", "date_range"])
+    @pytest.mark.parametrize("retired", ["date", "date_range", "url"])
     def test_property_schema_create_rejects_the_retired_types(self, retired: str) -> None:
         with pytest.raises(ValidationError):
             validate_payload(
@@ -799,7 +802,7 @@ class TestValidationRulesPayload:
     """``validationRules`` ({min?, max?, pattern?} strict, nullable) rides
     the propertySchema.update payload: min <= max is a parse-time rule, the
     strict record rejects unknown keys, and the applicability (min/max on
-    number schemas, pattern on text/url/email) is enforced at APPLY time
+    number schemas, pattern on text/email) is enforced at APPLY time
     against the stored type — not here."""
 
     def test_min_max_pattern_parse(self) -> None:

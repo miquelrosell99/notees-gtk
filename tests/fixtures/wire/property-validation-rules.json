@@ -1,5 +1,5 @@
 {
-  "comment": "validationRules value enforcement (the property-definition surfaces batch): a schema carrying stored validationRules validates every property.set value BEFORE the write, fail loud (the R2 applicability companion). number schemas bound the value with min/max (>= / <=, after the legacy numeric-string normalization); text/url/email schemas full-string-test scalar values against pattern (implicit anchors — the HTML pattern semantics); each multi element is its own property.set, so one bad element add rejects its op while the surviving elements stay; rule-free schemas and schema-less writes (unknown schema id) stay unchecked; a propertySchema.update carrying a non-compilable pattern fails loud at the rule write (a stored pattern that throws at value-check time would be an applier crash). This fixture's ACCEPTING envelopes replay through the TS applier on both adapters (convergence pinned in the store suite); the REJECTING tail (the last five envelopes — below-min/above-max number, two pattern rejects, one bad multi element, one un compilable pattern) throws on apply by design, so the file stays out of the all-fixtures corpus replay and each reject is pinned deliberately in the store suite. LOCKSTEP-PENDING: GTK/Flutter validators/appliers converge before the live migration runs.",
+  "comment": "validationRules value enforcement: a schema carrying stored validationRules validates every property.set value BEFORE the write, fail loud (the R2 applicability companion). number schemas bound the value with min/max (>= / <=, after the legacy numeric-string normalization); text/email schemas full-string-test scalar values against pattern (implicit anchors — the HTML pattern semantics; the Homepage schema below is a TEXT schema carrying a url-shaped pattern — the dedicated `url` property type is retired 2026-10-28, so pattern-on-url coverage rides a text schema); each multi element is its own property.set, so one bad element add rejects its op while the surviving elements stay; rule-free schemas and schema-less writes (unknown schema id) stay unchecked; a propertySchema.update carrying a non-compilable pattern fails loud at the rule write (a stored pattern that throws at value-check time would be an applier crash). This fixture's ACCEPTING envelopes replay through the TS applier on both adapters (convergence pinned in the store suite); the REJECTING tail (the last five envelopes — below-min/above-max number, two pattern rejects, one bad multi element, one un compilable pattern) throws on apply by design, so the file stays out of the all-fixtures corpus replay and each reject is pinned deliberately in the store suite. LOCKSTEP-PENDING: GTK/Flutter validators/appliers converge before the live migration runs.",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000006000",
@@ -221,7 +221,7 @@
       "payload": {
         "propertySchemaId": "0192a000-0000-7000-8000-000000001012",
         "name": "Homepage",
-        "type": "url",
+        "type": "text",
         "multi": false
       }
     },

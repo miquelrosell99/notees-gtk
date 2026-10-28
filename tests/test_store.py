@@ -3583,7 +3583,7 @@ class TestPg6ApplyTimeValidation:
             (self.TEXT_MULTI, {"name": "aliases", "type": "text", "multi": True}),
             (self.NUMBER, {"name": "count", "type": "number"}),
             (self.BOOLEAN, {"name": "done", "type": "boolean"}),
-            (self.URL, {"name": "link", "type": "url"}),
+            (self.URL, {"name": "link", "type": "text"}),
             (self.SELECT, {"name": "state", "type": "select", "options": [{"id": "opt-1", "label": "One"}]}),
             (self.MULTI_SELECT, {"name": "tags", "type": "multi_select"}),
             (self.IMAGE, {"name": "cover", "type": "image"}),
@@ -3609,6 +3609,21 @@ class TestPg6ApplyTimeValidation:
         )
         return rows[0][0] if rows else None
 
+    def test_retired_url_type_rejected_outright_on_schema_create(self, store: LocalStore) -> None:
+        # The dedicated `url` property type is retired 2026-10-28 (the seeded
+        # `url` property survives retyped to `text`): the strict payload gate
+        # rejects the create, the row never lands (property-validation.test.ts
+        # PG6 parity).
+        with pytest.raises(EnvelopeValidationError, match="invalid propertySchema.create payload"):
+            store.apply_remote(
+                make_env(
+                    "propertySchema.create",
+                    {"propertySchemaId": self.URL, "name": "link", "type": "url"},
+                    hlc=(1, 0),
+                )
+            )
+        assert raw_rows(store, "SELECT COUNT(*) FROM property_schema") == [(0,)]
+
     def test_number_accepts_finite_and_normalizes_numeric_strings(self, store: LocalStore) -> None:
         self._seeded(store)
         store.apply_remote(property_set_env(NODE, self.NUMBER, value=42, hlc=(40, 0)))
@@ -3620,7 +3635,12 @@ class TestPg6ApplyTimeValidation:
             with pytest.raises(PropertyValueShapeError):
                 store.apply_remote(property_set_env(NODE, self.NUMBER, value=bad, hlc=(42, 0)))
 
-    def test_boolean_url_select_accept_their_scalar_and_reject_other_shapes(self, store: LocalStore) -> None:
+    def test_boolean_text_email_select_accept_their_scalar_and_reject_other_shapes(
+        self, store: LocalStore
+    ) -> None:
+        # The "link" schema rides TEXT (the retired `url` type's retyped
+        # successor): a url-shaped string is a legal text scalar, a non-string
+        # shape fails loud.
         self._seeded(store)
         store.apply_remote(property_set_env(NODE, self.BOOLEAN, value=True, hlc=(40, 0)))
         store.apply_remote(property_set_env(NODE, self.URL, value="https://x.test", hlc=(41, 0)))
@@ -4953,7 +4973,7 @@ class TestPropertyScope:
                 )
             )
         # pattern on a number schema: fail loud.
-        with pytest.raises(PropertyValueShapeError, match="pattern applies to text/url/email schemas only"):
+        with pytest.raises(PropertyValueShapeError, match="pattern applies to text/email schemas only"):
             store.apply_remote(
                 make_env(
                     "propertySchema.update",

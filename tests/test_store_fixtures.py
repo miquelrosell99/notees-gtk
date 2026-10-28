@@ -1455,7 +1455,8 @@ class TestPropertyValidationRulesFixture:
             store.apply_remote(rejects[0])
         with pytest.raises(PropertyValueShapeError, match="above the schema's validationRules max 5"):
             store.apply_remote(rejects[1])
-        # Pattern rejects on text + url.
+        # Pattern rejects on text (the Homepage schema — text retyped from
+        # the retired `url` type — and the multi-select element).
         with pytest.raises(PropertyValueShapeError, match="does not match the schema's validationRules pattern"):
             store.apply_remote(rejects[2])
         with pytest.raises(PropertyValueShapeError, match="does not match the schema's validationRules pattern"):

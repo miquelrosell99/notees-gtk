@@ -557,7 +557,7 @@ def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) 
 # "time" must match HH:MM (24h, minute precision) and ride a DAY-precision
 # date-node ref. object/asset = a node reference. Scalar typing: number =
 # a finite number — a NUMERIC STRING is the migrated legacy encoding (live
-# data carries epoch-millis strings) and normalizes to a number; boolean/url/
+# data carries epoch-millis strings) and normalizes to a number; boolean/
 # email/select = their scalar; multi_select = an array of strings. image
 # stays UNCHECKED by design (PG14 owns the shape — live data carries migrated
 # asset payloads, so any check would break replay). `null` means "no value"
@@ -661,7 +661,7 @@ def _assert_value_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
                     if start is not _MISSING and end is not _MISSING:
                         return {"start": start, "end": end}
     else:
-        return value  # number/boolean/url/email/select/multi_select/image ride to scalar typing
+        return value  # number/boolean/email/select/multi_select/image ride to scalar typing
     raise PropertyValueShapeError(
         f"{op_type}: value for {type_} schema must be {_shape_error_detail(type_)} — got {_jsonish(value)}",
         op_type,
@@ -695,7 +695,7 @@ def _assert_scalar_shape_for_type(type_: str, value: Any, op_type: str) -> Any:
     elif type_ == "boolean":
         if isinstance(value, bool):
             return value
-    elif type_ in ("url", "email", "select"):
+    elif type_ in ("email", "select"):
         if isinstance(value, str):
             return value
     elif type_ == "multi_select":
@@ -720,7 +720,7 @@ def _is_valid_default_for_type(type_: str, value: Any) -> bool:
     (propertySchema.create/update) fails loud. Mirrors isValidDefaultForType."""
     if value is None:
         return True
-    if type_ in ("text", "url", "email", "image", "select"):
+    if type_ in ("text", "email", "image", "select"):
         return isinstance(value, str)
     if type_ == "number":
         return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
@@ -777,7 +777,7 @@ def _assert_validation_rules_applicable(schema_type: str, rules: dict[str, Any],
     """R2 applicability: the update payload is a
     patch carrying no type, so validationRules applicability is enforced
     against the schema's STORED type — min/max only on ``number`` schemas,
-    pattern only on ``text``/``url``/``email``. (min <= max is a parse-time
+    pattern only on ``text``/``email``. (min <= max is a parse-time
     rule.) Fail loud — the rules would be provably inert or wrong-typed."""
     if (rules.get("min") is not None or rules.get("max") is not None) and schema_type != "number":
         raise PropertyValueShapeError(
@@ -785,9 +785,9 @@ def _assert_validation_rules_applicable(schema_type: str, rules: dict[str, Any],
             f" — schema type is {schema_type}",
             op_type,
         )
-    if rules.get("pattern") is not None and schema_type not in ("text", "url", "email"):
+    if rules.get("pattern") is not None and schema_type not in ("text", "email"):
         raise PropertyValueShapeError(
-            f"{op_type}: validationRules pattern applies to text/url/email schemas only"
+            f"{op_type}: validationRules pattern applies to text/email schemas only"
             f" — schema type is {schema_type}",
             op_type,
         )
@@ -815,7 +815,7 @@ def _assert_validation_rules_for_value(schema: dict[str, Any], typed: Any, op_ty
     enforcement — SCHEMA.md "Class properties"):
     min/max bound a number schema's value (the legacy numeric string already
     normalized to a finite number upstream), pattern full-string-tests a
-    text/url/email schema's SCALAR strings (a text carrier ref {nodeId} is
+    text/email schema's SCALAR strings (a text carrier ref {nodeId} is
     not a string and rides unchecked — the shape family owns refs). A multi
     batch is a property.set per element (PG5), so every element is validated
     at its own write and one bad element rejects its op while the surviving
@@ -843,7 +843,7 @@ def _assert_validation_rules_for_value(schema: dict[str, Any], typed: Any, op_ty
                 op_type,
             )
         return
-    if schema_type in ("text", "url", "email"):
+    if schema_type in ("text", "email"):
         pattern = rules.get("pattern")
         if pattern is None or not isinstance(typed, str):
             return
@@ -3063,7 +3063,7 @@ class LocalStore:
         # the effective read returns them tagged eligible=false — enforcement
         # is never retroactive. A schema carrying validationRules validates
         # the value before the write too (R2 value enforcement — min/max on
-        # numbers, pattern full-string on text/url/email scalars, each multi
+        # numbers, pattern full-string on text/email scalars, each multi
         # element at its own add).
         schema = self._property_schema_row(schema_id)
         if schema is not None:
@@ -4581,7 +4581,7 @@ CREATE TABLE IF NOT EXISTS property_schema (
     scope_class_ids TEXT,
     -- Value validation rules, JSON {min?, max?, pattern?};
     -- NULL = none. min/max apply to number schemas, pattern to
-    -- text/url/email (apply-time enforcement against the stored type).
+    -- text/email (apply-time enforcement against the stored type).
     validation_rules TEXT,
     options TEXT NOT NULL DEFAULT '[]',
     target_class_filter TEXT,

@@ -6,6 +6,39 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-28
+
+- **feat(protocol)!: accept the retired `url` property type (url →
+  text).** Lockstep with the monorepo's `url-type-retirement` branch: the
+  dedicated `url` property type leaves the wire enum — the strict
+  `propertySchema.create`/`update` payload schemas reject it outright (the
+  `date`/`date_range` precedent; no backward compat) — while the seeded
+  `url` property (…0024, source family) survives retyped to `text` (legacy
+  url values are plain strings, legal text values; live logs converge by
+  the monorepo's `migrate-url-type-to-text.mts`). The applier's url arms
+  are gone: scalar typing (``email``/``select`` string check), the
+  default-value type check, and validationRules applicability/pattern
+  enforcement now read ``text``/``email`` (the error message says
+  "text/email schemas only"). The seed manifest needed no change — the GTK
+  client authors no url seed (seeding is server-side; the task-family
+  manifest is the only local one). Fixtures re-vendored verbatim from the
+  branch: ``property-assign.json`` and ``property-validation-rules.json``
+  (their schema-create envelopes carry ``type: "text"`` now — the old bytes
+  would fail the strict gate mid-replay) + ``property-schema-update-fields.json``
+  (comment-only retirement wording). Tests: the PG6 suite's "link" schema
+  rides text (url-shaped string legal, non-string shape fails loud), a new
+  pin asserts the retired type's create is rejected at the envelope gate
+  with the row never landing (property-validation.test.ts PG6 parity), the
+  retired-types parametrize gains ``url`` (test_payloads.py), the pattern
+  applicability match string follows the new message. **Verification:**
+  `uv run pytest && uv run ruff check && uv run mypy src` — 999 passed,
+  4 skipped, 3 xfailed (pre-existing lockstep-pending xfails); ruff/mypy
+  clean. Remaining corpus drift vs the branch (``class-property-active``,
+  ``class-unassign``, ``is-embedded-parent-page``, ``link-embedded``,
+  ``object-delete-class-routing``, ``typed-link-mark``) belongs to other
+  in-flight monorepo slices — the byte-pin re-vendor completes when those
+  land.
+
 ## 2026-10-27
 
 - **chore(protocol,test): re-vendored 4 protocol fixtures from the main
