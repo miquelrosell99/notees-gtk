@@ -115,6 +115,7 @@ class PageViewWidget(Gtk.Box):
         aliased_main: AliasEntry | None = None,
         repoint_candidates: Sequence[AliasEntry] = (),
         tags_row: Gtk.Widget | None = None,
+        empty_state: str | None = None,
         on_open_node: Callable[[str], None] | None = None,
         on_repoint: Callable[[str | None], None] | None = None,
     ) -> None:
@@ -125,6 +126,8 @@ class PageViewWidget(Gtk.Box):
         aliased node's view, the Aliased-node row on the alias's own view.
         ``tags_row`` is the window-built Tags row widget (pills + add
         picker); it renders under the title, above the alias chrome.
+        ``empty_state`` appends a dimmed label after the content — the
+        review session's "No answer on this card" register.
         """
         while child := self._content.get_first_child():
             self._content.remove(child)
@@ -169,6 +172,11 @@ class PageViewWidget(Gtk.Box):
             else:
                 line.append(item)
         self._flush_line(line)
+
+        if empty_state is not None:
+            placeholder = Gtk.Label(label=empty_state, xalign=0.5)
+            placeholder.add_css_class("dim-label")
+            self._content.append(placeholder)
 
     # ----------------------------------------------------------------- private
 

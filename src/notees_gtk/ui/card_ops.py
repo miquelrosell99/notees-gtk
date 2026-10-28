@@ -26,6 +26,7 @@ first, the history op last — through the ``_enqueue_tag_write`` pattern.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from notees_gtk.core.protocol.clock import Clock
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from notees_gtk.data.store import EffectiveProperty, NodeRow
 
 __all__ = [
+    "ReviewSessionState",
     "card_review_envelope",
     "date_chain_envelopes",
     "review_property_envelopes",
@@ -260,3 +262,76 @@ def card_review_envelope(
         clock=clock,
         affected_node_ids=(card_id,),
     )
+
+
+@dataclass
+class ReviewSessionState:
+    """The review session's position and counters — the pure port of the
+    web ``ReviewSession.tsx`` useState bundle (index / revealed / reviewed /
+    lapses) the dialog renders from.
+
+    A grade counts a lapse exactly like the web: ``again`` on a card whose
+    PREVIOUS state had reps > 0 (an unseen card's first "again" is a
+    struggle, not a lapse of remembered material). Every illegal transition
+    fails loud — the chrome never drives the session into an impossible
+    state.
+    """
+
+    queue: tuple[str, ...]
+    index: int = 0
+    revealed: bool = False
+    reviewed: int = 0
+    lapses: int = 0
+
+    @property
+    def finished(self) -> bool:
+        """All queued cards have been graded (or skipped)."""
+        return self.index >= len(self.queue)
+
+    def current_card(self) -> str | None:
+        """The card id under review, or ``None`` once finished."""
+        if self.finished:
+            return None
+        return self.queue[self.index]
+
+    def reveal(self) -> None:
+        """Flip the card to its back.
+
+        Raises:
+            ValueError: already revealed, or the session is finished.
+        """
+        if self.finished:
+            raise ValueError("review session is finished")
+        if self.revealed:
+            raise ValueError("card is already revealed")
+        self.revealed = True
+
+    def grade(self, grade: CardGrade, state_before: CardSrsState) -> None:
+        """Record one grade: count it (a lapse per the web semantics),
+        advance to the next card, hide the back.
+
+        Raises:
+            ValueError: grading before the reveal, or the session is
+                finished.
+        """
+        if self.finished:
+            raise ValueError("review session is finished")
+        if not self.revealed:
+            raise ValueError("cannot grade before the reveal")
+        self.reviewed += 1
+        if grade == "again" and state_before.reps > 0:
+            self.lapses += 1
+        self.index += 1
+        self.revealed = False
+
+    def skip(self) -> None:
+        """Advance past the current card WITHOUT grading it — the dialog's
+        arm for a card that vanished from the mirror mid-session.
+
+        Raises:
+            ValueError: the session is finished.
+        """
+        if self.finished:
+            raise ValueError("review session is finished")
+        self.index += 1
+        self.revealed = False

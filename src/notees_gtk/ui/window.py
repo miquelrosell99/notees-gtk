@@ -15,7 +15,7 @@ when worthwhile, syncs once, then re-syncs every 30 seconds.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
@@ -29,13 +29,17 @@ from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, AuthenticationError, CardsAlgorithm, NoteesClient, UserPrefs
 from notees_gtk.core.cards import (
     CardBucketRow,
+    build_review_queue,
     card_due_day,
     card_members,
+    card_srs_state,
     partition_cards_into_buckets,
 )
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.features import card_property_uuid
+from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.srs import CardGrade, CardSrsState, next_card_state
 from notees_gtk.core.sync.engine import SyncEngine
 from notees_gtk.data.errors import CycleError, MoveGuardError
 from notees_gtk.data.store import LocalStore, NodeRow
@@ -43,10 +47,12 @@ from notees_gtk.ui import config_store
 from notees_gtk.ui.alias_ops import alias_repoint_candidates, alias_update_envelope
 from notees_gtk.ui.ast_render import ast_to_plaintext, ast_to_view
 from notees_gtk.ui.brand import content_colors
+from notees_gtk.ui.card_ops import card_review_envelope, date_chain_envelopes, review_property_envelopes
 from notees_gtk.ui.cards_hub import CardsHubView
 from notees_gtk.ui.editor import EditorView
 from notees_gtk.ui.login import LoginView
 from notees_gtk.ui.page_view import PageViewWidget
+from notees_gtk.ui.review_session import LoadedCard, ReviewSessionDialog
 from notees_gtk.ui.tag_ops import tag_assign_candidates, tag_assign_envelope, tag_pills, tag_unassign_envelope
 from notees_gtk.ui.tags import build_tags_row
 from notees_gtk.ui.tree import NodeTreeSidebar, node_display_name
@@ -269,9 +275,128 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._cards_hub.show_hub(buckets=buckets, names=names, algorithm=self.cards_algorithm())
 
     def _start_review(self, card_ids: list[str]) -> None:
-        """The hub's Review action — the session dialog itself lands in this
-        slice's next task; until then say so honestly."""
-        self.show_toast("The review session opens in the next slice")
+        """Open the review session over the hand-off ids (the hub's Review
+        action): the queue is the pure due-then-fresh build over the Task-2
+        reads — a direct open with no hand-off falls back to all card
+        members (the web deep-link fallback)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        members = card_members(store.nodes(self._workspace_id), store.class_extends_edges())
+        ids = card_ids if card_ids else [member.id for member in members]
+        due_schema = card_property_uuid("cardDue")
+        queue_rows = [
+            CardBucketRow(card_id, card_due_day(store.get_effective_properties(card_id), due_schema))
+            for card_id in ids
+        ]
+        today = datetime.now().date().isoformat()
+        queue = build_review_queue(queue_rows, today)
+        if not queue:
+            self.show_toast("Nothing to review — no due or new cards")
+            return
+        # The session's scheduler is read ONCE here (the web's mount-time
+        # read; every card.review op records which algorithm ran).
+        algorithm = self.cards_algorithm()
+        session_id = new_uuid7()
+        dialog = ReviewSessionDialog(
+            queue=queue,
+            load_card=self._load_session_card,
+            on_grade=lambda card_id, grade, before: self._grade_session_card(
+                session_id, algorithm, card_id, grade, before
+            ),
+            on_close=self._show_cards_hub,
+        )
+        dialog.present(self)
+
+    def _load_session_card(self, card_id: str) -> LoadedCard | None:
+        """The session's lazy card read: the node, its embedded children
+        (the back), and the derived SRS state before grading."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return None
+        row = store.node(self._workspace_id, card_id)
+        if row is None:
+            return None
+        children = [child for child in store.children(self._workspace_id, card_id) if child.is_embedded]
+        return LoadedCard(
+            title=node_display_name(row),
+            front=ast_to_view(row.content, resolve_name=self._resolve_name),
+            back_children=tuple(ast_to_view(child.content, resolve_name=self._resolve_name) for child in children),
+            state=card_srs_state(store.list_card_reviews(card_id)),
+        )
+
+    def _grade_session_card(
+        self,
+        session_id: str,
+        algorithm: CardsAlgorithm,
+        card_id: str,
+        grade: CardGrade,
+        state_before: CardSrsState,
+    ) -> None:
+        """The grade's write path (owner ruling 3 — enqueue + one sync per
+        grade; ruling 7 — no undo journal): the Task-4 envelopes in order —
+        the due-day date-chain ensure, the property batch at the row's
+        existing idx, the card.review history op last — all enqueued with
+        the optimistic mirror apply (the ``_enqueue_tag_write`` pattern).
+        A structural guard failure toasts; the session still advances."""
+        store = self._require_store()
+        workspace_id = self._workspace_id
+        if store is None or workspace_id is None:
+            return
+        actor_id = config_store.load_actor_id() or config_store.GTK_ACTOR_ID
+        device_id = config_store.ensure_device_id()
+        today = datetime.now().date().isoformat()
+        state_after = next_card_state(state_before, grade, algorithm, today)
+
+        envelopes: list[RelayEnvelope] = []
+        if state_after.due is not None:
+            envelopes.extend(
+                date_chain_envelopes(
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    device_id=device_id,
+                    iso_day=state_after.due,
+                    store_reads=lambda node_id: store.node(workspace_id, node_id),
+                    clock=self._clock,
+                )
+            )
+        envelopes.extend(
+            review_property_envelopes(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                device_id=device_id,
+                card_id=card_id,
+                state_after=state_after,
+                algorithm=algorithm,
+                props=store.get_effective_properties(card_id),
+                clock=self._clock,
+            )
+        )
+        envelopes.append(
+            card_review_envelope(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                device_id=device_id,
+                card_id=card_id,
+                grade=grade,
+                algorithm=algorithm,
+                state_before=state_before,
+                state_after=state_after,
+                session_id=session_id,
+                reviewed_at=datetime.now(UTC).isoformat(),
+                clock=self._clock,
+            )
+        )
+        for envelope in envelopes:
+            store.enqueue(envelope)
+            try:
+                store.apply_remote(envelope)
+            except (CycleError, MoveGuardError) as exc:
+                self.show_toast(str(exc))
+                return
+        engine = self._engine
+        if engine is not None:
+            run_in_worker(engine.sync, on_done=lambda _result: None, on_error=self._on_sync_error)
 
     def _on_workspaces_loaded(self, workspaces: list[Any]) -> None:
         self._workspace_names = {ws.id: str(ws.name or ws.id) for ws in workspaces}

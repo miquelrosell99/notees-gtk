@@ -14,9 +14,10 @@ import pytest
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.dates import chain_node_ids, day_node_id
 from notees_gtk.core.protocol.features import card_property_uuid
-from notees_gtk.core.srs import CardSrsState
+from notees_gtk.core.srs import UNSEEN_CARD_STATE, CardSrsState
 from notees_gtk.data.store import EffectiveProperty, NodeRow
 from notees_gtk.ui.card_ops import (
+    ReviewSessionState,
     card_review_envelope,
     date_chain_envelopes,
     review_property_envelopes,
@@ -27,6 +28,8 @@ ACTOR = "actor-1"
 DEVICE = "card-ops-test-device"
 CARD_ID = str(uuid5(NAMESPACE_URL, "notees-gtk/card-ops/card"))
 SESSION_ID = str(uuid4())
+
+UNSEEN = UNSEEN_CARD_STATE
 
 DAY = "2026-10-28"
 CHAINS = chain_node_ids(DAY)
@@ -369,3 +372,71 @@ class TestCardReviewEnvelope:
             "difficulty": 7.1949,
             "stability": 3.173,
         }
+
+
+class TestReviewSessionState:
+    def test_fresh_session_starts_on_the_first_card_unrevealed(self) -> None:
+        state = ReviewSessionState(queue=("a", "b", "c"))
+        assert state.current_card() == "a"
+        assert state.revealed is False
+        assert state.finished is False
+        assert (state.reviewed, state.lapses) == (0, 0)
+
+    def test_reveal_flips_and_grade_advances(self) -> None:
+        state = ReviewSessionState(queue=("a", "b"))
+        state.reveal()
+        assert state.revealed is True
+        state.grade(
+            "good",
+            CardSrsState(due=None, reps=0, interval=0, ease=None, difficulty=None, stability=None),
+        )
+        assert state.reviewed == 1
+        assert state.lapses == 0
+        assert state.revealed is False
+        assert state.current_card() == "b"
+
+    def test_grade_before_reveal_fails_loud(self) -> None:
+        state = ReviewSessionState(queue=("a",))
+        with pytest.raises(ValueError, match="before the reveal"):
+            state.grade("good", UNSEEN)
+
+    def test_double_reveal_fails_loud(self) -> None:
+        state = ReviewSessionState(queue=("a",))
+        state.reveal()
+        with pytest.raises(ValueError, match="already revealed"):
+            state.reveal()
+
+    def test_lapse_counts_only_again_on_a_reviewed_card(self) -> None:
+        state = ReviewSessionState(queue=("a", "b", "c", "d"))
+        reviewed = CardSrsState(due="2026-10-20", reps=3, interval=9, ease=2.5, difficulty=None, stability=None)
+        for grade, before in (
+            ("again", reviewed),  # lapse: again on reps > 0
+            ("again", UNSEEN),  # not a lapse: never-reviewed card
+            ("good", reviewed),  # not a lapse: not "again"
+            ("again", reviewed),  # lapse
+        ):
+            state.reveal()
+            state.grade(grade, before)
+        assert state.reviewed == 4
+        assert state.lapses == 2
+        assert state.finished is True
+
+    def test_finished_session_fails_loud(self) -> None:
+        state = ReviewSessionState(queue=("a",))
+        state.reveal()
+        state.grade("good", UNSEEN)
+        assert state.finished is True
+        assert state.current_card() is None
+        with pytest.raises(ValueError, match="finished"):
+            state.reveal()
+        with pytest.raises(ValueError, match="finished"):
+            state.grade("good", UNSEEN)
+        with pytest.raises(ValueError, match="finished"):
+            state.skip()
+
+    def test_skip_advances_without_counting(self) -> None:
+        state = ReviewSessionState(queue=("gone", "b"))
+        state.skip()
+        assert (state.reviewed, state.lapses) == (0, 0)
+        assert state.current_card() == "b"
+        assert state.revealed is False
