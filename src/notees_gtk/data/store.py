@@ -126,7 +126,7 @@ from notees_gtk.data.errors import (
     UnsupportedCarrierError,
 )
 
-__all__ = ["EffectiveProperty", "EffectivePropertySchema", "LocalStore", "NodeRow"]
+__all__ = ["CardReview", "EffectiveProperty", "EffectivePropertySchema", "LocalStore", "NodeRow"]
 
 _log = logging.getLogger(__name__)
 
@@ -211,7 +211,13 @@ _log = logging.getLogger(__name__)
 #: class rows only — the icon/color two-table precedent, mapped by
 #: class.create/update). Purely additive guarded ALTERs, no-ops for fresh
 #: v22 creates.
-SCHEMA_VERSION = 22
+#: v23 (web schema v34→v35 parity — the memorization-card review
+#: history, SCHEMA.md "Memorization cards"): the derived ``card_review``
+#: table lands for the ``card.review`` op — one append-only row per graded
+#: review, HISTORY-ONLY (no LWW gate), with the (card_id, hlc) read index.
+#: Purely additive CREATE IF NOT EXISTS — a no-op for fresh databases whose
+#: canonical aux DDL already carries the table (the v20/v21 precedent).
+SCHEMA_VERSION = 23
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -285,6 +291,31 @@ def _snapshot_select_exprs(remote_columns: set[str]) -> dict[str, str]:
         if column in remote_columns:
             exprs[column] = _quote_ident(column)
     return exprs
+
+
+@dataclass(frozen=True)
+class CardReview:
+    """One memorization-card review history row (SCHEMA.md "Memorization
+    cards"): the derived projection of a ``card.review`` envelope (the
+    ``CardReview`` store.ts parity). The state snapshots parse back to the
+    ``CardSrsState`` wire shape.
+
+    Attributes:
+        session_id: The study-session grouping uuid (no referential integrity).
+        grade: The four-button scale (again/hard/good/easy).
+        algorithm: The scheduler that produced the states (sm2/fsrs).
+        state_before: The SRS state before the grading (wire JSON, camelCase).
+        state_after: The SRS state after the grading — the LATEST row's
+            ``state_after`` is the card's derived SRS state.
+        reviewed_at: The ISO timestamp of the grading.
+    """
+
+    session_id: str
+    grade: str
+    algorithm: str
+    state_before: dict[str, Any]
+    state_after: dict[str, Any]
+    reviewed_at: str
 
 
 @dataclass(frozen=True)
@@ -927,6 +958,7 @@ class LocalStore:
             "workspace.feature.set": self._apply_workspace_feature_set,
             "external_ref.set": self._apply_external_ref_set,
             "external_ref.delete": self._apply_external_ref_delete,
+            "card.review": self._apply_card_review,
         }
         self._migrate()
 
@@ -3772,6 +3804,78 @@ class LocalStore:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
+    # ------------------------------------------------------------------ card.review
+    #
+    # Memorization-card review history (SCHEMA.md "Memorization cards"): one
+    # append-only derived row per graded review. HISTORY-ONLY — no LWW gate,
+    # no superseded path, and the op never writes property values (the seeded
+    # card-family property schemas stay the current schedule surface; the op
+    # is the review journal, the card_review rows its derived read). Validation
+    # is membership-only: the target must resolve to a node row carrying the
+    # card system class (fail loud otherwise — the write-time-impossible law;
+    # the ``applyCardReview`` appliers.ts parity).
+
+    def _apply_card_review(self, env: RelayEnvelope) -> bool:
+        op_type = "card.review"
+        payload = env.payload
+        card_id = str(payload["cardId"])
+
+        if self._node_row(env.workspace_id, card_id) is None:
+            raise NotFoundError(f"{op_type}: card {card_id} does not exist", op_type)
+        member = self._conn.execute(
+            "SELECT 1 FROM class_member_set WHERE node_id = ? AND class_id = ? AND present = 1 LIMIT 1",
+            (card_id, system_class_uuid("card")),
+        ).fetchone()
+        if member is None:
+            raise MoveGuardError(f"{op_type}: {card_id} is not classed memorization card", op_type)
+
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO card_review
+                     (card_id, session_id, grade, algorithm, state_before, state_after,
+                      reviewed_at, hlc_physical, hlc_logical, actor_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    card_id,
+                    str(payload["sessionId"]),
+                    str(payload["grade"]),
+                    str(payload["algorithm"]),
+                    json.dumps(payload["stateBefore"]),
+                    json.dumps(payload["stateAfter"]),
+                    str(payload["reviewedAt"]),
+                    env.hlc.physical,
+                    env.hlc.logical,
+                    env.actor_id,
+                ),
+            )
+        return True
+
+    @_synchronized
+    def list_card_reviews(self, card_id: str) -> list[CardReview]:
+        """Review history of a memorization card (the ``listCardReviews``
+        store.ts parity): every ``card.review`` row for the node in HLC
+        order. The table is append-only history — no LWW collapse — so a
+        card reviewed n times lists n rows, and the card's current SRS state
+        is the LATEST row's ``stateAfter``. Empty for a card never reviewed
+        (or an unknown id)."""
+        rows = self._conn.execute(
+            """SELECT session_id, grade, algorithm, state_before, state_after, reviewed_at
+               FROM card_review WHERE card_id = ?
+               ORDER BY hlc_physical, hlc_logical""",
+            (card_id,),
+        ).fetchall()
+        return [
+            CardReview(
+                session_id=str(row[0]),
+                grade=str(row[1]),
+                algorithm=str(row[2]),
+                state_before=cast(dict[str, Any], json.loads(row[3])),
+                state_after=cast(dict[str, Any], json.loads(row[4])),
+                reviewed_at=str(row[5]),
+            )
+            for row in rows
+        ]
+
     # -------------------------------------------------------------- node cache
 
     @_synchronized
@@ -4931,6 +5035,31 @@ CREATE TABLE IF NOT EXISTS external_ref_tombstone (
 );
 """
 
+#: The memorization-card review history (SCHEMA.md "Memorization cards"):
+#: one append-only derived row per ``card.review`` envelope — HISTORY-ONLY,
+#: no LWW gate, no superseded path; the (card_id, hlc) index is the per-card
+#: read seam (``LocalStore.list_card_reviews``). The state snapshots ride as
+#: the verbatim wire JSON (the payload keys are stored camelCase, byte-identical
+#: across replicas). The op never writes property values — the seeded
+#: card-family property schemas stay the current schedule surface; the op is
+#: the review journal, the ``card_review`` rows its derived read
+#: (``packages/store/src/schema.ts`` ``CARD_REVIEW_DDL`` parity).
+_CARD_REVIEW_DDL = """
+CREATE TABLE IF NOT EXISTS card_review (
+    card_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    grade TEXT NOT NULL,
+    algorithm TEXT NOT NULL,
+    state_before TEXT NOT NULL,
+    state_after TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    hlc_physical INTEGER NOT NULL,
+    hlc_logical INTEGER NOT NULL,
+    actor_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_card_review_card ON card_review (card_id, hlc_physical, hlc_logical);
+"""
+
 
 def _migrate_v8(conn: sqlite3.Connection) -> None:
     """Per-workspace feature toggles (web schema v9→v10 parity).
@@ -5113,7 +5242,7 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 #: a complete database is untouched and a partial one converges to the full
 #: table set. ``_NODES_DDL`` is deliberately excluded — the node table's
 #: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
-_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL
+_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL + _CARD_REVIEW_DDL
 
 
 def _migrate_v13(conn: sqlite3.Connection) -> None:
@@ -5433,6 +5562,17 @@ def _migrate_v22(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "class", "parentless_role", "TEXT")
 
 
+def _migrate_v23(conn: sqlite3.Connection) -> None:
+    """v23 — the memorization-card review history (web schema v34→v35
+    parity, SCHEMA.md "Memorization cards"): the derived ``card_review``
+    table for the ``card.review`` op — one append-only HISTORY-ONLY row per
+    graded review plus the (card_id, hlc) read index. Purely additive
+    CREATE IF NOT EXISTS, a no-op for fresh databases whose canonical aux
+    DDL already carries the table (the v20 precedent).
+    """
+    conn.executescript(_CARD_REVIEW_DDL)
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -5457,4 +5597,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (20, _migrate_v20),
     (21, _migrate_v21),
     (22, _migrate_v22),
+    (23, _migrate_v23),
 )

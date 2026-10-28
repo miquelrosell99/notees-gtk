@@ -1,0 +1,65 @@
+{
+  "comment": "Memorization-card review (SRS): a node created under the system card class (00000000-0000-0000-0001-000000000011 — a system seed, no class.create needed) is reviewed twice from two sessions. The first review grades AGAIN on an unseen card (stateBefore all-null ease/difficulty/stability) — the SM2 algorithm initializes the ease factor at 2.5; the second, from a different session, grades GOOD and schedules the next day. End state: due 2026-10-29, reps 1, ease 2.5 (the AGAIN reset the SM2 reps, the GOOD review is the surviving LWW review record). The fixture owns the …940 id segment exclusively (node …940, envelopes …941-…943, sessions …944/…945) — the corpus's per-fixture UUID partitioning.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000941",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200020000, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000940"],
+      "opType": "object.create",
+      "timestamp": "2026-10-28T09:00:00.000Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000940",
+        "classIds": ["00000000-0000-0000-0001-000000000011"],
+        "tagIds": [],
+        "contentAst": [{ "type": "text", "text": "Spanish vocab: perro" }]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000942",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "cli",
+      "hlc": { "physical": 1727200020100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000940"],
+      "opType": "card.review",
+      "timestamp": "2026-10-28T09:05:00.000Z",
+      "payload": {
+        "cardId": "0192a000-0000-7000-8000-000000000940",
+        "grade": "again",
+        "algorithm": "sm2",
+        "stateBefore": { "due": null, "reps": 0, "interval": 0, "ease": null, "difficulty": null, "stability": null },
+        "stateAfter": { "due": "2026-10-28", "reps": 0, "interval": 0, "ease": 2.5, "difficulty": null, "stability": null },
+        "reviewedAt": "2026-10-28T09:05:00.000Z",
+        "sessionId": "0192a000-0000-7000-8000-000000000944"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000943",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "web",
+      "hlc": { "physical": 1727200020200, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-000000000940"],
+      "opType": "card.review",
+      "timestamp": "2026-10-28T09:30:00.000Z",
+      "payload": {
+        "cardId": "0192a000-0000-7000-8000-000000000940",
+        "grade": "good",
+        "algorithm": "sm2",
+        "stateBefore": { "due": "2026-10-28", "reps": 0, "interval": 0, "ease": 2.5, "difficulty": null, "stability": null },
+        "stateAfter": { "due": "2026-10-29", "reps": 1, "interval": 1, "ease": 2.5, "difficulty": null, "stability": null },
+        "reviewedAt": "2026-10-28T09:30:00.000Z",
+        "sessionId": "0192a000-0000-7000-8000-000000000945"
+      }
+    }
+  ]
+}

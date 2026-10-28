@@ -1079,3 +1079,64 @@ class TestExternalRefPayloads:
             validate_payload("external_ref.set", {"ref": self.REF, "nodeId": UUID_1, "kind": "event"})
         with pytest.raises(ValidationError):
             validate_payload("external_ref.delete", {"ref": self.REF, "nodeId": UUID_1})
+
+
+class TestCardReviewPayloads:
+    """The ``card.review`` payload (the SRS review journal, SCHEMA.md
+    "Memorization cards"): strict, grade/algorithm fixed enums, and the two
+    state snapshots are strict records themselves — null ease/difficulty/
+    stability (uninitialized) are real values, a null due is the unseen
+    marker, but null reps/interval are rejected (zod ``z.number()``
+    parity)."""
+
+    UNSEEN = {"due": None, "reps": 0, "interval": 0, "ease": None, "difficulty": None, "stability": None}
+    SEEN = {"due": "2026-10-29", "reps": 1, "interval": 1, "ease": 2.5, "difficulty": 0.4, "stability": 3.2}
+
+    def _payload(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "cardId": UUID_1,
+            "grade": "good",
+            "algorithm": "sm2",
+            "stateBefore": dict(self.UNSEEN),
+            "stateAfter": dict(self.SEEN),
+            "reviewedAt": "2026-10-28T09:05:00.000Z",
+            "sessionId": UUID_2,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_is_in_the_registry_and_strict(self) -> None:
+        assert "card.review" in KNOWN_OP_TYPES
+        validate_payload("card.review", self._payload())
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(grade="perfect"))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(algorithm="anki"))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(note="extra key"))
+
+    def test_state_snapshots_are_strict_records(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(stateBefore={**self.UNSEEN, "lapses": 0}))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(stateAfter={**self.SEEN, "reps": None}))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(stateAfter={k: v for k, v in self.SEEN.items() if k != "ease"}))
+        # The unseen state is all-null ease/difficulty/stability with a null due.
+        validate_payload(
+            "card.review",
+            self._payload(
+                grade="again",
+                stateAfter={"due": None, "reps": 0, "interval": 0, "ease": None, "difficulty": None, "stability": None},
+            ),
+        )
+
+    def test_ids_and_reviewed_at_shapes(self) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(cardId="not-a-uuid"))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(sessionId="not-a-uuid"))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(reviewedAt=""))
+        with pytest.raises(ValidationError):
+            validate_payload("card.review", self._payload(reviewedAt=None))

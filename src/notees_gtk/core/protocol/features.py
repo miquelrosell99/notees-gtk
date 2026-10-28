@@ -52,6 +52,8 @@ from typing import Literal, TypeGuard
 
 __all__ = [
     "ALWAYS_ON_SYSTEM_CLASSES",
+    "CARD_FAMILY_SEED",
+    "CardFamilySeedEntry",
     "LOCKED_SYSTEM_CLASSES",
     "SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES",
     "SYSTEM_CLASS_DISPLAY_NAMES",
@@ -78,6 +80,7 @@ __all__ = [
     "system_class_ancestors",
     "system_class_name_for_id",
     "system_class_uuid",
+    "card_property_uuid",
     "task_property_uuid",
 ]
 
@@ -321,10 +324,15 @@ def is_system_class_id(class_id: str) -> bool:
 
 #: The seed decorations (seeds.ts ``SYSTEM_CLASS_ICONS`` / ``SYSTEM_CLASS_DISPLAY_NAMES``
 #: subset — the GTK map's seed-converged classes only: the #14 follow-up five,
-#: the source-library roster's renamed + 30-new classes). The server seed
+#: the source-library roster's renamed + 30-new classes, and the memorization
+#: cards slice's renamed `card`). The server seed
 #: authors the display titles into the class nodes' text content
 #: (title-is-content) and the icons onto the class rows.
 SYSTEM_CLASS_ICONS: dict[str, str] = {
+    # The memorization cards slice: `card` RENAMED (uuid …0011 unchanged) —
+    # the gallery icon moves off the generic card glyph onto the
+    # spaced-repetition deck (seeds.ts ``SYSTEM_CLASS_ICONS`` parity).
+    "card": "mdiCardsPlayingOutline",
     # The #14 follow-up five.
     "definition": "mdiBookOpenPageVariant",
     "idea": "mdiThoughtBubbleOutline",
@@ -372,6 +380,10 @@ SYSTEM_CLASS_ICONS: dict[str, str] = {
 #: ``SYSTEM_CLASS_DISPLAY_NAMES`` subset; the raw keys stay code-facing
 #: vocabulary — these are the human wordings).
 SYSTEM_CLASS_DISPLAY_NAMES: dict[str, str] = {
+    # The memorization cards slice: `card` is "Memorization card" now (the
+    # spaced-repetition rename; seeds.ts ``SYSTEM_CLASS_DISPLAY_NAMES``
+    # parity).
+    "card": "Memorization card",
     # The #14 follow-up five.
     "definition": "Definition",
     "idea": "Idea",
@@ -747,6 +759,69 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
 def task_property_uuid(name: str) -> str:
     """The fixed schema id for a task-family property name."""
     return _TASK_PROPERTY_UUIDS[name]
+
+
+# --------------------------------------------------------------------- card seed
+#
+# The card family's reserved schema UUIDs (seeds.ts ``CARD_PROPERTY_UUIDS``
+# parity): the six SRS schedule schemas, class-bound to `card`, at the
+# …0004- property block (…0003- is the task/meeting/event family). The
+# select-OPTION ids (assetRole …0001–…0007, task status/priority
+# …0008–…0011) ride the same namespace — options are nested schema data,
+# never property-schema ids, so the spaces never meet. The literals mirror
+# the seeds.ts ``SYSTEM_PROPERTY_UUIDS`` card block; the test pins them
+# equal. Later slices consume these verbatim (the web ensureCardFamily
+# self-heal seeds schemas at these ids) — never rename, never regenerate,
+# never reuse.
+_CARD_PROPERTY_UUIDS: dict[str, str] = {
+    "cardDue": "00000000-0000-0000-0004-000000000001",
+    "cardReps": "00000000-0000-0000-0004-000000000002",
+    "cardInterval": "00000000-0000-0000-0004-000000000003",
+    "cardEase": "00000000-0000-0000-0004-000000000004",
+    "cardDifficulty": "00000000-0000-0000-0004-000000000005",
+    "cardStability": "00000000-0000-0000-0004-000000000006",
+}
+
+
+@dataclass(frozen=True)
+class CardFamilySeedEntry:
+    """One card-family schema row (the TS ``CARD_FAMILY_SEED`` manifest
+    entry): the fixed id resolves through ``card_property_uuid``.
+
+    Every entry is class-bound to the ``card`` system class (the schema's
+    ``scope_class_ids`` = [card]) and seed UNPINNED — the 2026-10-27 pinned
+    roster is frozen (source family, meetingDate/location, the task heads)
+    and no card field joins it. Live schedule state lives in these property
+    values (ordinary LWW property ops); the ``card.review`` op is the
+    additive review journal on top.
+    """
+
+    property: str
+    name: str
+    type: Literal["datetime", "number"]
+
+
+#: The memorization card family ensure manifest (the TASK_FAMILY_SEED
+#: precedent, seeds.ts ``CARD_FAMILY_SEED`` parity): six scalar SRS schedule
+#: schemas, class-bound to `card`, all UNPINNED. cardDue is the
+#: datetime-typed due date (day precision); the five numbers carry the SM-2
+#: ease factor and the FSRS difficulty/stability alongside reps/interval.
+#: Seed knowledge only — the GTK client authors no seed envelopes (seeding
+#: is server-side; the card class is always-on, not a family toggle, so no
+#: applier ensure path exists the way TASK_FAMILY_SEED has).
+CARD_FAMILY_SEED: tuple[CardFamilySeedEntry, ...] = (
+    CardFamilySeedEntry("cardDue", "Card due", "datetime"),
+    CardFamilySeedEntry("cardReps", "Card reps", "number"),
+    CardFamilySeedEntry("cardInterval", "Card interval", "number"),
+    CardFamilySeedEntry("cardEase", "Card ease", "number"),
+    CardFamilySeedEntry("cardDifficulty", "Card difficulty", "number"),
+    CardFamilySeedEntry("cardStability", "Card stability", "number"),
+)
+
+
+def card_property_uuid(name: str) -> str:
+    """The fixed schema id for a card-family property name."""
+    return _CARD_PROPERTY_UUIDS[name]
 
 
 #: The READONLY derivation list: the retired

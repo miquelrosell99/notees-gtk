@@ -111,6 +111,8 @@ from notees_gtk.core.protocol.colors import ColorValue
 
 __all__ = [
     "PAYLOAD_SCHEMAS",
+    "CardReviewPayload",
+    "CardSrsState",
     "build_class_create",
     "build_class_reorder",
     "build_class_unassign",
@@ -675,6 +677,50 @@ class ExternalRefDeletePayload(_Strict):
     ref: str = Field(min_length=1, max_length=EXTERNAL_REF_MAX_LENGTH)
 
 
+class CardSrsState(_Strict):
+    """One SRS state snapshot (op-types.ts ``cardSrsStateSchema``): the full
+    scheduling state carried by a ``card.review`` transition.
+
+    ``due`` is a YYYY-MM-DD calendar day, NULL = unseen;
+    ease/difficulty/stability stay NULL until the chosen algorithm
+    initializes them (the SM2 ease factor / the FSRS difficulty and
+    stability in days). The applier stores the wire JSON verbatim, so the
+    validated model mirrors the shape only — no coercion rides the stored
+    bytes.
+    """
+
+    due: str | None
+    reps: float
+    interval: float
+    ease: float | None
+    difficulty: float | None
+    stability: float | None
+
+
+class CardReviewPayload(_Strict):
+    """Memorization-card review record (the SRS substrate, SCHEMA.md
+    "Memorization cards"): one op per graded review, carrying the full SRS
+    state transition (``stateBefore``/``stateAfter``) so every replica
+    applies the same scheduling outcome without depending on a local
+    algorithm implementation.
+
+    ``grade`` is the four-button scale; ``algorithm`` names which scheduler
+    produced the states; ``sessionId`` groups the reviews of one study
+    session (uuid, no referential integrity); ``reviewedAt`` is the ISO
+    timestamp of the grading. The store keeps every review as HISTORY-ONLY
+    derived rows — the latest row's ``stateAfter`` is the card's derived
+    SRS state (``LocalStore.list_card_reviews``).
+    """
+
+    card_id: UUID = Field(alias="cardId")
+    grade: Literal["again", "hard", "good", "easy"]
+    algorithm: Literal["sm2", "fsrs"]
+    state_before: CardSrsState = Field(alias="stateBefore")
+    state_after: CardSrsState = Field(alias="stateAfter")
+    reviewed_at: str = Field(alias="reviewedAt", min_length=1)
+    session_id: UUID = Field(alias="sessionId")
+
+
 #: Registry mirroring ``OP_PAYLOAD_SCHEMAS`` (op-types.ts) one-for-one.
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "object.create": ObjectCreatePayload,
@@ -703,6 +749,7 @@ PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     "workspace.feature.set": WorkspaceFeatureSetPayload,
     "external_ref.set": ExternalRefSetPayload,
     "external_ref.delete": ExternalRefDeletePayload,
+    "card.review": CardReviewPayload,
 }
 
 

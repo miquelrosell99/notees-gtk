@@ -344,3 +344,46 @@ class TestTaskFamilySeed:
         keeps display None ('panel', the properties section)."""
         assert TASK_FAMILY_SEED[0].display == "bullet"
         assert all(entry.display is None for entry in TASK_FAMILY_SEED[1:])
+
+
+class TestCardFamilySeed:
+    """The memorization-cards slice's seed knowledge (seeds.ts parity):
+    the `card` system class carries its renamed display decorations, and
+    the six SRS schedule schemas occupy the …0004- property block at the
+    fixed ids — class-bound to `card`, all UNPINNED (the 2026-10-27 pinned
+    roster is frozen and no card field joins it)."""
+
+    def test_card_rename_decorations(self) -> None:
+        from notees_gtk.core.protocol.features import SYSTEM_CLASS_DISPLAY_NAMES, SYSTEM_CLASS_ICONS
+
+        # The uuid is unchanged (…0011) — only the human wordings move.
+        assert system_class_uuid("card") == "00000000-0000-0000-0001-000000000011"
+        assert SYSTEM_CLASS_ICONS["card"] == "mdiCardsPlayingOutline"
+        assert SYSTEM_CLASS_DISPLAY_NAMES["card"] == "Memorization card"
+
+    def test_six_schemas_at_the_fixed_ids(self) -> None:
+        from notees_gtk.core.protocol.features import CARD_FAMILY_SEED, card_property_uuid
+
+        assert [(entry.property, entry.name) for entry in CARD_FAMILY_SEED] == [
+            ("cardDue", "Card due"),
+            ("cardReps", "Card reps"),
+            ("cardInterval", "Card interval"),
+            ("cardEase", "Card ease"),
+            ("cardDifficulty", "Card difficulty"),
+            ("cardStability", "Card stability"),
+        ]
+        assert card_property_uuid("cardDue") == "00000000-0000-0000-0004-000000000001"
+        assert card_property_uuid("cardStability") == "00000000-0000-0000-0004-000000000006"
+        # The manifest walks the …0004- block contiguously (…0003- is the
+        # task/meeting/event family).
+        assert [card_property_uuid(entry.property) for entry in CARD_FAMILY_SEED] == [
+            f"00000000-0000-0000-0004-00000000000{index}" for index in range(1, 7)
+        ]
+
+    def test_card_due_is_datetime_the_rest_numbers(self) -> None:
+        from notees_gtk.core.protocol.features import CARD_FAMILY_SEED
+
+        by_property = {entry.property: entry for entry in CARD_FAMILY_SEED}
+        assert by_property["cardDue"].type == "datetime"
+        for name in ("cardReps", "cardInterval", "cardEase", "cardDifficulty", "cardStability"):
+            assert by_property[name].type == "number"

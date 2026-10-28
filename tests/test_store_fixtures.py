@@ -28,6 +28,7 @@ from notees_gtk.data.errors import (
     CycleError,
     LockedSystemClassError,
     MoveGuardError,
+    NotFoundError,
     PropertyValueShapeError,
     SystemExtendsLockError,
 )
@@ -132,6 +133,7 @@ _CONVERGENCE_TABLES = (
     "workspace_feature",
     "external_ref",
     "external_ref_tombstone",
+    "card_review",
 )
 
 
@@ -1820,3 +1822,125 @@ class TestPropertyAssignFixture:
         assert [(row.property_schema_id, row.value, row.source) for row in effective] == [
             (self.SCHEMA, None, "assigned")
         ]
+
+
+class TestCardReviewFixture:
+    """Replay of card-review.json (the memorization-card review op, SCHEMA.md
+    "Memorization cards"): two graded reviews of a card-classed node land as
+    HISTORY-ONLY rows in the derived ``card_review`` table — one envelope, one
+    row, NO LWW gate, and the op never writes property values. Mirrors the
+    monorepo's card-review.test.ts assertions."""
+
+    CARD = "0192a000-0000-7000-8000-000000000940"
+    SESSION_AGAIN = "0192a000-0000-7000-8000-000000000944"
+    SESSION_GOOD = "0192a000-0000-7000-8000-000000000945"
+
+    def _load(self) -> list[RelayEnvelope]:
+        return [RelayEnvelope.model_validate(item) for item in load_fixture("card-review.json")]
+
+    def _review_envelope(self, fixture_env: RelayEnvelope, card_id: str, envelope_id: str) -> RelayEnvelope:
+        """A copy of a fixture review re-targeted at ``card_id`` (fail-loud
+        arms) — a fresh envelope id so the relay_operations dedupe lets it
+        apply."""
+        data = fixture_env.model_dump(mode="json", by_alias=True)
+        data["id"] = envelope_id
+        data["payload"]["cardId"] = card_id
+        return RelayEnvelope.model_validate(data)
+
+    def test_full_replay_lands_two_history_rows_and_the_latest_state(self, store: LocalStore) -> None:
+        for envelope in self._load():
+            assert store.apply_remote(envelope) is True
+        reviews = store.list_card_reviews(self.CARD)
+        assert [(row.grade, row.session_id) for row in reviews] == [
+            ("again", self.SESSION_AGAIN),
+            ("good", self.SESSION_GOOD),
+        ]
+        # Both reviews are history — no LWW collapse — and the card's derived
+        # SRS state is the LATEST row's stateAfter (the fixture comment's
+        # end state).
+        assert reviews[1].state_after == {
+            "due": "2026-10-29",
+            "reps": 1,
+            "interval": 1,
+            "ease": 2.5,
+            "difficulty": None,
+            "stability": None,
+        }
+        assert reviews[0].state_before == {
+            "due": None,
+            "reps": 0,
+            "interval": 0,
+            "ease": None,
+            "difficulty": None,
+            "stability": None,
+        }
+        assert reviews[0].algorithm == "sm2"
+        assert reviews[0].reviewed_at == "2026-10-28T09:05:00.000Z"
+        # HISTORY-ONLY: the op never writes property values — the seeded
+        # card-family property schemas stay the schedule surface.
+        assert raw(store, "SELECT COUNT(*) FROM property_value WHERE node_id = ?", (self.CARD,)) == [(0,)]
+        assert raw(store, "SELECT COUNT(*) FROM property_value_tombstone WHERE node_id = ?", (self.CARD,)) == [(0,)]
+
+    def test_state_snapshots_store_the_verbatim_wire_json(self, store: LocalStore) -> None:
+        envelopes = self._load()
+        for envelope in envelopes:
+            assert store.apply_remote(envelope) is True
+        fixture_payloads = [env.payload for env in envelopes if env.op_type == "card.review"]
+        rows = raw(store, "SELECT state_before, state_after FROM card_review ORDER BY hlc_physical")
+        # Byte-verbatim: the derived rows re-serialize to the fixture's state
+        # dicts, camelCase keys and int/float shapes untouched.
+        assert [json.loads(row[0]) for row in rows] == [payload["stateBefore"] for payload in fixture_payloads]
+        assert [json.loads(row[1]) for row in rows] == [payload["stateAfter"] for payload in fixture_payloads]
+
+    def test_concurrent_reviews_list_in_hlc_order_under_both_delivery_orders(self, tmp_path: Path) -> None:
+        forward = LocalStore(tmp_path / "forward.db")
+        backward = LocalStore(tmp_path / "backward.db")
+        create, again, good = self._load()
+        for envelope in (create, again, good):
+            assert forward.apply_remote(envelope) is True
+        for envelope in (create, good, again):
+            assert backward.apply_remote(envelope) is True
+        # The read seam orders by (hlc_physical, hlc_logical): both delivery
+        # orders converge on the identical history.
+        assert forward.list_card_reviews(self.CARD) == backward.list_card_reviews(self.CARD)
+        assert [row.grade for row in forward.list_card_reviews(self.CARD)] == ["again", "good"]
+        forward.close()
+        backward.close()
+
+    def test_fail_loud_missing_node_and_non_card_node(self, store: LocalStore) -> None:
+        create, again, _good = self._load()
+        missing = self._review_envelope(again, "0192a000-0000-7000-8000-000000000c42", "0192a000-0000-7000-8000-000000000950")
+        with pytest.raises(NotFoundError, match="does not exist"):
+            store.apply_remote(missing)
+        # The failed apply rolled back whole — nothing recorded.
+        assert raw(store, "SELECT COUNT(*) FROM relay_operations WHERE op_id = ?", (missing.id,)) == [(0,)]
+        assert raw(store, "SELECT COUNT(*) FROM card_review") == [(0,)]
+
+        # An existing node WITHOUT the card system class fails the membership
+        # guard just as loud (MoveGuardError — the write-time-impossible law).
+        plain = RelayEnvelope.model_validate(
+            {
+                "protocolVersion": 3,
+                "workspaceId": WS,
+                "actorId": "0192a000-0000-7000-8000-000000000002",
+                "deviceId": "fixture-test-device",
+                "hlc": {"physical": 1727200000000, "logical": 0},
+                "opType": "object.create",
+                "timestamp": "2026-10-28T08:00:00.000Z",
+                "payload": {"objectId": NODE_PAGE, "classIds": [], "tagIds": [], "contentAst": []},
+            }
+        )
+        assert store.apply_remote(plain) is True
+        not_a_card = self._review_envelope(again, NODE_PAGE, "0192a000-0000-7000-8000-000000000951")
+        with pytest.raises(MoveGuardError, match="is not classed memorization card"):
+            store.apply_remote(not_a_card)
+        assert raw(store, "SELECT COUNT(*) FROM card_review") == [(0,)]
+
+    def test_reapplying_a_review_envelope_is_deduplicated(self, store: LocalStore) -> None:
+        """HISTORY-ONLY is not append-twice: the relay_operations dedupe (the
+        apply_remote seam) makes a re-delivered review envelope a no-op."""
+        create, again, _good = self._load()
+        for envelope in (create, again):
+            assert store.apply_remote(envelope) is True
+        assert store.apply_remote(again) is False
+        assert raw(store, "SELECT COUNT(*) FROM card_review WHERE card_id = ?", (self.CARD,)) == [(1,)]

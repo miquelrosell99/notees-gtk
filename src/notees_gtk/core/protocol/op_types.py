@@ -1,7 +1,7 @@
 """Known operation types for the relay sync protocol (v2).
 
 Mirrors ``packages/protocol/src/op-types.ts`` (the op registry): exactly
-these 24 op types have payload schemas server-side. The envelope schema itself
+these 25 op types have payload schemas server-side. The envelope schema itself
 accepts any non-empty ``opType`` string (see ``envelope.ts``); unknown op types
 — the retired ``class.delete`` included, rejected outright per the no-wire-compat
 law — are rejected at relay ingest with ``validation_failed`` (422). Producers
@@ -49,5 +49,7 @@ KNOWN_OP_TYPES: frozenset[str] = frozenset(
         # External-id mappings (importer/sync plugin substrate)
         "external_ref.set",
         "external_ref.delete",
+        # Memorization-card reviews (SRS history — SCHEMA.md "Memorization cards")
+        "card.review",
     ]
 )

@@ -8,6 +8,40 @@ history.
 
 ## 2026-10-28
 
+- **feat(protocol,store): the memorization-cards slice — `card` class rename
+  seeds, the card-family property manifest, and the `card.review` op.**
+  Lockstep with the monorepo's `memorization-cards` branch: (1) the `card`
+  system class (uuid …0011 unchanged) is renamed — display name
+  "Memorization card", icon ``mdiCardsPlayingOutline`` — carried in the GTK
+  seed-knowledge maps (``SYSTEM_CLASS_DISPLAY_NAMES`` / ``SYSTEM_CLASS_ICONS``);
+  (2) the six SRS schedule schemas join the seeds at the fixed …0004-
+  property block — ``CARD_FAMILY_SEED`` / ``card_property_uuid()``
+  (seeds.ts ``CARD_FAMILY_SEED`` / ``CARD_PROPERTY_UUIDS`` parity):
+  cardDue (datetime) + cardReps/cardInterval/cardEase/cardDifficulty/
+  cardStability (number), class-bound to `card`, all UNPINNED (the
+  2026-10-27 pinned roster is frozen; seed knowledge only — the GTK client
+  authors no seed envelopes); (3) the new wire op ``card.review``
+  (op-types.ts ``cardReviewPayload`` strict parity — cardId/grade
+  [again|hard|good|easy]/algorithm [sm2|fsrs]/stateBefore/stateAfter strict
+  ``CardSrsState`` records/reviewedAt/sessionId) lands HISTORY-ONLY in the
+  derived ``card_review`` table: one append-only row per graded review, NO
+  LWW gate, never writes property values, membership-only validation (the
+  node must exist and carry the card system class — ``NotFoundError`` /
+  ``MoveGuardError``, fail loud, whole apply rolled back). Read seam:
+  ``LocalStore.list_card_reviews`` (HLC order; the latest row's stateAfter
+  is the card's derived SRS state). Schema: GTK ``SCHEMA_VERSION`` 22 → 23
+  (web schema v34→v35 parity) — the canonical aux DDL gains the table + the
+  (card_id, hlc) index; the migration step is a no-op for fresh databases.
+  Fixture: ``card-review.json`` re-vendored BYTE-IDENTICAL from the branch
+  (sha256 verified) and replayed green. Tests: ``TestCardReviewFixture``
+  (full replay → two history rows + the fixture's end state, verbatim-wire-JSON
+  state snapshots, both-delivery-orders convergence, fail-loud arms,
+  re-delivery dedupe), ``TestCardReviewPayloads`` (registry strictness, enum
+  and shape rejections), ``TestCardFamilySeed`` (the rename decorations, the
+  six fixed ids, the datetime/number split); ``card_review`` joins the
+  both-orders convergence dump. **Verification:** `uv run pytest &&
+  uv run ruff check && uv run mypy src` — all green.
+
 - **feat(protocol)!: accept the retired `url` property type (url →
   text).** Lockstep with the monorepo's `url-type-retirement` branch: the
   dedicated `url` property type leaves the wire enum — the strict

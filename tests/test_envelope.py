@@ -78,6 +78,7 @@ class TestOpTypeRegistry:
                     "workspace.feature.set",
                     "external_ref.set",
                     "external_ref.delete",
+                    "card.review",
                 }
             )
             == KNOWN_OP_TYPES

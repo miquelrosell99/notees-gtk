@@ -61,6 +61,7 @@ WIRE_SINGLE_ENVELOPE_FIXTURES = [
 
 # wire/ parity port: fixtures holding {"comment": ..., "envelopes": [...]}.
 WIRE_ENVELOPE_LIST_FIXTURES = [
+    "wire/card-review.json",
     "wire/class-convert.json",
     "wire/class-extends-cycle.json",
     "wire/class-extends-m2m.json",
