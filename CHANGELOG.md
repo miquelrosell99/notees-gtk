@@ -8,6 +8,61 @@ history.
 
 ## 2026-10-28
 
+- **feat(ui,core): the memorization-cards hub + review session — the GTK
+  cards surface at web parity.** Follow-up of the `card.review` lockstep
+  slice; no wire, applier, schema, or fixture change anywhere (the fixture
+  corpus stays byte-pinned and untouched). What shipped: (1)
+  ``core/srs.py`` — the pure SM-2 / FSRS-5 scheduler ported
+  function-for-function from the monorepo's ``packages/domain/src/srs.ts``
+  (``next_sm2_state`` / ``next_fsrs_state`` / ``next_card_state`` /
+  ``is_card_due`` / ``retrievability`` / UTC day math), the mid-deck
+  algorithm-switch staleness contract preserved; the FSRS recurrence-arm
+  test vectors were produced BY RUNNING THE TYPESCRIPT REFERENCE ITSELF and
+  are asserted with exact ``==`` — bit-for-bit parity, no ULP drift. (2)
+  ``core/cards.py`` — the pure reads the chrome renders:
+  ``partition_cards_into_buckets`` + ``build_review_queue``
+  (``CardBuckets.tsx`` / ``reviewQueue.ts`` ports — due + fresh only,
+  future-due never enters the queue), the ``scheduledIsoOf`` due-day
+  grammar, the journal-derived ``card_srs_state`` (latest ``card.review``
+  ``stateAfter``), and the extends-aware ``card_members``. (3) The
+  **Cards hub**: a pinned "Memorization cards" sidebar row above the node
+  list (owner ruling 1), the bucket strip ("Review N due · M new" + fresh /
+  later counts), the plain member list with due-day labels, and the
+  sm2/fsrs **algorithm selector** over the new per-user prefs seam (owner
+  ruling 2 — the selector AND its ``PUT /api/me/prefs`` write path ship in
+  this slice); a node selection switches back to view/edit (the hub is a
+  sibling surface, not a node). (4) The **prefs read/write seam**:
+  ``NoteesClient.get_prefs()`` / ``patch_prefs()`` with the prefs.ts
+  ``normalizeUserPrefs`` port (fail loud on a non-object body, anything but
+  ``"sm2"`` → ``"fsrs"``), a device-local cache scalar beside the actor id,
+  and a once-per-login worker-thread fetch; offline or unreachable answers
+  **cached, else ``"fsrs"``** — the honest offline fallback. (5) The
+  **review session**: a modal ``Adw.Dialog`` (owner ruling 5) over the hub —
+  the front is the card's own content read-only through ``ast_to_view`` +
+  ``PageViewWidget``, the reveal adds the embedded children (the condensed
+  back), a front-only card shows "No answer on this card" and still grades
+  (Review Focus 1), the four-grade bar (Again destructive) answers to keys
+  **1–4 active only while the back is up** (the web's editor-interaction
+  rule) and Enter/Space flips the reveal from the front (a GTK convenience),
+  the header shows i/N, and the end summary counts reviewed + lapses (a
+  lapse = ``again`` on a card with reps > 0, the web semantics). Each grade
+  computes ``state_after`` on the pure scheduler, then enqueues the Task-4
+  envelope set — the due-day **date-chain ensure** (create at the
+  deterministic chain parent / restore when trashed — every normal read
+  filters active rows, so a trashed day page must come back before the
+  cardDue write anchors to it), the **property batch at the row's existing
+  idx** (cardDue point + reps/interval numbers + the ACTIVE algorithm's
+  fields only — the staleness contract; the first GTK ``property.set`` UI
+  writes), and the ``card.review`` history op last — with the optimistic
+  mirror apply and **one ``engine.sync`` per grade** (owner ruling 3); GTK
+  ships without the web's per-grade undo batch (owner ruling 7 — a mis-grade
+  needs a re-grade). The session's position/counters live in the pure
+  ``ReviewSessionState`` (headless-tested); a card that vanishes mid-session
+  is skipped, never graded. **Verification:** ``uv run pytest && uv run
+  ruff check && uv run mypy src`` — all green (1085 → 1092 tests through
+  the slice; the final gate runs 1092 passed, 4 skipped — the live-server
+  e2e self-skip — 3 xfailed).
+
 - **feat(protocol,store): the memorization-cards slice — `card` class rename
   seeds, the card-family property manifest, and the `card.review` op.**
   Lockstep with the monorepo's `memorization-cards` branch: (1) the `card`
