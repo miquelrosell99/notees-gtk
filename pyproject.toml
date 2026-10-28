@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "notees-gtk"
-version = "4.4.2"
+version = "4.4.3"
 description = "First-class GTK/Adwaita desktop client for Notees"
 readme = "README.md"
 license = {text = "AGPL-3.0"}
