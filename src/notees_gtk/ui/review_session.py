@@ -43,6 +43,16 @@ _GRADES: tuple[tuple[CardGrade, str], ...] = (
     ("easy", "Easy"),
 )
 
+#: Modifier chords that must NEVER grade (the web's meta/ctrl/alt ignore) —
+#: bare 1–4 only.
+_GRADE_MODIFIER_MASK = (
+    Gdk.ModifierType.CONTROL_MASK
+    | Gdk.ModifierType.ALT_MASK
+    | Gdk.ModifierType.SUPER_MASK
+    | Gdk.ModifierType.HYPER_MASK
+    | Gdk.ModifierType.META_MASK
+)
+
 
 @dataclass(frozen=True)
 class LoadedCard:
@@ -72,6 +82,7 @@ class ReviewSessionDialog(Adw.Dialog):
         self._on_grade = on_grade
         self._on_close = on_close
         self._current_state: CardSrsState | None = None
+        self._close_notified = False
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -90,6 +101,11 @@ class ReviewSessionDialog(Adw.Dialog):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key_pressed)
         self.add_controller(keys)
+
+        # The hub refresh must fire however the dialog goes away — the Close
+        # button, Esc, or the window manager — so the callback lives on the
+        # `closed` signal; the flag keeps a double close request idempotent.
+        self.connect("closed", self._on_dialog_closed)
 
         self._render_current()
 
@@ -173,12 +189,22 @@ class ReviewSessionDialog(Adw.Dialog):
         self._render_current()
 
     def _on_close_clicked(self, *_args: object) -> None:
-        self._on_close()
         self.close()
 
-    def _on_key_pressed(self, _controller: object, keyval: int, _keycode: int, _modifiers: object) -> bool:
-        """The key flow: Enter/Space flips the front; 1–4 grade the back
-        (active only while revealed, the web's editor-interaction rule)."""
+    def _on_dialog_closed(self, *_args: object) -> None:
+        """The single on_close funnel (Close button, Esc, WM close) — the
+        flag keeps a double close request idempotent; the callback (the hub
+        refresh) is safe to run twice anyway."""
+        if self._close_notified:
+            return
+        self._close_notified = True
+        self._on_close()
+
+    def _on_key_pressed(self, _controller: object, keyval: int, _keycode: int, state: Gdk.ModifierType) -> bool:
+        """The key flow: Enter/Space flips the front (modifier-agnostic, the
+        GTK submit-chord convention); 1–4 grade the back — active only while
+        revealed (the web's editor-interaction rule) AND bare, no modifier
+        chord (Ctrl+1 must not grade, the web's meta/ctrl/alt ignore)."""
         if self._state.finished:
             return False
         if not self._state.revealed:
@@ -186,6 +212,8 @@ class ReviewSessionDialog(Adw.Dialog):
                 self._state.reveal()
                 self._render_current()
                 return True
+            return False
+        if state & _GRADE_MODIFIER_MASK:
             return False
         for index, (grade, _label) in enumerate(_GRADES):
             if keyval == getattr(Gdk, f"KEY_{index + 1}"):
