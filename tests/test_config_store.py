@@ -84,3 +84,36 @@ def test_api_key_file_is_mode_600(config_home: Path) -> None:
 
 def test_load_api_key_none_when_unconfigured(config_home: Path) -> None:
     assert config_store.load_api_key() is None
+
+
+def test_cards_algorithm_round_trip(config_home: Path) -> None:
+    config_store.save_cards_algorithm("sm2")
+    assert config_store.load_cards_algorithm() == "sm2"
+    config_store.save_cards_algorithm("fsrs")
+    assert config_store.load_cards_algorithm() == "fsrs"
+
+
+def test_cards_algorithm_missing_key_is_the_fsrs_default(config_home: Path) -> None:
+    assert config_store.load_cards_algorithm() == "fsrs"
+
+
+def test_cards_algorithm_garbled_key_is_the_fsrs_default(config_home: Path) -> None:
+    """The honest offline answer: a garbled cache never half-reads."""
+    path = config_home / config_store.APP_DIR_NAME / "config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"cards_algorithm": "supermemo"}\n', encoding="utf-8")
+    assert config_store.load_cards_algorithm() == "fsrs"
+
+
+def test_cards_algorithm_rejects_a_non_grammar_value(config_home: Path) -> None:
+    with pytest.raises(ValueError, match="sm2"):
+        config_store.save_cards_algorithm("leitner")  # type: ignore[arg-type]
+    assert config_store.load_cards_algorithm() == "fsrs"
+
+
+def test_cards_algorithm_survives_other_config_writes(config_home: Path) -> None:
+    """The scalar persists beside the actor id through unrelated writes."""
+    config_store.save_cards_algorithm("sm2")
+    config_store.save_actor_id("actor-uuid")
+    assert config_store.load_cards_algorithm() == "sm2"
+    assert config_store.load_actor_id() == "actor-uuid"

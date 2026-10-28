@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from notees_gtk.config import ClientConfig
+from notees_gtk.core.api.client import DEFAULT_CARDS_ALGORITHM, CardsAlgorithm
 from notees_gtk.core.protocol.ids import new_uuid7
 
 __all__ = [
@@ -25,9 +26,11 @@ __all__ = [
     "ensure_device_id",
     "load_actor_id",
     "load_api_key",
+    "load_cards_algorithm",
     "load_config",
     "save_actor_id",
     "save_api_key",
+    "save_cards_algorithm",
     "save_config",
 ]
 
@@ -141,6 +144,29 @@ def load_api_key() -> str | None:
     """Return the persisted API key, or ``None`` when unconfigured."""
     value = _read_raw().get("api_key")
     return value if isinstance(value, str) and value else None
+
+
+def load_cards_algorithm() -> CardsAlgorithm:
+    """Read the device-cached memorization-cards scheduler (the prefs.ts
+    ``readDevicePrefScalar`` port): a missing or garbled key is the
+    ``"fsrs"`` default — the honest offline answer when the prefs store
+    cannot be reached."""
+    value = _read_raw().get("cards_algorithm")
+    return value if value in ("sm2", "fsrs") else DEFAULT_CARDS_ALGORITHM
+
+
+def save_cards_algorithm(value: CardsAlgorithm) -> None:
+    """Persist the device-cached scheduler scalar beside the actor id.
+
+    Raises:
+        ValueError: ``value`` is not ``"sm2"``/``"fsrs"`` — fail loud, never
+            cache a value the prefs grammar would reject.
+    """
+    if value not in ("sm2", "fsrs"):
+        raise ValueError(f"cards algorithm must be 'sm2' or 'fsrs', got {value!r}")
+    raw = _read_raw()
+    raw["cards_algorithm"] = value
+    _write_raw(raw)
 
 
 def ensure_device_id() -> str:

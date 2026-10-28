@@ -618,3 +618,85 @@ class TestClassifyResponse:
         assert ForbiddenError("x").status == 403
         assert RateLimitedError("x", retry_after=1.0).status == 429
         assert NetworkError("x").status is None
+
+
+class TestPrefs:
+    """The /api/me/prefs read/write seam (client-server.ts getPrefs/patchPrefs ports)."""
+
+    def test_get_prefs_normalizes_the_server_body(self) -> None:
+        body = {
+            "favorites": ["a", 7, "b"],
+            "recents": ["r1"],
+            "cardsAlgorithm": "sm2",
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers.get("Authorization") == "Bearer tok"
+            return httpx.Response(200, json=body)
+
+        client, requests = _make_client(
+            _router({("GET", "/api/me/prefs"): handler}), token="tok"
+        )
+        prefs = client.get_prefs()
+        assert prefs.favorites == ("a", "b")
+        assert prefs.recents == ("r1",)
+        assert prefs.cards_algorithm == "sm2"
+        assert len(requests) == 1
+
+    def test_get_prefs_unknown_algorithm_falls_back_to_fsrs(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"cardsAlgorithm": "supermemo"})
+
+        client, _ = _make_client(_router({("GET", "/api/me/prefs"): handler}))
+        assert client.get_prefs().cards_algorithm == "fsrs"
+
+    def test_get_prefs_missing_fields_default(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={})
+
+        client, _ = _make_client(_router({("GET", "/api/me/prefs"): handler}))
+        prefs = client.get_prefs()
+        assert prefs.favorites == ()
+        assert prefs.recents == ()
+        assert prefs.cards_algorithm == "fsrs"
+
+    @pytest.mark.parametrize("body", [[], "nope", 42, None])
+    def test_get_prefs_malformed_body_fails_loud(self, body: object) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=body)
+
+        client, _ = _make_client(_router({("GET", "/api/me/prefs"): handler}))
+        # ``None`` serializes as an empty body, so the JSON parse itself
+        # raises — a ValueError either way, never a half-read default.
+        with pytest.raises(ValueError):
+            client.get_prefs()
+
+    def test_get_prefs_non_object_body_fails_loud_with_the_normalize_message(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=["a", "b"])
+
+        client, _ = _make_client(_router({("GET", "/api/me/prefs"): handler}))
+        with pytest.raises(ValueError, match="malformed prefs body"):
+            client.get_prefs()
+
+    def test_patch_prefs_puts_the_scalar_and_normalizes_the_answer(self) -> None:
+        seen: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = _json_body(request)
+            return httpx.Response(200, json={"favorites": [], "recents": [], "cardsAlgorithm": "sm2"})
+
+        client, requests = _make_client(_router({("PUT", "/api/me/prefs"): handler}))
+        prefs = client.patch_prefs(cards_algorithm="sm2")
+        assert seen["body"] == {"cardsAlgorithm": "sm2"}
+        assert prefs.cards_algorithm == "sm2"
+        assert requests[0].method == "PUT"
+
+    def test_patch_prefs_rejects_a_non_grammar_value_before_any_request(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request expected")
+
+        client, requests = _make_client(httpx.MockTransport(handler))
+        with pytest.raises(ValueError, match="cards_algorithm"):
+            client.patch_prefs(cards_algorithm="leitner")  # type: ignore[arg-type]
+        assert requests == []

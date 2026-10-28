@@ -10,7 +10,8 @@ camelCase JSON; envelopes travel inside them per the protocol models.
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -30,11 +31,15 @@ from notees_gtk.core.protocol.models import (
 __all__ = [
     "MAX_BATCH_SIZE",
     "AuthResult",
+    "CardsAlgorithm",
+    "DEFAULT_CARDS_ALGORITHM",
     "NoteesClient",
     "RelayStats",
     "SnapshotMeta",
     "SnapshotUploadResult",
+    "UserPrefs",
     "WorkspaceRef",
+    "normalize_user_prefs",
 ]
 
 #: Maximum envelopes per ``POST /batch`` submission (WIRE.md).
@@ -42,6 +47,14 @@ MAX_BATCH_SIZE = 1000
 
 #: Base path of the v2 relay API (WIRE.md).
 RELAY_V2_BASE = "/api/relay/v2"
+
+#: The spaced-repetition scheduler for the memorization-cards surface
+#: (``prefs.ts`` ``CardsAlgorithm`` parity).
+CardsAlgorithm = Literal["sm2", "fsrs"]
+
+#: The algorithm when neither the prefs store nor the device cache carried
+#: one (``prefs.ts`` ``DEFAULT_CARDS_ALGORITHM`` parity).
+DEFAULT_CARDS_ALGORITHM: CardsAlgorithm = "fsrs"
 
 
 class AuthResult(BaseModel):
@@ -113,6 +126,48 @@ class RelayStats(BaseModel):
     max_hlc: Hlc
     restore_epoch: int
     latest_snapshot_hlc: Hlc | None
+
+
+def _as_id_list(input_value: Any) -> tuple[str, ...]:
+    """The prefs string-list filter (``prefs.ts`` ``normalizeUserPrefs``
+    ``asIds`` port): a list keeps its string entries, anything else is empty."""
+    if not isinstance(input_value, list):
+        return ()
+    return tuple(entry for entry in input_value if isinstance(entry, str))
+
+
+@dataclass(frozen=True)
+class UserPrefs:
+    """Per-user UI prefs (the ``prefs.ts`` ``UserPrefs`` port): favorites /
+    recents are server-side UI state, ``cards_algorithm`` is the
+    memorization-cards scheduler. Tuples keep the record immutable."""
+
+    favorites: tuple[str, ...]
+    recents: tuple[str, ...]
+    cards_algorithm: CardsAlgorithm
+
+
+def normalize_user_prefs(body: Any) -> UserPrefs:
+    """Server body → :class:`UserPrefs` (the ``prefs.ts:123``
+    ``normalizeUserPrefs`` port).
+
+    Field grammar is tolerant exactly like the web's normalize (list filters
+    keep strings, ``cardsAlgorithm`` accepts only ``"sm2"``/anything-else →
+    ``"fsrs"``), but a body that is not a JSON object at all fails loud —
+    the response is never half-read.
+
+    Raises:
+        ValueError: the body is not a JSON object.
+    """
+    if not isinstance(body, dict):
+        raise ValueError(f"malformed prefs body: expected a JSON object, got {type(body).__name__}")
+    raw_algorithm = body.get("cardsAlgorithm")
+    cards_algorithm: CardsAlgorithm = "sm2" if raw_algorithm == "sm2" else DEFAULT_CARDS_ALGORITHM
+    return UserPrefs(
+        favorites=_as_id_list(body.get("favorites")),
+        recents=_as_id_list(body.get("recents")),
+        cards_algorithm=cards_algorithm,
+    )
 
 
 class NoteesClient:
@@ -199,6 +254,36 @@ class NoteesClient:
         """
         data = self._get_json("/api/workspaces")
         return [WorkspaceRef.model_validate(item) for item in data["workspaces"]]
+
+    # ------------------------------------------------------------------ prefs
+
+    def get_prefs(self) -> UserPrefs:
+        """Fetch the account's per-user UI prefs (``GET /api/me/prefs``, the
+        ``client-server.ts:54`` port — header auth as the other methods).
+
+        Raises:
+            ValueError: The server answered a malformed body.
+            ApiError: The request failed (offline/unreachable surfaces as
+                :class:`NetworkError` — the caller falls back to the device
+                cache, the web's honest-offline posture).
+        """
+        return normalize_user_prefs(self._get_json("/api/me/prefs"))
+
+    def patch_prefs(self, *, cards_algorithm: CardsAlgorithm) -> UserPrefs:
+        """Merge-patch the account's prefs (``PUT /api/me/prefs``, the
+        ``client-server.ts`` ``patchPrefs`` port); this slice carries the
+        ``cardsAlgorithm`` scalar the hub selector writes. The server's
+        normalized answer is returned.
+
+        Raises:
+            ValueError: ``cards_algorithm`` is not ``"sm2"``/``"fsrs"``.
+            ApiError: The request failed.
+        """
+        if cards_algorithm not in ("sm2", "fsrs"):
+            raise ValueError(f"cards_algorithm must be 'sm2' or 'fsrs', got {cards_algorithm!r}")
+        data = self._send("PUT", "/api/me/prefs", json={"cardsAlgorithm": cards_algorithm}).json()
+        return normalize_user_prefs(data)
+
     # ------------------------------------------------------------------- relay
 
     def submit_batch(self, envelopes: list[RelayEnvelope]) -> list[str]:

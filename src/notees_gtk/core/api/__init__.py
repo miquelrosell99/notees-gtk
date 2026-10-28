@@ -1,14 +1,18 @@
 """REST API client layer for the Notees GTK client."""
 
 from notees_gtk.core.api.client import (
+    DEFAULT_CARDS_ALGORITHM,
     MAX_BATCH_SIZE,
     RELAY_V2_BASE,
     AuthResult,
+    CardsAlgorithm,
     NoteesClient,
     RelayStats,
     SnapshotMeta,
     SnapshotUploadResult,
+    UserPrefs,
     WorkspaceRef,
+    normalize_user_prefs,
 )
 from notees_gtk.core.api.errors import (
     ApiError,
@@ -35,6 +39,8 @@ __all__ = [
     "ApiError",
     "AuthResult",
     "AuthenticationError",
+    "CardsAlgorithm",
+    "DEFAULT_CARDS_ALGORITHM",
     "DEFAULT_RECONNECT_DELAYS",
     "ForbiddenError",
     "HelloInfo",
@@ -49,7 +55,9 @@ __all__ = [
     "ServerError",
     "SnapshotMeta",
     "SnapshotUploadResult",
+    "UserPrefs",
     "WorkspaceRef",
     "build_ws_url",
     "classify_response",
+    "normalize_user_prefs",
 ]

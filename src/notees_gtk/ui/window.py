@@ -14,6 +14,7 @@ when worthwhile, syncs once, then re-syncs every 30 seconds.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
@@ -24,7 +25,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
 from notees_gtk.config import ClientConfig
-from notees_gtk.core.api import ApiError, AuthenticationError, NoteesClient
+from notees_gtk.core.api import ApiError, AuthenticationError, CardsAlgorithm, NoteesClient, UserPrefs
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.sync.engine import SyncEngine
@@ -68,6 +69,11 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._workspace_id: str | None = None
         self._workspace_names: dict[str, str] = {}
         self._sync_source_id = 0
+        # The memorization-cards scheduler (Task-3 prefs seam): fetched once
+        # per login from GET /api/me/prefs, cached device-locally, broadcast
+        # to registered chrome listeners (the hub selector lands on top).
+        self._cards_algorithm: CardsAlgorithm | None = None
+        self._cards_algorithm_listeners: list[Callable[[CardsAlgorithm], None]] = []
 
         self._toast_overlay = Adw.ToastOverlay(hexpand=True, vexpand=True)
         self.set_content(self._toast_overlay)
@@ -161,6 +167,58 @@ class NoteesWindow(Adw.ApplicationWindow):
         if client is None:
             return
         run_in_worker(client.list_workspaces, on_done=self._on_workspaces_loaded, on_error=self._on_sync_error)
+        run_in_worker(client.get_prefs, on_done=self._on_prefs_loaded, on_error=self._on_prefs_unreachable)
+
+    # ------------------------------------------------------------------ prefs
+
+    def _on_prefs_loaded(self, prefs: UserPrefs) -> None:
+        """The GET /api/me/prefs answer: refresh the device cache and the
+        in-memory value (the web's getPrefs write-through posture)."""
+        config_store.save_cards_algorithm(prefs.cards_algorithm)
+        self._cards_algorithm = prefs.cards_algorithm
+        self._notify_cards_algorithm()
+
+    def _on_prefs_unreachable(self, _exc: Exception) -> None:
+        """Offline/unreachable at login: the cached value answers, else the
+        ``"fsrs"`` default — silently, like the web (an offline start is not
+        an error worth a toast)."""
+        self._cards_algorithm = config_store.load_cards_algorithm()
+        self._notify_cards_algorithm()
+
+    def cards_algorithm(self) -> CardsAlgorithm:
+        """The scheduler the memorization-cards chrome schedules with:
+        in-memory when the prefs fetch answered, else the device cache,
+        else ``"fsrs"``."""
+        if self._cards_algorithm is not None:
+            return self._cards_algorithm
+        return config_store.load_cards_algorithm()
+
+    def connect_cards_algorithm(self, listener: Callable[[CardsAlgorithm], None]) -> None:
+        """Register a chrome listener (the hub selector) notified on every
+        change, including the login-time fetch resolution."""
+        self._cards_algorithm_listeners.append(listener)
+
+    def set_cards_algorithm(self, value: CardsAlgorithm) -> None:
+        """The selector's write-through (the web's patchPrefs posture): the
+        device cache updates first (fail loud on a non-grammar value, before
+        anything mutates), the in-memory value broadcasts, and the PUT is
+        best-effort — when the server cannot be reached the cached value is
+        the honest offline answer and no error surfaces."""
+        config_store.save_cards_algorithm(value)
+        self._cards_algorithm = value
+        self._notify_cards_algorithm()
+        client = self._client
+        if client is not None:
+            run_in_worker(
+                partial(client.patch_prefs, cards_algorithm=value),
+                on_done=lambda _prefs: None,
+                on_error=lambda _exc: None,
+            )
+
+    def _notify_cards_algorithm(self) -> None:
+        value = self.cards_algorithm()
+        for listener in self._cards_algorithm_listeners:
+            listener(value)
 
     def _on_workspaces_loaded(self, workspaces: list[Any]) -> None:
         self._workspace_names = {ws.id: str(ws.name or ws.id) for ws in workspaces}
