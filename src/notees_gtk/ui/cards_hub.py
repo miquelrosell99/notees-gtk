@@ -18,7 +18,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Pango
 
-from notees_gtk.core.api import CardsAlgorithm
+from notees_gtk.core.api import DEFAULT_CARDS_ALGORITHM, CardsAlgorithm
 from notees_gtk.core.cards import CardBuckets
 
 __all__ = ["CardsHubView"]
@@ -50,12 +50,16 @@ class CardsHubView(Gtk.Box):
         title = Gtk.Label(label="Memorization cards", xalign=0, hexpand=True)
         title.add_css_class("title-2")
         header.append(title)
-        self._algorithm_dropdown = Gtk.DropDown()
+        self._algorithm_dropdown = Gtk.DropDown(model=Gtk.StringList.new([label for label, _value in _ALGORITHM_ENTRIES]))
         self._algorithm_dropdown.connect("notify::selected", self._on_algorithm_changed)
         header.append(Gtk.Label(label="Scheduler:", xalign=1))
         header.append(self._algorithm_dropdown)
         self.append(header)
         self.append(Gtk.Separator())
+        # The bare constructor leaves the dropdown WITHOUT a model (a dead
+        # selector — GTK_INVALID_LIST_POSITION, notify::selected can never
+        # fire): seed the entries and the platform default explicitly.
+        self.set_algorithm(DEFAULT_CARDS_ALGORITHM)
 
         buckets_row = Gtk.Box(spacing=12)
         self._review_button = Gtk.Button()
