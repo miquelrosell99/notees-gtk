@@ -3545,7 +3545,8 @@ class LocalStore:
 
     def _ensure_task_family_rows(self, env: RelayEnvelope) -> None:
         """The ``tasks`` enable path: author the task
-        class + the six property schemas + their bindings at the fixed seed
+        class + the six family schemas + the task→project relation + their
+        bindings at the fixed seed
         ids. Purely additive (INSERT OR IGNORE everywhere) so a server-seeded
         family is never clobbered — first writer wins, convergent on the
         single global log. The rows are a deterministic function of the enable
@@ -3601,21 +3602,33 @@ class LocalStore:
             self._conn.execute(
                 """INSERT OR IGNORE INTO property_schema
                      (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
-                      date_precision, date_qualified, display, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, ?, 1, ?, ?)""",
+                      date_precision, date_qualified, display, hide_when_empty, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, ?)""",
                 (
                     schema_id,
                     env.workspace_id,
                     entry.name,
                     entry.type,
+                    # The `project` relation is the family's only MULTI
+                    # schema (the seeds.ts spec's ``multi: true``).
+                    1 if entry.multi else 0,
                     # Global scope (the seed-scope
                     # audit — the whole task family is reusable, Status
-                    # explicitly so): NULL scope_class_ids; the family binds
+                    # explicitly so, and the project relation generically:
+                    # any node may participate in a project): NULL
+                    # scope_class_ids; the family binds
                     # the task class below (bindings are per-class config,
                     # zero availability semantics).
                     None,
                     json.dumps(designed_options),
+                    # The node-typed target filter (the `project` relation's
+                    # ["project"]; NULL for the scalar family schemas).
+                    json.dumps(list(entry.target_class_filter)) if entry.target_class_filter else None,
                     entry.display,
+                    # The schema-level hide-when-empty contract (the `project`
+                    # relation — a task with no project shows no empty row);
+                    # NULL for the rest (absent = unset).
+                    1 if entry.hide_when_empty else None,
                     ts,
                     ts,
                 ),

@@ -284,11 +284,22 @@ class TestAlwaysOnAndAncestors:
 
 
 class TestTaskFamilySeed:
-    def test_six_schemas_at_the_fixed_ids(self) -> None:
+    def test_seven_schemas_at_the_fixed_ids(self) -> None:
         names = [entry.name for entry in TASK_FAMILY_SEED]
-        assert names == ["Status", "Scheduled", "Deadline", "Priority", "Closed", "Recurrence"]
+        assert names == [
+            "Status",
+            "Scheduled",
+            "Deadline",
+            "Priority",
+            "Closed",
+            "Recurrence",
+            "Project",
+        ]
         assert task_property_uuid("taskStatus") == "00000000-0000-0000-0003-000000000001"
         assert task_property_uuid("taskRecurrence") == "00000000-0000-0000-0003-000000000006"
+        # The task→project membership relation (the seeds.ts follow-up):
+        # the next genuinely-free slot in the workflow-properties block.
+        assert task_property_uuid("project") == "00000000-0000-0000-0003-000000000012"
 
     def test_deterministic_option_ids(self) -> None:
         status = TASK_FAMILY_SEED[0]
@@ -320,6 +331,28 @@ class TestTaskFamilySeed:
         assert by_property["taskStatus"].type == "select"
         assert by_property["taskPriority"].type == "select"
         assert by_property["taskRecurrence"].type == "select"
+        assert by_property["project"].type == "object"
+
+    def test_the_project_relation_carries_the_full_spec_shape(self) -> None:
+        """The task→project membership relation (seeds.ts
+        ``SYSTEM_PROPERTY_SPECS.project``): object-typed, MULTI, filter
+        ["project"], the schema-level hide-when-empty contract, GLOBAL scope
+        (no class locality rides the entry) — and the binding seeds UNPINNED
+        (no declared pin set carries it; the manifest stores no pin flag)."""
+        by_property = {entry.property: entry for entry in TASK_FAMILY_SEED}
+        project = by_property["project"]
+        assert project.name == "Project"
+        assert project.multi is True
+        assert project.target_class_filter == ("project",)
+        assert project.hide_when_empty is True
+        assert project.display is None
+        # The six family schemas stay single-value, filter-free, and
+        # show-their-empty-row (hide-when-empty absent).
+        for name in ("taskStatus", "taskScheduled", "taskDeadline", "taskPriority", "taskClosedDate", "taskRecurrence"):
+            entry = by_property[name]
+            assert entry.multi is False
+            assert entry.target_class_filter == ()
+            assert entry.hide_when_empty is False
 
     def test_status_options_carry_the_designed_icons_and_colors(self) -> None:
         """The status options (seeds.ts ``TASK_STATUS_OPTIONS`` lockstep):

@@ -647,7 +647,7 @@ def is_always_on_system_class(name: str) -> bool:
 #
 # Deterministic select-option ids for the APPLIER-side
 # task-family seed-ensure (the ``workspace.feature.set {feature:"tasks",
-# enabled:true}`` path authors the six schemas at apply time, so its option
+# enabled:true}`` path authors the family schemas at apply time, so its option
 # ids must be fixed, not client-random). The select-option namespace
 # (``…0004-…``) continues after the role options (``…0001–…0007``); appended,
 # never reused (seeds.ts ``TASK_STATUS_OPTION_UUIDS`` /
@@ -677,6 +677,12 @@ _TASK_PROPERTY_UUIDS: dict[str, str] = {
     "taskPriority": "00000000-0000-0000-0003-000000000004",
     "taskClosedDate": "00000000-0000-0000-0003-000000000005",
     "taskRecurrence": "00000000-0000-0000-0003-000000000006",
+    # The task→project membership relation (seeds.ts ``SYSTEM_PROPERTY_UUIDS``
+    # …0012 — object-typed, MULTI, filter ["project"], GLOBAL scope; only the
+    # class-local binding row on `task` is task-specific, the url→source
+    # precedent). The next genuinely-free slot in the workflow-properties
+    # block (…001–…011 used).
+    "project": "00000000-0000-0000-0003-000000000012",
 }
 
 
@@ -702,19 +708,30 @@ class TaskFamilySeedEntry:
     # three date bindings (Scheduled/Deadline/Closed) are DATETIME-typed per
     # the amended time-of-day law (SCHEMA.md "Datetime") — values may carry a
     # wall-clock ``time`` beside the day-node anchor; full-day stays default.
-    type: Literal["select", "datetime"]
+    type: Literal["select", "datetime", "object"]
     options: tuple[TaskSeedOption, ...] = ()
     # the value-display position rides
     # the SCHEMA entry the ensure authors — only the Status schema defaults
     # to "bullet" (the status value rides the block bullet as an icon
     # button); the rest stay NULL ("panel", the properties section).
     display: Literal["panel", "bullet", "inline"] | None = None
+    # The `project` relation's cardinality: MULTI — a task may span several
+    # projects (the seeds.ts spec's ``multi: true``; absent = single-value).
+    multi: bool = False
+    # Node-typed target filter as seed class names (the `project` relation's
+    # ["project"] — PG6 extends-aware apply-time validation); empty = none.
+    target_class_filter: tuple[str, ...] = ()
+    # The schema-level hide-when-empty render contract (the `project`
+    # relation — the first seed to carry it): true = an unvalued carrier
+    # shows no empty row; False = absent (NULL at the row).
+    hide_when_empty: bool = False
 
 
-#: The task-family seed-ensure manifest: six schemas + their task-class
-#: bindings, authored idempotently by the store applier when the ``tasks``
-#: feature enables (closes the "task property schemas never authored" gap).
-#: Fixed ids end to end (schema + option uuids above). Binding rows carry
+#: The task-family seed-ensure manifest: the six family schemas + the
+#: task→project relation + their task-class bindings, authored idempotently
+#: by the store applier when the ``tasks`` feature enables (closes the "task
+#: property schemas never authored" gap). Fixed ids end to end (schema +
+#: option uuids above). Binding rows carry
 #: NO order (``sequence`` retired from the binding;
 #: class panels render alphabetically by property name). The Status options
 #: carry the designed glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
@@ -753,6 +770,26 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
     # Migrated recurrence rides as a plain select (no engine executes it);
     # authored optionless until the recurrence spec lands.
     TaskFamilySeedEntry("taskRecurrence", "Recurrence", "select"),
+    # The task→project membership relation (seeds.ts ``SYSTEM_PROPERTY_SPECS``
+    # entry): object-typed ({nodeId} refs), MULTI — a task may span several
+    # projects; ``target_class_filter ["project"]`` (PG6 extends-aware
+    # apply-time validation). The SCHEMA seeds at GLOBAL scope per the
+    # seed-scope audit (the relation is generically reusable — meetings,
+    # sources, any node may participate) while the class-local binding row
+    # on `task` is the only task-specific piece (bindings are per-class
+    # config, zero availability semantics). ``hide_when_empty``: a task with
+    # no project shows no empty row (the first seed to carry the schema-level
+    # contract). The binding seeds UNPINNED — the pin roster declares no set
+    # carrying it (the class_property table stores no pin flag; the row is a
+    # plain presence row like the family's).
+    TaskFamilySeedEntry(
+        "project",
+        "Project",
+        "object",
+        multi=True,
+        target_class_filter=("project",),
+        hide_when_empty=True,
+    ),
 )
 
 

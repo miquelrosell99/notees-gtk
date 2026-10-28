@@ -631,7 +631,8 @@ class TestWorkspaceFeatureSetFixture:
             assert instance.feature_rows(WS)[2][0:2] == ("sources", True)
             assert instance.feature_rows(WS)[2][5] == self.SOURCES_SETTINGS
             # The losing enable still authored the family: the task class and
-            # its six schemas exist, archived per the winning disable.
+            # its seven schemas (six select/datetime + the object-typed
+            # project relation) exist, archived per the winning disable.
             assert raw(instance, "SELECT active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [(0,)]
             assert raw(
                 instance,
@@ -639,7 +640,8 @@ class TestWorkspaceFeatureSetFixture:
                 (self.TASK_CLASS,),
             ) == [(0,)]
             assert raw(instance, "SELECT COUNT(*) FROM property_schema WHERE type IN ('select', 'datetime')") == [(6,)]
-            assert raw(instance, "SELECT COUNT(*) FROM class_property WHERE class_id = ?", (self.TASK_CLASS,)) == [(6,)]
+            assert raw(instance, "SELECT COUNT(*) FROM property_schema WHERE type = 'object'") == [(1,)]
+            assert raw(instance, "SELECT COUNT(*) FROM class_property WHERE class_id = ?", (self.TASK_CLASS,)) == [(7,)]
 
         # The flips are pure active-bit projections: both orders converge
         # byte-identical on every derived table the toggles touch.

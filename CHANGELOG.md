@@ -111,6 +111,46 @@ history.
   both-orders convergence dump. **Verification:** `uv run pytest &&
   uv run ruff check && uv run mypy src` — all green.
 
+- **feat(seed): the `project` property seed — the task→project membership
+  relation joins the task-family manifest as the seventh authored schema;
+  the store ensure authors it at the full spec shape.** The GTK side of the
+  monorepo's `project` seed (plain seed per the weblink-extends precedent —
+  zero wire cost, seed convergence only), ported from
+  `packages/domain/src/seeds.ts` (`SYSTEM_PROPERTY_UUIDS.project` …0012 +
+  the `SYSTEM_PROPERTY_SPECS` entry):
+  - **The constant** (`core/protocol/features.py` ``_TASK_PROPERTY_UUIDS``)
+    gains ``project`` = …0003-000000000012 — the next genuinely-free slot in
+    the workflow-properties block (…001–…011 used), resolved through
+    ``task_property_uuid`` like the family.
+  - **The manifest** (``TASK_FAMILY_SEED``) grows the seventh entry:
+    object-typed, MULTI, ``target_class_filter ("project",)`` (PG6
+    extends-aware validation), ``hide_when_empty`` — the schema-level
+    hide-when-empty contract, the first seed to carry it — at GLOBAL scope
+    (the seed-scope audit: any node may participate in a project; only the
+    class-local binding row on `task` is task-specific, the url→source
+    precedent). ``TaskFamilySeedEntry`` gains the ``multi`` /
+    ``target_class_filter`` / ``hide_when_empty`` fields (default-off, the
+    six family rows untouched). The binding seeds UNPINNED — the pin roster
+    declares no set carrying it, and the `class_property` table stores no
+    pin flag (a plain presence row like the family's).
+  - **The store ensure** (`data/store.py` ``_ensure_task_family_rows``) now
+    authors the schema row with ``multi`` / ``target_class_filter`` /
+    ``hide_when_empty`` per entry (the ``project`` row: 1 /
+    ``["project"]`` / 1) — INSERT OR IGNORE everywhere, so a server-seeded
+    workspace converges untouched (first writer wins).
+  - **The tests** pin the shape so the drift cannot recur:
+    ``test_features.py`` pins the seven-name roster, the …0012 id, and the
+    full spec shape (multi/filter/hide-when-empty on `project`; the six
+    family rows default-off); ``test_store.py`` pins the authored row
+    (object/Multi/NULL scope/``["project"]``/hide-when-empty + the plain
+    binding) and the 7-schema/7-binding counts; the racing-toggle fixture
+    replay (``test_store_fixtures.py``) expects the object-typed seventh
+    schema and the seven bindings.
+  - **Fixtures untouched** — the seed change emits server-side seed
+    envelopes; the corpus stays byte-identical. **Verification:** `uv run
+    pytest && uv run ruff check && uv run mypy src` — 1001 passed (+2), 4
+    skipped, 3 xfailed (pre-existing lockstep-pending xfails); ruff/mypy
+    clean.
 - **feat(protocol)!: accept the retired `url` property type (url →
   text).** Lockstep with the monorepo's `url-type-retirement` branch: the
   dedicated `url` property type leaves the wire enum — the strict

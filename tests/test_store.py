@@ -2812,23 +2812,51 @@ class TestWorkspaceFeatureToggle:
         assert raw_rows(store, "SELECT name, icon, active FROM class WHERE id = ?", (self.TASK_CLASS,)) == [
             ("Task", "mdiCheckboxMarkedCircleOutline", 1)
         ]
-        # Six schemas + bindings at the fixed ids, seeded before any real
+        # Seven schemas + bindings at the fixed ids (the six family rows +
+        # the task→project relation), seeded before any real
         # binding write (hlc 0/0, NULL actor — any later class.property.set
         # wins the row LWW).
         assert raw_rows(store, "SELECT COUNT(*) FROM property_schema WHERE id LIKE '00000000-0000-0000-0003-%'") == [
-            (6,)
+            (7,)
         ]
         assert raw_rows(
             store,
             "SELECT COUNT(*) FROM class_property WHERE class_id = ?"
             " AND hlc_physical = 0 AND hlc_logical = 0 AND actor_id IS NULL",
             (self.TASK_CLASS,),
-        ) == [(6,)]
+        ) == [(7,)]
         options = raw_rows(
             store,
             "SELECT options FROM property_schema WHERE id = '00000000-0000-0000-0003-000000000001'",
         )
         assert '"00000000-0000-0000-0004-000000000008"' in options[0][0]  # backlog option id
+
+    def test_tasks_enable_authors_the_project_relation_at_the_full_spec_shape(self, store: LocalStore) -> None:
+        """The task→project membership relation (the seeds.ts follow-up):
+        object-typed, MULTI, filter ["project"], the schema-level
+        hide-when-empty contract, GLOBAL scope (NULL scope_class_ids) — and
+        a plain task-class binding row like the family's (unpinned: the
+        binding table stores no pin flag)."""
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        assert raw_rows(
+            store,
+            "SELECT name, type, multi, scope_class_ids, target_class_filter, hide_when_empty"
+            " FROM property_schema WHERE id = '00000000-0000-0000-0003-000000000012'",
+        ) == [("Project", "object", 1, None, '["project"]', 1)]
+        # The six family schemas stay single-value, filter-free, and without
+        # the hide-when-empty contract.
+        assert raw_rows(
+            store,
+            "SELECT COUNT(*) FROM property_schema WHERE id LIKE '00000000-0000-0000-0003-%'"
+            " AND multi = 0 AND target_class_filter IS NULL AND hide_when_empty IS NULL",
+        ) == [(6,)]
+        assert raw_rows(
+            store,
+            "SELECT COUNT(*) FROM class_property WHERE class_id = ? AND property_schema_id"
+            " = '00000000-0000-0000-0003-000000000012'"
+            " AND hlc_physical = 0 AND hlc_logical = 0 AND actor_id IS NULL",
+            (self.TASK_CLASS,),
+        ) == [(1,)]
 
     def test_task_family_seed_pins_the_designed_status_style_and_display(self, store: LocalStore) -> None:
         """The Status options carry the designed glyphs (fixed ids,
@@ -2874,6 +2902,7 @@ class TestWorkspaceFeatureToggle:
             "00000000-0000-0000-0003-000000000004": None,  # Priority
             "00000000-0000-0000-0003-000000000005": None,  # Closed
             "00000000-0000-0000-0003-000000000006": None,  # Recurrence
+            "00000000-0000-0000-0003-000000000012": None,  # Project
         }
         binding_columns = {row[1] for row in raw_rows(store, "PRAGMA table_info(class_property)")}
         assert "display" not in binding_columns
