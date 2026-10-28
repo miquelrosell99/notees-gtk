@@ -8,6 +8,18 @@ history.
 
 ## 2026-10-28
 
+- **fix(tests): the realtime CI flakes — wait for the stub's close-code
+  record instead of asserting right after stop.** Mechanism: both
+  `test_sync_engine.py::TestRealtime::test_start_realtime_applies_remote_ops_frame_end_to_end`
+  and `test_ws_client.py::TestLifecycle::test_hello_dispatches_and_updates_state`
+  asserted the stub relay's recorded close code immediately after
+  `stop_realtime()` / `client.stop()`; the stub records the code on its own
+  handler thread, so on a slow scheduler the assertion ran before the record
+  landed (`assert [] == [1000]`). Both assertions now poll through the
+  suite's existing `wait_until` helper (deadline-based, 5 s default). No
+  production code touched. Verified: each test looped 25× green (was 4/20
+  and 1/20 failing before the fix), the two containing files and the full
+  suite green.
 - **feat(ui,core): the memorization-cards hub + review session — the GTK
   cards surface at web parity.** Follow-up of the `card.review` lockstep
   slice; no wire, applier, schema, or fixture change anywhere (the fixture

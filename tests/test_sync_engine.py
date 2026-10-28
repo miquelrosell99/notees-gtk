@@ -611,7 +611,9 @@ class TestRealtime:
                 assert store.node(WS, uid("live-node")).content_plain == "live"
             finally:
                 engine.stop_realtime()
-            assert stub.close_codes == [1000]
+            # The stub records the close code on its own handler thread; wait
+            # for it instead of asserting immediately after stop.
+            assert wait_until(lambda: stub.close_codes == [1000])
 
     def test_hello_with_newer_latest_seq_triggers_pull_from_cursor(self, store: LocalStore) -> None:
         def on_connect(conn: object, _index: int) -> None:

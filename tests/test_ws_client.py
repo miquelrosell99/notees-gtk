@@ -141,7 +141,9 @@ class TestLifecycle:
                 assert client.failed is False
             finally:
                 client.stop()
-            assert stub.close_codes and stub.close_codes[-1] == 1000
+            # The stub records the close code on its own handler thread; wait
+            # for it instead of asserting immediately after stop.
+            assert wait_until(lambda: stub.close_codes and stub.close_codes[-1] == 1000)
 
 
 class TestFrameDispatch:
