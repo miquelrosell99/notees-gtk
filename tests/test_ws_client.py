@@ -126,7 +126,9 @@ class TestLifecycle:
             assert not client.running
             time.sleep(0.5)  # well beyond the fast reconnect schedule
             assert stub.connection_count() == 1  # NO reconnect
-            assert stub.close_codes == [1000]  # clean close code
+            # The stub records the close code on its own handler thread; wait
+            # for it instead of asserting immediately after stop.
+            assert wait_until(lambda: stub.close_codes == [1000])  # clean close code
 
     def test_hello_dispatches_and_updates_state(self) -> None:
         with WsRelayStub(on_connect=lambda conn, _i: conn.send(json.dumps(HELLO))) as stub:
