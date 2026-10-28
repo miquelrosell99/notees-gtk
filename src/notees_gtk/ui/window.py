@@ -310,7 +310,11 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def _load_session_card(self, card_id: str) -> LoadedCard | None:
         """The session's lazy card read: the node, its embedded children
-        (the back), and the derived SRS state before grading."""
+        (the back), and the derived SRS state before grading — the
+        JOURNAL-derived state (``card_srs_state`` over ``list_card_reviews``),
+        the plan-sanctioned GTK divergence from the web session's
+        effective-properties read (``core.cards.card_srs_state`` is the
+        journal twin of that read)."""
         store = self._require_store()
         if store is None or self._workspace_id is None:
             return None
@@ -336,9 +340,11 @@ class NoteesWindow(Adw.ApplicationWindow):
         """The grade's write path (owner ruling 3 — enqueue + one sync per
         grade; ruling 7 — no undo journal): the Task-4 envelopes in order —
         the due-day date-chain ensure, the property batch at the row's
-        existing idx, the card.review history op last — all enqueued with
+        existing idx, the ``card.review`` history op last — all enqueued with
         the optimistic mirror apply (the ``_enqueue_tag_write`` pattern).
-        A structural guard failure toasts; the session still advances."""
+        A structural guard failure toasts and stops the loop; the envelopes
+        ALREADY enqueued stay in the outbox (the fail-loud house posture —
+        the loud report, never a silent partial undo)."""
         store = self._require_store()
         workspace_id = self._workspace_id
         if store is None or workspace_id is None:
