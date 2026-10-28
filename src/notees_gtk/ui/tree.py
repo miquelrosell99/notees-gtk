@@ -41,26 +41,44 @@ def node_display_name(row: NodeRow) -> str:
 
 
 class NodeTreeSidebar(Gtk.Box):
-    """Workspace drop-down above a scrollable, flat-indented node list."""
+    """Workspace drop-down, the pinned Memorization-cards nav row, and a
+    scrollable flat-indented node list."""
 
     def __init__(
         self,
         on_workspace_selected: Callable[[str], None],
         on_node_selected: Callable[[str], None],
+        on_cards_selected: Callable[[], None],
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._on_workspace_selected = on_workspace_selected
         self._on_node_selected = on_node_selected
+        self._on_cards_selected = on_cards_selected
         self._workspaces: list[WorkspaceRef] = []
         self._rows: list[NodeRow] = []
         self._expanded: set[str] = set()
         self._updating_dropdown = False
+        self._selecting_cards = False
 
         self._dropdown = Gtk.DropDown(hexpand=True)
         self._dropdown.connect("notify::selected", self._on_dropdown_changed)
         dropdown_frame = Gtk.Box(margin_start=12, margin_end=12, margin_top=12)
         dropdown_frame.append(self._dropdown)
         self.append(dropdown_frame)
+
+        # The pinned hub nav row (the CardsHub surface's sidebar entry): a
+        # one-item list above a separator, above the scrollable node list.
+        self._cards_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self._cards_list.connect("row-selected", self._on_cards_row_selected)
+        cards_row = Gtk.ListBoxRow()
+        cards_row_box = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=3, margin_bottom=3)
+        cards_row.set_child(cards_row_box)
+        cards_row_box.append(Gtk.Image(icon_name="view-paged-symbolic"))
+        cards_label = Gtk.Label(label="Memorization cards", xalign=0, hexpand=True)
+        cards_row_box.append(cards_label)
+        self._cards_list.append(cards_row)
+        self.append(self._cards_list)
+        self.append(Gtk.Separator())
 
         scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self.append(scrolled)
@@ -122,6 +140,7 @@ class NodeTreeSidebar(Gtk.Box):
         by_id = {row.id: row for row in self._rows}
         if node_id not in by_id:
             return False
+        self.unselect_cards()
         # Expand the ancestor chain (cycle-guarded like _visible_rows) so the
         # target row is actually built, then rebuild the list.
         expanded_any = False
@@ -143,7 +162,29 @@ class NodeTreeSidebar(Gtk.Box):
             child = child.get_next_sibling()
         return False
 
+    def select_cards(self) -> None:
+        """Select the pinned Memorization-cards row (unselecting the node
+        list) — the window's programmatic hub entry, mirroring user click."""
+        self._selecting_cards = True
+        self._list.unselect_all()
+        self._selecting_cards = False
+        row = self._cards_list.get_row_at_index(0)
+        if row is not None and self._cards_list.get_selected_row() is not row:
+            self._cards_list.select_row(row)
+
+    def unselect_cards(self) -> None:
+        """Drop the pinned row's selection (a node selection takes over)."""
+        self._cards_list.unselect_all()
+
     # ----------------------------------------------------------------- private
+
+    def _on_cards_row_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        if row is None or self._selecting_cards:
+            return
+        self._selecting_cards = True
+        self._list.unselect_all()
+        self._selecting_cards = False
+        self._on_cards_selected()
 
     def _on_dropdown_changed(self, *_args: object) -> None:
         if self._updating_dropdown:
@@ -154,6 +195,8 @@ class NodeTreeSidebar(Gtk.Box):
 
     def _on_row_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is not None:
+            if not self._selecting_cards:
+                self.unselect_cards()
             self._on_node_selected(str(row.node_id))
 
     def _visible_rows(self) -> list[tuple[NodeRow, int, bool]]:

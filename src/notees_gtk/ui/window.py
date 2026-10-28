@@ -15,6 +15,7 @@ when worthwhile, syncs once, then re-syncs every 30 seconds.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from functools import partial
 from typing import Any
 
@@ -26,7 +27,14 @@ from gi.repository import Adw, GLib, Gtk
 
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, AuthenticationError, CardsAlgorithm, NoteesClient, UserPrefs
+from notees_gtk.core.cards import (
+    CardBucketRow,
+    card_due_day,
+    card_members,
+    partition_cards_into_buckets,
+)
 from notees_gtk.core.protocol.clock import Clock
+from notees_gtk.core.protocol.features import card_property_uuid
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.sync.engine import SyncEngine
 from notees_gtk.data.errors import CycleError, MoveGuardError
@@ -35,6 +43,7 @@ from notees_gtk.ui import config_store
 from notees_gtk.ui.alias_ops import alias_repoint_candidates, alias_update_envelope
 from notees_gtk.ui.ast_render import ast_to_plaintext, ast_to_view
 from notees_gtk.ui.brand import content_colors
+from notees_gtk.ui.cards_hub import CardsHubView
 from notees_gtk.ui.editor import EditorView
 from notees_gtk.ui.login import LoginView
 from notees_gtk.ui.page_view import PageViewWidget
@@ -128,6 +137,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._sidebar = NodeTreeSidebar(
             on_workspace_selected=self._on_workspace_selected,
             on_node_selected=self._show_node,
+            on_cards_selected=self._show_cards_hub,
         )
         sidebar_view = Adw.ToolbarView()
         sidebar_view.add_top_bar(Adw.HeaderBar(show_title=False))
@@ -145,6 +155,14 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._content_stack = Gtk.Stack()
         self._content_stack.add_named(self._page_view, "view")
         self._content_stack.add_named(self._editor, "edit")
+        self._cards_hub = CardsHubView(
+            on_review=self._start_review,
+            on_algorithm_selected=self.set_cards_algorithm,
+        )
+        self._content_stack.add_named(self._cards_hub, "cards")
+        # The login-time prefs fetch may resolve after the hub was built —
+        # keep the selector honest when it does.
+        self.connect_cards_algorithm(self._cards_hub.set_algorithm)
 
         self._edit_toggle = Gtk.ToggleButton(label="Edit")
         self._edit_toggle.connect("toggled", self._on_edit_toggled)
@@ -219,6 +237,41 @@ class NoteesWindow(Adw.ApplicationWindow):
         value = self.cards_algorithm()
         for listener in self._cards_algorithm_listeners:
             listener(value)
+
+    # ------------------------------------------------------------ cards hub
+
+    def _show_cards_hub(self) -> None:
+        """The hub surface: a sibling of view/edit in the content stack,
+        never a node — the pinned sidebar row selects it, a node selection
+        switches back (``_show_node``)."""
+        self._refresh_hub()
+        self._sidebar.select_cards()
+        self._content_stack.set_visible_child_name("cards")
+
+    def _refresh_hub(self) -> None:
+        """Recompute the hub from the live mirror: card members → bucket
+        rows over the effective cardDue read → the pure partition. Runs on
+        workspace sync, interval sync, and post-session close (the last via
+        ``_show_cards_hub``)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        rows = store.nodes(self._workspace_id)
+        members = card_members(rows, store.class_extends_edges())
+        due_schema = card_property_uuid("cardDue")
+        bucket_rows = [
+            CardBucketRow(member.id, card_due_day(store.get_effective_properties(member.id), due_schema))
+            for member in members
+        ]
+        today = datetime.now().date().isoformat()
+        buckets = partition_cards_into_buckets(bucket_rows, today)
+        names = {member.id: node_display_name(member) for member in members}
+        self._cards_hub.show_hub(buckets=buckets, names=names, algorithm=self.cards_algorithm())
+
+    def _start_review(self, card_ids: list[str]) -> None:
+        """The hub's Review action — the session dialog itself lands in this
+        slice's next task; until then say so honestly."""
+        self.show_toast("The review session opens in the next slice")
 
     def _on_workspaces_loaded(self, workspaces: list[Any]) -> None:
         self._workspace_names = {ws.id: str(ws.name or ws.id) for ws in workspaces}
@@ -301,6 +354,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         if store is None or self._workspace_id is None:
             return
         self._sidebar.set_nodes(store.nodes(self._workspace_id))
+        self._refresh_hub()
 
     def _show_node(self, node_id: str) -> None:
         store = self._require_store()
@@ -309,6 +363,8 @@ class NoteesWindow(Adw.ApplicationWindow):
         row = store.node(self._workspace_id, node_id)
         if row is None:
             return
+        self._sidebar.unselect_cards()
+        self._content_stack.set_visible_child_name("view")
         title = node_display_name(row)
         self._page_view.show_page(
             title,
