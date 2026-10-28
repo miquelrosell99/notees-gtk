@@ -72,6 +72,19 @@ class TestSm2:
         state = next_card_state(UNSEEN_CARD_STATE, "hard", "sm2", TODAY)
         assert state.ease == 2.3600000000000003  # TS reference vector, exact ==
 
+    def test_interval_rounding_is_half_up_not_bankers(self) -> None:
+        """Math.round parity: an exact odd ``.5`` rounds UP. ``121 * 0.5`` is
+        exactly ``60.5`` in IEEE doubles (0.5 is a power of two — asserted
+        here so the vector cannot silently stop pinning the half-up case);
+        Python's banker's ``round(60.5)`` is 60 while the JS reference's
+        ``Math.round(60.5)`` is 61."""
+        assert 121 * 0.5 == 60.5
+        assert round(60.5) == 60  # the Python pitfall this vector pins
+        state = reviewed_state(due="2026-10-01", reps=2, interval=121, ease=0.5)
+        graded = next_card_state(state, "good", "sm2", TODAY)
+        assert graded.interval == 61
+        assert graded.due == "2026-12-28"
+
 
 class TestFsrs:
     def test_first_good_initializes_difficulty_and_stability(self) -> None:

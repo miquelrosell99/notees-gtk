@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from math import exp
+from math import exp, floor
 from typing import Literal
 
 __all__ = [
@@ -134,6 +134,15 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, value))
 
 
+def _round_half_up(value: float) -> int:
+    """The ``Math.round`` port — half-up, NOT Python's banker's ``round()``:
+    an exact odd ``.5`` rounds UP here (``round(60.5) == 60`` in Python,
+    ``Math.round(60.5) == 61`` in JS). The schedules only produce
+    non-negative intervals, so ``floor(x + 0.5)`` matches the reference
+    bit-for-bit."""
+    return floor(value + 0.5)
+
+
 def add_days(iso: str, days: int) -> str:
     """UTC day arithmetic: ``iso`` + ``days``, back to ``YYYY-MM-DD``.
 
@@ -176,7 +185,7 @@ def next_sm2_state(state: CardSrsState, grade: CardGrade, today_iso: str) -> Car
             interval = 6
         else:
             prior_ease = state.ease if state.ease is not None else SM2_INITIAL_EASE
-            interval = round(state.interval * prior_ease)
+            interval = _round_half_up(state.interval * prior_ease)
     return CardSrsState(
         due=add_days(today_iso, interval),
         reps=reps,
@@ -242,7 +251,7 @@ def next_fsrs_state(state: CardSrsState, grade: CardGrade, today_iso: str) -> Ca
             * (exp((1 - r) * _w(10)) - 1)
         )
 
-    interval = max(0, round(next_stability))
+    interval = max(0, _round_half_up(next_stability))
     reps = 0 if rating == 1 else state.reps + 1
     return CardSrsState(
         due=add_days(today_iso, interval),
