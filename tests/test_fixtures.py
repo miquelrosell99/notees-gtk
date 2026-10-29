@@ -69,6 +69,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-link-assertion.json",
     "wire/class-link.json",
     "wire/class-parentless-role.json",
+    "wire/class-display-template.json",
     "wire/class-property-active.json",
     "wire/class-property-defaults.json",
     "wire/class-property-pinned.json",

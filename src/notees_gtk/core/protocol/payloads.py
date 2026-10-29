@@ -174,6 +174,15 @@ _LIST_STYLE = Literal["numbered", "alpha", "roman"]
 #: instead of a page. Absent/null = "page", the zero-migration default;
 #: presence writes, present-null clears, exactly like ``color``.
 _PARENTLESS_ROLE = Literal["page", "block"]
+#: Class-level displayTemplate (SCHEMA.md — op-types.ts ``displayTemplate``):
+#: the optional format string render surfaces apply to the derived titles of
+#: the class's members. Tri-state, exactly like ``color``: absent = inherit
+#: (no write — a re-issued create's COALESCE preserves the stored value),
+#: a non-empty string = the template, "" = an EXPLICIT opt-out (round-trips
+#: as '' and STOPS extends-inheritance for the class and its subclasses),
+#: present null = clear back to NULL/inherit. Class-registry column only —
+#: the node row is NOT a carrier (unlike ``parentless_role``).
+_DISPLAY_TEMPLATE_MAX_LENGTH = 1024
 _NUMBER_ROUNDING = Literal["round", "floor", "ceil", "truncate"]
 # The binding's value-display position — where a select/multi_select
 # (or boolean) value renders on a block row. A render contract only.
@@ -318,6 +327,14 @@ class ClassCreatePayload(_Strict):
     # write-enforced (the render-contract law, PC1); extends-aware at read
     # time (own flag OR any extends-ancestor's — one-way demote).
     parentless_role: _PARENTLESS_ROLE | None = Field(default=None, alias="parentlessRole")
+    # The class-level displayTemplate (SCHEMA.md): the format string render
+    # surfaces apply to the derived titles of the class's members
+    # (e.g. "@{{citekey}}" for sources). Tri-state like `color`: absent =
+    # inherit (a re-issued create PRESERVES the stored value via COALESCE),
+    # "" = an explicit opt-out that STOPS extends-inheritance, present null =
+    # clear back to NULL/inherit. Class-registry column only — the node row
+    # is not a carrier (unlike `parentless_role`).
+    display_template: str | None = Field(default=None, max_length=_DISPLAY_TEMPLATE_MAX_LENGTH, alias="displayTemplate")
 
 
 class ClassUpdatePayload(_Strict):
@@ -332,6 +349,10 @@ class ClassUpdatePayload(_Strict):
     # "block" = standalone instances render in the Block role; absent keeps,
     # present-null clears back to the "page" default (the color contract).
     parentless_role: _PARENTLESS_ROLE | None = Field(default=None, alias="parentlessRole")
+    # The class-level displayTemplate (class.create for the full contract):
+    # absent keeps the stored value, present "" writes the explicit opt-out,
+    # present null clears back to NULL/inherit (the color contract).
+    display_template: str | None = Field(default=None, max_length=_DISPLAY_TEMPLATE_MAX_LENGTH, alias="displayTemplate")
 
 
 class ClassUnassignPayload(_Strict):
@@ -922,6 +943,7 @@ def build_class_create(
     color: str | None = None,
     description: str | None = None,
     parentless_role: str | None = None,
+    display_template: str | None = None,
 ) -> dict[str, Any]:
     """Build a ``class.create`` payload (web ``WorkspaceClient.createClass``).
 
@@ -929,7 +951,10 @@ def build_class_create(
     wraps into a single text token unless an explicit ``content_ast`` wins.
     ``parentless_role`` ("page" | "block") is the parentless render role of
     the class's standalone instances — omitted = the
-    "page" default.
+    "page" default. ``display_template`` is the class-level displayTemplate
+    (the members' derived-title format string) — omitted = inherit; on a
+    re-issued create (the seed/ensure path) an omitted key PRESERVES the
+    stored value (the applier's COALESCE arm).
     """
     payload: dict[str, Any] = {"classId": class_id}
     if name is not None and content_ast is None:
@@ -944,6 +969,8 @@ def build_class_create(
         payload["description"] = description
     if parentless_role is not None:
         payload["parentlessRole"] = parentless_role
+    if display_template is not None:
+        payload["displayTemplate"] = display_template
     return _validated("class.create", payload)
 
 
@@ -956,13 +983,16 @@ def build_class_update(
     color: str | None | object = _UNSET,
     description: str | None = None,
     parentless_role: str | None | object = _UNSET,
+    display_template: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Build a ``class.update`` payload (same name convenience as create).
 
     ``color=None`` sends an explicit null that CLEARS the class color;
     omitting ``color`` leaves it untouched. ``parentless_role`` follows the
     same keep-vs-clear contract: ``None`` clears the flag back to the
-    "page" default, omitting it keeps the stored role.
+    "page" default, omitting it keeps the stored role. ``display_template``
+    follows the same contract: ``None`` clears back to NULL/inherit,
+    ``""`` writes the explicit opt-out, omitting it keeps the stored value.
     """
     payload: dict[str, Any] = {"classId": class_id}
     if name is not None and content_ast is None:
@@ -977,6 +1007,8 @@ def build_class_update(
         payload["description"] = description
     if parentless_role is not _UNSET:
         payload["parentlessRole"] = parentless_role
+    if display_template is not _UNSET:
+        payload["displayTemplate"] = display_template
     return _validated("class.update", payload)
 
 

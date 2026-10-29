@@ -1,0 +1,201 @@
+{
+  "comment": "Class-level displayTemplate (SCHEMA.md): class.create/class.update carry the OPTIONAL NULLABLE displayTemplate — an optional format string render surfaces apply to the derived titles of the class's members (e.g. \"@{{citekey}}\" for sources). Tri-state, exactly like color: absent = inherit (no write — a re-issued create's COALESCE preserves the stored value), a non-empty string = the template, \"\" = an EXPLICIT opt-out (round-trips as '' and STOPS extends-inheritance for the class and its subclasses), present null = clear back to NULL/inherit. The applier maps it to the class registry column class.display_template (store schema v36) ONLY — unlike parentless_role the node row is NOT a carrier; display reads go through the store helpers (resolveEffectiveDisplayTemplate walks extends-ancestors nearest-first, the first non-NULL ancestor value decides, an ancestor '' stops the walk). This fixture pins the payload shapes: Source seeds the template \"@{{citekey}}\"; a member object.create is the population the template renders over; Book extends Source with no own template (inheritance); Web link extends Source and opts out via class.update {displayTemplate: \"\"} (the ancestor's template is still live at that point — the own '' must win); finally Source's template is CLEARED by a present-null class.update (back to NULL/inherit).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000830",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000821"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:08.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000821",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Source"
+          }
+        ],
+        "displayTemplate": "@{{citekey}}"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000831",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000822"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:08.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000822",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Smith, The Wealth of Nations"
+          }
+        ],
+        "classIds": [
+          "0192a000-0000-7000-8000-000000000821"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000832",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000823"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:08.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000823",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Book"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000833",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000823"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:08.300Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000823",
+        "parentClassIds": [
+          "0192a000-0000-7000-8000-000000000821"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000834",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000824"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:08.400Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000824",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Web link"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000835",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000824"
+      ],
+      "opType": "class.setExtends",
+      "timestamp": "2026-09-24T12:00:08.500Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000824",
+        "parentClassIds": [
+          "0192a000-0000-7000-8000-000000000821"
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000836",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008600,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000824"
+      ],
+      "opType": "class.update",
+      "timestamp": "2026-09-24T12:00:08.600Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000824",
+        "displayTemplate": ""
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000837",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000820",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200008700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000821"
+      ],
+      "opType": "class.update",
+      "timestamp": "2026-09-24T12:00:08.700Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000821",
+        "displayTemplate": null
+      }
+    }
+  ]
+}

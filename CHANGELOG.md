@@ -8,6 +8,30 @@ history.
 
 ## 2026-10-29
 
+- **feat(store): class-level `displayTemplate` — the members' derived-title
+  format string (lockstep with the TS reference, web schema v35→v36
+  parity).** `class.create`/`class.update` now carry the optional nullable
+  `displayTemplate` payload key (strict-schema acceptance with
+  `z.string().max(1024).nullish()` parity; pre-change clients reject the
+  key, which gates mixed writers). Tri-state, exactly like `color`: absent =
+  inherit (no write — a re-issued create's `COALESCE` preserves the stored
+  value), a non-empty string = the template, `""` = an explicit opt-out
+  (round-trips as `''`, distinct from NULL, and STOPS extends-inheritance for
+  the class and its subclasses), present null = clear back to NULL/inherit.
+  The applier maps the key to a new `class.display_template` TEXT column
+  (schema v23→v24, the `class` table ONLY — unlike `parentless_role` the
+  node row is NOT a carrier); display reads go through the new store helpers
+  `get_class_display_template` / `resolve_effective_display_template`
+  (``packages/store/src/store.ts`` parity — BFS over `class_extends`
+  nearest-first, within-level ties by smallest class id, an own or ancestor
+  `''` stops the walk with None). The vendored fixture corpus gains
+  `class-display-template.json` (byte-identical, sha256
+  `6d654cb70463bb27d90c6bf05006e262868fdebad2ec5c06df508195763a7d8d`),
+  added to the wire round-trip list, with a new replay class asserting the
+  create-with-template, inheritance, `""` opt-out stop, present-null clear,
+  the node row carrying no column, and the COALESCE preserve on a re-issued
+  create. Verified: the full gate (`uv run pytest && uv run ruff check &&
+  uv run mypy src`) green.
 - **feat(store): reject `object.delete` on date-chain nodes — the date-chain
   delete lock (lockstep with the TS reference).** A date node is permanent
   journal scaffolding under the permanent-address model — it realizes on

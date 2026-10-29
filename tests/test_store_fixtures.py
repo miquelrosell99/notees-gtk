@@ -1382,6 +1382,93 @@ class TestClassParentlessRoleFixture:
         ) == [(1,)]
 
 
+class TestClassDisplayTemplateFixture:
+    """Replay of class-display-template.json (the class-level displayTemplate,
+    web schema v35→v36 parity): the registry column is presence-writes /
+    present-null-clears on class.create (absent PRESERVES on a re-issued
+    create via COALESCE) and class.update ("" = the explicit opt-out, stored
+    as '' and distinct from NULL), and the extends-aware effective template
+    derives at read time nearest-first with the '' stop — mirroring the
+    monorepo store test (``resolveEffectiveDisplayTemplate``). The node row
+    is NOT a carrier (unlike parentless_role)."""
+
+    SOURCE = "0192a000-0000-7000-8000-000000000821"
+    MEMBER = "0192a000-0000-7000-8000-000000000822"
+    BOOK = "0192a000-0000-7000-8000-000000000823"
+    WEB_LINK = "0192a000-0000-7000-8000-000000000824"
+    TEMPLATE = "@{{citekey}}"
+    #: The fixture's envelopes carry their own workspace id (…000000000820),
+    #: not the suite-default WS.
+    FIXTURE_WS = "0192a000-0000-7000-8000-000000000820"
+
+    def registry_template(self, store: LocalStore, class_id: str) -> Any:
+        return raw(store, "SELECT display_template FROM class WHERE id = ?", (class_id,))[0][0]
+
+    def test_the_fixture_lands_create_inherit_opt_out_and_clear(self, store: LocalStore) -> None:
+        (
+            source_create,
+            member_create,
+            book_create,
+            book_extends,
+            web_create,
+            web_extends,
+            web_opt_out,
+            source_clear,
+        ) = (RelayEnvelope.model_validate(item) for item in load_fixture("class-display-template.json"))
+        # Source seeds the template on the registry; the member object is the
+        # population the template renders over.
+        assert store.apply_remote(source_create) is True
+        assert self.registry_template(store, self.SOURCE) == self.TEMPLATE
+        assert store.apply_remote(member_create) is True
+        assert store.node(self.FIXTURE_WS, self.MEMBER) is not None
+        # Book extends Source with no own template: NULL own, inherited effective.
+        assert store.apply_remote(book_create) is True
+        assert store.apply_remote(book_extends) is True
+        assert self.registry_template(store, self.BOOK) is None
+        assert store.resolve_effective_display_template(self.BOOK) == self.TEMPLATE
+        # Web link extends Source too; opting out via "" stores '' — the own
+        # opt-out wins over the still-live ancestor template.
+        assert store.apply_remote(web_create) is True
+        assert store.apply_remote(web_extends) is True
+        assert store.resolve_effective_display_template(self.WEB_LINK) == self.TEMPLATE
+        assert store.apply_remote(web_opt_out) is True
+        assert self.registry_template(store, self.WEB_LINK) == ""
+        assert store.resolve_effective_display_template(self.WEB_LINK) is None
+        # Book still inherits at this point (the '' stop is per-class).
+        assert store.resolve_effective_display_template(self.BOOK) == self.TEMPLATE
+        # Clearing Source's template back to NULL: the whole chain reads
+        # plain-title now.
+        assert store.apply_remote(source_clear) is True
+        assert self.registry_template(store, self.SOURCE) is None
+        assert store.resolve_effective_display_template(self.SOURCE) is None
+        assert store.resolve_effective_display_template(self.BOOK) is None
+        assert store.resolve_effective_display_template(self.WEB_LINK) is None
+
+    def test_upsert_class_node_does_not_carry_the_template(self, store: LocalStore) -> None:
+        """The node row is NOT a carrier (TS ``upsertClassNode`` parity —
+        unlike ``parentless_role``): the nodes table keeps no
+        display_template column."""
+        (source_create, *_rest) = (RelayEnvelope.model_validate(item) for item in load_fixture("class-display-template.json"))
+        assert store.apply_remote(source_create) is True
+        columns = [row[1] for row in raw(store, "PRAGMA table_info(nodes)")]
+        assert "display_template" not in columns
+
+    def test_a_reissued_create_preserves_the_stored_template(self, store: LocalStore) -> None:
+        """Absent on class.create = inherit — the ON CONFLICT COALESCE arm
+        preserves the stored value on the seed/ensure re-issue path."""
+        raw_items = load_fixture("class-display-template.json")
+        (source_create, *_rest) = (RelayEnvelope.model_validate(item) for item in raw_items)
+        assert store.apply_remote(source_create) is True
+        reissued_raw = dict(raw_items[0])
+        # A NEW op id (the dedupe log keys on it) and a NEWER HLC, with the
+        # displayTemplate key absent — the seed/ensure re-issue shape.
+        reissued_raw["id"] = "0192a000-0000-7000-8000-000000000900"
+        reissued_raw["hlc"] = {"physical": raw_items[0]["hlc"]["physical"] + 1000, "logical": 0}
+        reissued_raw["payload"] = {"classId": self.SOURCE, "contentAst": [{"type": "text", "text": "Source"}]}
+        assert store.apply_remote(RelayEnvelope.model_validate(reissued_raw)) is True
+        assert self.registry_template(store, self.SOURCE) == self.TEMPLATE
+
+
 class TestReplayIdempotence:
     def test_reapplying_the_whole_fixture_set_is_idempotent(self, store: LocalStore) -> None:
         envelopes = [RelayEnvelope.model_validate(item) for item in all_fixture_envelopes()]

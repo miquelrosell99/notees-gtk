@@ -277,6 +277,63 @@ class TestClassParentlessRole:
         assert build_class_update(UUID_1, parentless_role="block") == {"classId": UUID_1, "parentlessRole": "block"}
 
 
+class TestClassDisplayTemplate:
+    """The class-level displayTemplate contract (SCHEMA.md): both
+    ``class.create``/``class.update`` carry the optional nullable
+    ``displayTemplate`` — a format string render surfaces apply to the
+    derived titles of the class's members. Tri-state, exactly like ``color``:
+    absent = inherit, a non-empty string = the template, "" = an explicit
+    opt-out (round-trips as '' and stops extends-inheritance), present null =
+    clear back to NULL/inherit (the zod ``z.string().max(1024).nullish()``
+    parity — the lockstep payload acceptance; pre-change clients reject the
+    key, which gates mixed writers)."""
+
+    TEMPLATE = "@{{citekey}}"
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_string_accepted(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "displayTemplate": self.TEMPLATE})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_empty_string_accepted_as_the_opt_out(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "displayTemplate": ""})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_null_clears(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "displayTemplate": None})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_absent_still_validates(self, op_type: str) -> None:
+        validate_payload(op_type, {"classId": UUID_1, "icon": "📄"})
+
+    @pytest.mark.parametrize("op_type", ["class.create", "class.update"])
+    def test_overlong_rejected(self, op_type: str) -> None:
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {"classId": UUID_1, "displayTemplate": "x" * 1025})
+
+    @pytest.mark.parametrize("op_type", ["object.create", "object.update", "object.move"])
+    def test_object_ops_reject_the_key_outright(self, op_type: str) -> None:
+        """Strict-schema parity: the key is a class-only field (the
+        ``extra="forbid"`` law — pre-change clients reject it too)."""
+        with pytest.raises(ValidationError):
+            validate_payload(op_type, {"objectId": UUID_1, "displayTemplate": self.TEMPLATE})
+
+    def test_builder_emits_the_key_only_when_set(self) -> None:
+        # Create: omitted = inherit (a re-issued create PRESERVES the stored
+        # value via the applier's COALESCE arm).
+        assert build_class_create(UUID_1, name="Source", display_template=self.TEMPLATE) == {
+            "classId": UUID_1,
+            "contentAst": [{"type": "text", "text": "Source"}],
+            "displayTemplate": self.TEMPLATE,
+        }
+        assert "displayTemplate" not in build_class_create(UUID_1, name="Source")
+        # Update: keep-vs-clear — explicit None sends the clear, "" the
+        # opt-out, omitting keeps.
+        assert build_class_update(UUID_1, display_template=None) == {"classId": UUID_1, "displayTemplate": None}
+        assert build_class_update(UUID_1, display_template="") == {"classId": UUID_1, "displayTemplate": ""}
+        assert "displayTemplate" not in build_class_update(UUID_1, icon="📄")
+
+
 class TestWireNodeFields:
     """M27: ``object.update`` carries the optional nullable ``coverAssetId``
     / ``bannerAssetId`` / ``aliasedNodeId`` node fields — presence writes,

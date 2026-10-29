@@ -217,7 +217,16 @@ _log = logging.getLogger(__name__)
 #: review, HISTORY-ONLY (no LWW gate), with the (card_id, hlc) read index.
 #: Purely additive CREATE IF NOT EXISTS — a no-op for fresh databases whose
 #: canonical aux DDL already carries the table (the v20/v21 precedent).
-SCHEMA_VERSION = 23
+#: v24 (web schema v35→v36 parity — the class-level displayTemplate,
+#: SCHEMA.md): the class registry gains ``display_template`` TEXT (the
+#: optional-nullable class.create/class.update payload key; the
+#: parentlessRole presence/presence-null idiom). The ``nodes`` table is NOT
+#: touched — display reads go through the store helpers, unlike the
+#: page-predicate ``parentless_role`` which the node row needed. Purely
+#: additive guarded ALTER, a no-op for fresh v24 creates; NULL = inherit,
+#: '' = the explicit opt-out, existing rows converge by default (NULL) and
+#: the log's class.update envelopes carry any live values.
+SCHEMA_VERSION = 24
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1268,6 +1277,53 @@ class LocalStore:
             ).fetchone()
             is not None
         )
+
+    def get_class_display_template(self, class_id: str) -> str | None:
+        """The class's own display template (web schema v36 parity,
+        ``store.ts getClassDisplayTemplate`` — SCHEMA.md): the raw registry
+        column read. NULL = absent (inherit), '' = the explicit opt-out, a
+        non-empty string = the template. The registry column is the ONLY
+        projection — unlike ``parentless_role`` the node row is not a
+        carrier. A pure read, deterministic on every replica.
+        """
+        row = self._conn.execute("SELECT display_template FROM class WHERE id = ?", (class_id,)).fetchone()
+        return None if row is None else row[0]
+
+    def resolve_effective_display_template(self, class_id: str) -> str | None:
+        """The EFFECTIVE display template (extends-aware, the
+        ``store.ts resolveEffectiveDisplayTemplate`` parity): a class's own
+        non-empty template wins; its own '' is an explicit opt-out and STOPS
+        (None, never inherits); absent (NULL) walks the extends-ancestors
+        NEAREST-FIRST (BFS over class_extends, within a level the smallest
+        class id decides ties so the read is deterministic on every replica)
+        and the first non-NULL ancestor value decides — a non-empty string
+        inherits, an ancestor '' stops the walk with None. No ancestor value
+        at all = None.
+        """
+        own = self.get_class_display_template(class_id)
+        if own is not None:
+            return None if own == "" else own
+        visited = {class_id}
+        frontier = [class_id]
+        while frontier:
+            nxt: list[str] = []
+            for current in frontier:
+                for row in self._conn.execute(
+                    "SELECT parent_class_id FROM class_extends WHERE class_id = ?", (current,)
+                ):
+                    parent = str(row[0])
+                    if parent not in visited:
+                        visited.add(parent)
+                        nxt.append(parent)
+            # Nearest level first; within a level the smallest id decides
+            # ties (the TS next.sort() parity).
+            nxt.sort()
+            for ancestor_id in nxt:
+                value = self.get_class_display_template(ancestor_id)
+                if value is not None:
+                    return None if value == "" else value
+            frontier = nxt
+        return None
 
     def _is_page_row(self, row: tuple[Any, ...]) -> bool:
         """True when the node row renders with document chrome under the
@@ -2361,14 +2417,15 @@ class LocalStore:
         title_text = plaintext_excerpt(payload["contentAst"]) if payload.get("contentAst") is not None else None
         with self._conn:
             self._conn.execute(
-                """INSERT INTO class (id, workspace_id, name, icon, color, description, parentless_role, active, created_at, updated_at)
-                   VALUES (?, ?, COALESCE(?, ''), ?, ?, NULL, ?, 1, ?, ?)
+                """INSERT INTO class (id, workspace_id, name, icon, color, description, parentless_role, display_template, active, created_at, updated_at)
+                   VALUES (?, ?, COALESCE(?, ''), ?, ?, NULL, ?, ?, 1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      name = COALESCE(NULLIF(excluded.name, ''), class.name),
                      icon = COALESCE(excluded.icon, class.icon),
                      color = COALESCE(excluded.color, class.color),
                      description = class.description,
                      parentless_role = COALESCE(excluded.parentless_role, class.parentless_role),
+                     display_template = COALESCE(excluded.display_template, class.display_template),
                      active = 1, updated_at = excluded.updated_at""",
                 (
                     class_id,
@@ -2377,6 +2434,7 @@ class LocalStore:
                     payload.get("icon"),
                     payload.get("color"),
                     payload.get("parentlessRole"),
+                    payload.get("displayTemplate"),
                     ts,
                     ts,
                 ),
@@ -2450,6 +2508,14 @@ class LocalStore:
             if "parentlessRole" in payload:
                 sets.append("parentless_role = ?")
                 values.append(payload["parentlessRole"])
+            # display_template is nullable with the same contract (TS parity:
+            # ``p.displayTemplate !== undefined``): a present null clears back
+            # to NULL/inherit, a present "" writes the explicit opt-out
+            # (stored as '', distinct from NULL), absence keeps the stored
+            # value.
+            if "displayTemplate" in payload:
+                sets.append("display_template = ?")
+                values.append(payload["displayTemplate"])
             if not sets:
                 return False
             sets.append("updated_at = ?")
@@ -4712,6 +4778,14 @@ CREATE TABLE IF NOT EXISTS class (
     -- icon/color — "block" = parentless members render in the Block role,
     -- NULL = the "page" default.
     parentless_role TEXT,
+    -- Class-level displayTemplate (web schema v35→v36 parity — the
+    -- class.create/update wire field): the members' derived-title format
+    -- string. NULL = inherit, '' = the explicit opt-out (STOPS
+    -- extends-inheritance for the class and its subclasses), a non-empty
+    -- string = the template. Meaningful on class rows only — the node row
+    -- is NOT a carrier (unlike ``parentless_role`` above); display reads
+    -- go through the store helpers.
+    display_template TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT
@@ -5625,6 +5699,19 @@ def _migrate_v23(conn: sqlite3.Connection) -> None:
     conn.executescript(_CARD_REVIEW_DDL)
 
 
+def _migrate_v24(conn: sqlite3.Connection) -> None:
+    """v24 — the class-level displayTemplate (web schema v35→v36 parity,
+    SCHEMA.md): the class registry gains ``display_template`` TEXT — the
+    optional-nullable class.create/class.update payload key (the
+    parentlessRole presence/presence-null idiom). NULL = inherit,
+    '' = the explicit opt-out, a non-empty string = the template. The node
+    row is NOT a carrier (unlike parentless_role) — display reads go
+    through the store helpers. Purely additive — the column guard keeps the
+    ALTER idempotent for fresh v24 creates (the v16 precedent).
+    """
+    LocalStore._add_column_if_missing(conn, "class", "display_template", "TEXT")
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -5650,4 +5737,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (21, _migrate_v21),
     (22, _migrate_v22),
     (23, _migrate_v23),
+    (24, _migrate_v24),
 )
