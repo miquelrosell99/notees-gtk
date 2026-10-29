@@ -54,7 +54,10 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 #: object-delete-class-routing pins the locked-system-class delete arm
 #: (LockedSystemClassError) after its accepting prefix — the arms are
 #: asserted deliberately in the routing suite below — the
-#: store.test.ts REPLAY_EXCLUDED_FIXTURES parity).
+#: store.test.ts REPLAY_EXCLUDED_FIXTURES parity;
+#: object-delete-date-chain.json deletes date-chain nodes (the soft and the
+#: permanent arms — the fourth lock, delete-locked) and fails loud by design —
+#: applied deliberately in its own test below.
 #: GTK-main lockstep-pending additions (the TS reference parses and replays
 #: both; this client's wire models do not yet — remove from this set when the
 #: wire lands): class-property-pinned.json's class.property.set carries the
@@ -70,6 +73,7 @@ REPLAY_EXCLUDED = {
     "is-embedded-date-chain.json",
     "is-embedded-parent-page.json",
     "object-delete-class-routing.json",
+    "object-delete-date-chain.json",
     "property-assign.json",
     "property-validation-rules.json",
 }
@@ -1282,6 +1286,41 @@ class TestIsEmbeddedDateChainFixture:
             store.apply_remote(promote_month)
         assert store.node(WS, day).is_embedded is False
         assert store.node(WS, month).is_embedded is False
+
+
+class TestObjectDeleteDateChainFixture:
+    def test_deleting_a_date_chain_node_throws_on_both_delete_arms(self, store: LocalStore) -> None:
+        """object-delete-date-chain.json (the fourth date-chain lock,
+        delete-locked — monorepo store.test.ts parity): the 2024-07-26 chain
+        prefix applies cleanly, then the soft delete (the trash arm) and the
+        permanent delete (the purge arm) both fail loud with MoveGuardError —
+        the nodes stay live."""
+        year_e, month_e, day_e, delete_day, delete_year = (
+            RelayEnvelope.model_validate(item) for item in load_fixture("object-delete-date-chain.json")
+        )
+        year = "00000000-0000-0000-00bb-202400000000"
+        month = "00000000-0000-0000-00aa-202407000000"
+        day = "00000000-0000-0000-00dd-202407260000"
+        # The prefix applies cleanly: the 2024-07-26 chain, each level with
+        # its precision's system class and the standalone claim.
+        assert store.apply_remote(year_e) is True
+        assert store.apply_remote(month_e) is True
+        assert store.apply_remote(day_e) is True
+        assert store.node(WS, year).parent_id is None
+        assert store.node(WS, month).parent_id == year
+        assert store.node(WS, day).parent_id == month
+
+        # The chain is permanent scaffolding: the soft delete (the trash arm)
+        # and the permanent delete (the purge arm) both fail loud, state
+        # unchanged — the nodes stay live and no trash row lands.
+        with pytest.raises(MoveGuardError, match="date-chain node"):
+            store.apply_remote(delete_day)
+        with pytest.raises(MoveGuardError, match="can never be deleted"):
+            store.apply_remote(delete_year)
+        assert store.node(WS, day).is_active is True
+        assert store.node(WS, month).is_active is True
+        assert store.node(WS, year).is_active is True
+        assert raw(store, "SELECT COUNT(*) FROM trash") == [(0,)]
 
 
 class TestClassParentlessRoleFixture:

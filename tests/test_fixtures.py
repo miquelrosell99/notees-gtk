@@ -83,6 +83,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/mention-custom-label.json",
     "wire/object-color.json",
     "wire/object-delete-class-routing.json",
+    "wire/object-delete-date-chain.json",
     "wire/object-is-embedded.json",
     "wire/object-list-style.json",
     "wire/object-move-before.json",

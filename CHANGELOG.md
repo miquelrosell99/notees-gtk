@@ -8,6 +8,25 @@ history.
 
 ## 2026-10-29
 
+- **feat(store): reject `object.delete` on date-chain nodes — the date-chain
+  delete lock (lockstep with the TS reference).** A date node is permanent
+  journal scaffolding under the permanent-address model — it realizes on
+  first write and can never leave the graph. `object.delete` on a date-chain
+  node id now raises ``MoveGuardError`` in BOTH arms — soft delete (trash)
+  and `permanent: true` (purge) — placed after the "node must exist" check
+  and before the class delete routing and any trash/purge write, so the
+  trash-bypass arm throws before any purge. The condition is
+  prefix-strict over the deterministic date-node id parser — it never
+  matches class ids, so the locked-system-class delete arm (the
+  year/month/day system CLASSES) is untouched (``packages/store/src/appliers.ts``
+  ``applyObjectDelete`` parity). The vendored fixture corpus gains
+  `object-delete-date-chain.json` (byte-identical, sha256
+  `35b80f12f634abe9bf13971ee024b6140e073fd069c13fcdbeefc157799ab9bd`),
+  added to the replay-exclusion set and the wire round-trip list, with a new
+  replay class applying the 2024-07-26 chain prefix cleanly and asserting
+  both delete envelopes throw and the nodes stay live with no trash row.
+  Verified: the full gate (`uv run pytest && uv run ruff check && uv run
+  mypy src`) green.
 - **ci: pin release.yml runners to ubuntu-22.04, add workflow-level
   concurrency, and give ci.yml a git-ref dispatch input.** The `guard`,
   `python-dist`, `archpkg`, and `release` jobs all ran on

@@ -1695,6 +1695,13 @@ class LocalStore:
         (archive or trash); stripping a class from nodes stays the explicit
         per-node ``class.unassign``.
 
+        Date-chain nodes are delete-locked entirely (the fourth lock, beside
+        the parent/class/embedding locks): a date-chain node id fails loud
+        with :class:`~notees_gtk.data.errors.MoveGuardError` REGARDLESS of
+        ``permanent`` — the permanent journal chain can never leave the
+        graph. The locked-system-class arm below (the year/month/day system
+        CLASSES) is untouched — the guard matches node ids only.
+
         Arm 1 — LOCKED system classes (the date chain + table, asset, query,
         code, template, comment): platform structure, never archivable or
         deletable. Fails loud, never applied — regardless of ``permanent``.
@@ -1718,6 +1725,23 @@ class LocalStore:
         op_type = "object.delete"
         object_id = str(env.payload["objectId"])
         self._require_node(env.workspace_id, object_id, op_type)
+        # Date-chain delete lock (SCHEMA.md "Datetime" — the fourth lock,
+        # beside the parent/class/embedding locks; appliers.ts
+        # applyObjectDelete parity): a date node is permanent journal
+        # scaffolding under the permanent-address model — it realizes on
+        # first write and can never leave the graph. Deleting one fails
+        # loud REGARDLESS of `permanent` (the trash-bypass arm must throw
+        # before any purge); clearing a day means deleting its CONTENT,
+        # never the day node. The guard sits above the class routing: it
+        # matches node ids, never class ids (parse_date_node_id is
+        # prefix-strict), so the locked-system-class arm below is untouched.
+        if parse_date_node_id(object_id) is not None:
+            raise MoveGuardError(
+                f"{op_type}: {object_id} is a date-chain node — the journal chain is"
+                " permanent platform scaffolding and can never be deleted"
+                " (clear the day's content instead)",
+                op_type,
+            )
         permanent = bool(env.payload.get("permanent"))
         ts = _envelope_ts(env)
         deleted_row = self._node_row(env.workspace_id, object_id)
