@@ -36,25 +36,3 @@ jobs:
 
       - name: Mypy
         run: uv run mypy src
-
-  # SonarQube scan — requires repo configuration before this job does anything:
-  #   - repo variable SONAR_HOST_URL  (Settings → Secrets and variables →
-  #     Actions → Variables) pointing at the SonarQube server
-  #   - repo secret SONAR_TOKEN       (Settings → Secrets and variables →
-  #     Actions → Secrets) with a project-analysis token for `notees-gtk`
-  # While SONAR_HOST_URL is unset, the job is skipped everywhere (PRs and the
-  # nightly schedule included).
-  sonar:
-    name: SonarQube scan
-    if: ${{ vars.SONAR_HOST_URL != '' }}
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}

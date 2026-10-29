@@ -17,10 +17,6 @@ covering `main`'s head), and on manual `workflow_dispatch`, on pinned
 4. `uv run ruff check`
 5. `uv run mypy src`
 
-A conditional `sonar` job (skipped unless the `SONAR_HOST_URL` repo variable
-is set) runs `SonarSource/sonarqube-scan-action` against
-`sonar-project.properties`.
-
 ### Release — `.github/workflows/release.yml`
 
 Runs on `v*` tag pushes AND on manual `workflow_dispatch` (dispatch builds
