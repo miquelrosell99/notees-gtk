@@ -1502,6 +1502,21 @@ class LocalStore:
         # of a parented page is gated on its standalone children being gone.
         is_embedded = payload.get("isEmbedded")
         if is_embedded is not None:
+            # Date-chain embedding lock (SCHEMA.md "Datetime"): the journal
+            # chain's role is platform-fixed — a date node renders with
+            # document chrome and the render bit is not user-reachable state.
+            # BOTH directions fail loud: a demote would nest the journal page
+            # as an inline block in its chain parent's body (the journal
+            # surfaces break), a promotion is a standalone claim the UI never
+            # makes. The parent lock lives in object.move, the class lock in
+            # the object.create / class guards — this closes the last carrier
+            # (packages/store/src/appliers.ts ``applyObjectUpdate`` parity).
+            if parse_date_node_id(object_id) is not None:
+                raise MoveGuardError(
+                    f"{op_type}: date-chain node {object_id} has a platform-fixed journal role;"
+                    " isEmbedded is not writable on it",
+                    op_type,
+                )
             if is_embedded is False and row[2] is not None:
                 parent = self._node_row(env.workspace_id, str(row[2]))
                 if parent is None or not self._is_page_row(parent):

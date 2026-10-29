@@ -77,6 +77,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/embed-ref-view.json",
     "wire/hr.json",
     "wire/heading-content.json",
+    "wire/is-embedded-date-chain.json",
     "wire/is-embedded-parent-page.json",
     "wire/link-embedded.json",
     "wire/mention-custom-label.json",

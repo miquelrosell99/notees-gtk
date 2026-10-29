@@ -1,0 +1,94 @@
+{
+  "comment": "Date-chain embedding lock: the journal chain's role is platform-fixed — a date node renders with document chrome and the isEmbedded bit is not user-reachable state. Envelopes 1-3 build the 2024-07-26 chain (year at the root, month under year, day under month, each carrying its precision's system class and an explicit standalone claim — the ensureDateChain shape) and apply cleanly; envelope 4 demotes the day node (isEmbedded: true — it would nest the journal page as an inline block in the month's body) and envelope 5 promotes the month node (isEmbedded: false — a standalone claim the UI never makes); both must throw MoveGuardError on apply — the fixture is in REPLAY_EXCLUDED_FIXTURES and is applied deliberately in its own store test. LOCKSTEP-PENDING: the GTK/Flutter ports converge on the same expectation before the marker clears (docs/developers/development.md §3).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000d01",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200004000, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00bb-202400000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:04.000Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00bb-202400000000",
+        "isEmbedded": false,
+        "classIds": ["00000000-0000-0000-0001-000000000003"],
+        "contentAst": [{ "type": "text", "text": "20240000" }],
+        "parentId": null
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000d02",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200004001, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00aa-202407000000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:04.001Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00aa-202407000000",
+        "isEmbedded": false,
+        "classIds": ["00000000-0000-0000-0001-000000000004"],
+        "contentAst": [{ "type": "text", "text": "20240700" }],
+        "parentId": "00000000-0000-0000-00bb-202400000000"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000d03",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200004002, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00dd-202407260000"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:04.002Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00dd-202407260000",
+        "isEmbedded": false,
+        "classIds": ["00000000-0000-0000-0001-000000000005"],
+        "contentAst": [{ "type": "text", "text": "20240726" }],
+        "parentId": "00000000-0000-0000-00aa-202407000000"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000d04",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200004003, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00dd-202407260000"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:04.003Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00dd-202407260000",
+        "isEmbedded": true
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000d05",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200004004, "logical": 0 },
+      "affectedNodeIds": ["00000000-0000-0000-00aa-202407000000"],
+      "opType": "object.update",
+      "timestamp": "2026-09-24T12:00:04.004Z",
+      "payload": {
+        "objectId": "00000000-0000-0000-00aa-202407000000",
+        "isEmbedded": false
+      }
+    }
+  ]
+}

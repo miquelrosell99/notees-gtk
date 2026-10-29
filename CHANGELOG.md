@@ -8,6 +8,22 @@ history.
 
 ## 2026-10-29
 
+- **feat(store): reject `isEmbedded` writes on date-chain nodes — the
+  date-chain embedding lock (lockstep with the TS reference).** A date
+  node's journal role is platform-fixed (document chrome); an
+  `object.update` carrying `isEmbedded` — either direction, demote or
+  promote — now raises ``MoveGuardError`` at the top of the applier's
+  embedding branch, before the parent-page checks. The parent lock lived in
+  `object.move`, the class lock in the `object.create` / class guards —
+  this closes the last carrier (``packages/store/src/appliers.ts``
+  ``applyObjectUpdate`` parity). The vendored fixture corpus gains
+  `is-embedded-date-chain.json` (byte-identical, sha256
+  `3192678b3d5d328e2528c1d50ce1960b70e0e024a1c75aad31b639412e9f384b`),
+  added to the replay-exclusion sets and the wire round-trip list, with a
+  new replay class applying the 2024-07-26 chain prefix cleanly and
+  asserting both violating envelopes throw and roll back. Verified: the
+  full gate (`uv run pytest && uv run ruff check && uv run mypy src`) green.
+
 - **ci: restructure the GitHub Actions workflows on the fleet RosellRamos
   pattern — PR/nightly/dispatch CI, tag/dispatch-only release pipeline,
   SHA-pinned actions; no AUR publication.**

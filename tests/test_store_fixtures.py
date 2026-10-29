@@ -45,6 +45,9 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "wire"
 #: deviates a system class's frozen seeded extends mapping;
 #: is-embedded-parent-page claims the standalone role under an embedded
 #: block, the parent-page condition;
+#: is-embedded-date-chain writes the render bit on a date-chain node (demote
+#: and promote directions) and fails loud by design — the journal chain's
+#: role is platform-fixed;
 #: property-validation-rules pins its reject tail — below-min/above-max,
 #: pattern rejects, one bad multi element, one uncompilable pattern — after
 #: an accepting prefix, all applied deliberately in their own tests;
@@ -64,6 +67,7 @@ REPLAY_EXCLUDED = {
     "class-extends-cycle.json",
     "class-extends-system-lock.json",
     "class-property-pinned.json",
+    "is-embedded-date-chain.json",
     "is-embedded-parent-page.json",
     "object-delete-class-routing.json",
     "property-assign.json",
@@ -1244,6 +1248,40 @@ class TestIsEmbeddedParentPageFixture:
         with pytest.raises(MoveGuardError):
             store.apply_remote(violating_x)
         assert store.node(WS, x) is None
+
+
+class TestIsEmbeddedDateChainFixture:
+    def test_writing_the_render_bit_on_a_date_chain_node_throws_and_rolls_back(
+        self, store: LocalStore
+    ) -> None:
+        year_e, month_e, day_e, demote_day, promote_month = (
+            RelayEnvelope.model_validate(item) for item in load_fixture("is-embedded-date-chain.json")
+        )
+        year = "00000000-0000-0000-00bb-202400000000"
+        month = "00000000-0000-0000-00aa-202407000000"
+        day = "00000000-0000-0000-00dd-202407260000"
+        # The prefix applies cleanly: the 2024-07-26 chain, each level with
+        # its precision's system class and the standalone claim.
+        assert store.apply_remote(year_e) is True
+        assert store.apply_remote(month_e) is True
+        assert store.apply_remote(day_e) is True
+        year_row = store.node(WS, year)
+        month_row = store.node(WS, month)
+        day_row = store.node(WS, day)
+        assert year_row is not None and year_row.parent_id is None and year_row.is_embedded is False
+        assert month_row is not None and month_row.parent_id == year and month_row.is_embedded is False
+        assert day_row is not None and day_row.parent_id == month and day_row.is_embedded is False
+
+        # The render bit is platform-fixed on the chain: demoting the day
+        # node (it would nest the journal page as an inline block in the
+        # month's body) and promoting the month node both fail loud, state
+        # unchanged.
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(demote_day)
+        with pytest.raises(MoveGuardError):
+            store.apply_remote(promote_month)
+        assert store.node(WS, day).is_embedded is False
+        assert store.node(WS, month).is_embedded is False
 
 
 class TestClassParentlessRoleFixture:
