@@ -1,6 +1,6 @@
 ---
 name: notees-gtk-operations
-description: Operate the notees-gtk release pipeline — git tags as the release mechanism, GitHub Actions CI (pytest/ruff/mypy) and release.yml (sdist/wheel + Arch package + GitHub Release), PKGBUILD/AUR packaging, and makepkg local builds. Use when cutting or verifying a release, tagging, publishing packages, or changing CI/packaging in this repo.
+description: Operate the notees-gtk release pipeline — git tags as the release mechanism, GitHub Actions CI (pytest/ruff/mypy) and release.yml (sdist/wheel + Arch package + GitHub Release), PKGBUILD packaging, and makepkg local builds. Use when cutting or verifying a release, tagging, publishing packages, or changing CI/packaging in this repo.
 ---
 
 # notees-gtk operations
@@ -15,15 +15,20 @@ Python package and an Arch Linux package. Git tags are the release mechanism.
   release.yml`, which builds the sdist/wheel (`python-dist` job) and the Arch
   package (`archpkg` job, `makepkg` inside an `archlinux` container), then
   publishes both as a GitHub Release (`release` job, gated on `refs/tags/v*`).
-- **Every push to `main`** also runs `release.yml`'s build jobs, producing
-  downloadable `python-dist` and `archpkg` artifacts — the Arch artifact is
-  the recommended prebuilt install (see README); only tags produce a Release.
-- **`.github/workflows/ci.yml`** runs on push/PR to `main`: `uv sync`, `uv run
-  pytest`, `uv run ruff check`, `uv run mypy src`. Green CI is the merge gate.
+  `release.yml` also runs on manual `workflow_dispatch`; a dispatch builds the
+  `python-dist` and `archpkg` artifacts only (the `release` job stays
+  tag-gated) — the Arch artifact is the recommended prebuilt install (see
+  README); only tags produce a Release.
+- **`.github/workflows/ci.yml`** runs on PRs targeting `main`, on a nightly
+  schedule (`23 3 * * *`, covering `main`'s head), and on manual dispatch:
+  `uv sync`, `uv run pytest`, `uv run ruff check`, `uv run mypy src`. Green CI
+  is the merge gate.
 - **PKGBUILD** (`notees-gtk-git`) builds from a git clone; `pkgver()` derives
   the version from `git describe --long --tags`, so tags feed the package
   version automatically. `makepkg -si` from a clone is the CI-independent
-  local build. The AUR package is maintained from this PKGBUILD.
+  local build. **There is no AUR publication** — nothing is pushed to the
+  AUR; the PKGBUILD is local/CI-only (the prebuilt install is the `archpkg`
+  CI artifact).
 - **Version sources of truth**: the git tag (release identity + PKGBUILD
   version), and `pyproject.toml`'s `project.version` (the built wheel's
   version — bump it as part of the release commit). Client provenance on the

@@ -7,18 +7,24 @@ definitions is `.github/workflows/`; this file explains how the pieces fit.
 
 ### CI — `.github/workflows/ci.yml`
 
-Runs on every push to `main` and every PR targeting `main`, on
-`ubuntu-latest`:
+Runs on every PR targeting `main`, on a nightly schedule (`23 3 * * *`,
+covering `main`'s head), and on manual `workflow_dispatch`, on pinned
+`ubuntu-22.04` runners with a per-ref concurrency group:
 
-1. `actions/checkout@v4`, `astral-sh/setup-uv@v5`, `uv python install 3.12`
+1. `actions/checkout` (SHA-pinned v7), `astral-sh/setup-uv` (SHA-pinned), `uv python install 3.12`
 2. `uv sync`
 3. `uv run pytest` — the full suite (e2e self-skips headless)
 4. `uv run ruff check`
 5. `uv run mypy src`
 
+A conditional `sonar` job (skipped unless the `SONAR_HOST_URL` repo variable
+is set) runs `SonarSource/sonarqube-scan-action` against
+`sonar-project.properties`.
+
 ### Release — `.github/workflows/release.yml`
 
-Runs on every push to `main` AND on `v*` tags.
+Runs on `v*` tag pushes AND on manual `workflow_dispatch` (dispatch builds
+artifacts only — the `release` job stays gated on `refs/tags/v`).
 
 - **`python-dist` job** (ubuntu-latest): `uv run python -m build` → sdist +
   wheel uploaded as the `python-dist` artifact (`dist/`).
@@ -29,8 +35,8 @@ Runs on every push to `main` AND on `v*` tags.
   `notees-gtk-*.pkg.tar.zst` as the `archpkg` artifact.
 - **`release` job** (only when `github.ref` starts with `refs/tags/v`): needs
   both build jobs, downloads and merges the artifacts, publishes them with
-  `softprops/action-gh-release@v2`. Tags are therefore the only source of
-  GitHub Releases; main-branch pushes produce artifacts only.
+  `softprops/action-gh-release` (SHA-pinned). Tags are therefore the only
+  source of GitHub Releases; a manual dispatch produces artifacts only.
 
 ## Packaging
 
@@ -49,14 +55,15 @@ Runs on every push to `main` AND on `v*` tags.
   Icon=`dev.notees.Gtk` — the window's `set_icon_name`) installs to
   `/usr/share/applications/` alongside the hicolor icons; without it the
   app is missing from launcher apps menus.
-- The AUR package tracks this PKGBUILD; update it when the PKGBUILD changes
-  materially (deps, build steps).
+- **No AUR publication.** Nothing is pushed to the AUR; this PKGBUILD is
+  local/CI-only — the `-git` PKGBUILD builds from any clone locally, and the
+  prebuilt install is the `archpkg` CI artifact.
 
 ### End-user install paths (from README)
 
-- Arch: download the `archpkg` artifact from the latest green `release.yml`
-  run on `main` (`gh run list/download`) and `sudo pacman -U`, or `makepkg
-  -si` from a clone.
+- Arch: download the `archpkg` artifact from a green `release.yml` run on a
+  `v*` tag (or a manual dispatch; `gh run list/download`) and
+  `sudo pacman -U`, or `makepkg -si` from a clone.
 - Other distros: `pipx install 'git+https://...#egg=notees-gtk[ui]'` or a venv
   install; both pull the `ui` extra.
 
@@ -74,8 +81,8 @@ Runs on every push to `main` AND on `v*` tags.
 - **Never delete or re-point the tag.** Mark the Release as a pre-release
   (or delete the Release assets if it was never announced), fix on `main`,
   and cut the next patch tag.
-- A bad `main` build only affects CI/archpkg artifacts; they are replaced by
-  the next green run and are not user-facing install sources.
+- A bad tag or dispatch build only affects CI/archpkg artifacts; they are
+  replaced by the next green run and are not user-facing install sources.
 
 ## Consuming side
 

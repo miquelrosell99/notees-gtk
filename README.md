@@ -27,10 +27,10 @@ Headless machines can run the test suite and linters without the `ui` extra; the
 
 ### Arch Linux
 
-**Prebuilt package (recommended).** GitHub CI builds an Arch package on every push to `main`. Download the `archpkg` artifact from the latest green run and install it:
+**Prebuilt package (recommended).** GitHub CI builds an Arch package on every `v*` tag (and on manual dispatch). Download the `archpkg` artifact from the latest green run and install it:
 
 ```sh
-gh run list --workflow release.yml --repo miquelrosell99/notees-gtk --branch main --limit 1
+gh run list --workflow release.yml --repo miquelrosell99/notees-gtk --limit 5
 gh run download <run-id> --repo miquelrosell99/notees-gtk --name archpkg
 sudo pacman -U notees-gtk-*.pkg.tar.zst
 ```
@@ -87,7 +87,7 @@ uv run mypy src
 
 ## Building
 
-- Python sdist/wheel and the Arch package are built by GitHub Actions — see the [Actions page](https://github.com/miquelrosell99/notees-gtk/actions). Pushes to `main` and `v*` tags produce downloadable artifacts; tags additionally publish a GitHub Release with both attached.
+- Python sdist/wheel and the Arch package are built by GitHub Actions — see the [Actions page](https://github.com/miquelrosell99/notees-gtk/actions). `v*` tags and manual dispatch runs produce downloadable artifacts; tags additionally publish a GitHub Release with both attached.
 - To build the Arch package locally, run `makepkg -si` from a clone (see [Install](#arch-linux)).
 
 ## License

@@ -31,7 +31,7 @@ AGENTS.md
 - **Any code, wire, applier, fixture, sync, or UI change → invoke the
   `notees-gtk-development` skill first** and follow its laws (lockstep fixture
   gate, the changelog-as-record rule, docs-part-of-change).
-- **Any release/packaging task — tag, CI, PKGBUILD/AUR, GitHub Release →
+- **Any release/packaging task — tag, CI, PKGBUILD, GitHub Release →
   invoke the `notees-gtk-operations` skill first.**
 - The skills summarize and enforce; the main repo's `docs/developers/`
   runbooks are the canonical protocol/wire reference for all three
