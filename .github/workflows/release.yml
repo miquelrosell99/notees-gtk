@@ -1,18 +1,56 @@
 name: Release
 
+# GitHub Releases come ONLY from pushing a `v*` tag. This workflow also runs
+# on manual dispatch: a dispatch builds the python-dist + archpkg artifacts
+# only (the `release` job is tag-gated and stays skipped), optionally from an
+# explicit `git-ref`. The `guard` job enforces the dispatch semantics: a
+# branch/SHA dispatch is legitimate but warned as artifacts-only, while a
+# git-ref that looks like a release tag fails loudly — a dispatch runs with
+# ref_type=branch, so it can never publish what the operator expected; the
+# tag itself must be pushed instead.
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      git-ref:
+        description: 'Git ref to build from (artifacts only — releases come from v* tags)'
+        required: true
+        default: 'main'
 
 permissions:
   contents: read
 
 jobs:
-  python-dist:
+  guard:
     runs-on: ubuntu-latest
     steps:
+      - name: Enforce dispatch semantics
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Tag push — artifacts will publish as a GitHub Release."
+            exit 0
+          fi
+          ref="${{ inputs.git-ref }}"
+          case "$ref" in
+            refs/tags/v* | v*)
+              echo "::error::git-ref '$ref' looks like a release tag, but a workflow_dispatch run has ref_type=branch and can never publish a Release. Push the tag instead (git push origin $ref) and let the tag trigger build and publish it."
+              exit 1
+              ;;
+            *)
+              echo "::warning::Manual dispatch from '$ref': this run produces python-dist + archpkg artifacts only. GitHub Releases come from pushing a v* tag."
+              ;;
+          esac
+
+  python-dist:
+    runs-on: ubuntu-latest
+    needs: guard
+    steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.git-ref || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -35,6 +73,7 @@ jobs:
   archpkg:
     runs-on: ubuntu-latest
     container: archlinux:latest
+    needs: guard
     steps:
       - name: Prepare build environment
         run: |
@@ -44,6 +83,8 @@ jobs:
           useradd -m builder
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.git-ref || github.ref }}
 
       - name: Build package as non-root user
         run: |

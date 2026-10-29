@@ -8,6 +8,19 @@ history.
 
 ## 2026-10-29
 
+- **ci(release): git-ref dispatch input + fail-loud dispatch guard on
+  release.yml.** Manual dispatches can now build the `python-dist` and
+  `archpkg` artifacts from an explicit `git-ref` input (default `main`) —
+  both checkouts take `ref: ${{ inputs.git-ref || github.ref }}`. A new
+  `guard` job (a `needs` of both artifact jobs) makes the dispatch semantics
+  explicit: a branch/SHA dispatch is legitimate and prints an
+  artifacts-only `::warning` (GitHub Releases still come only from pushing
+  a `v*` tag — the `release` job stays tag-gated), while a `git-ref` that
+  looks like a release tag (`v*` or `refs/tags/v*`) fails the run loudly —
+  a dispatch has `ref_type=branch` and can never publish what the operator
+  expected; the tag itself must be pushed instead. Header comment
+  documents the contract. YAML validated with `yaml.safe_load`; the
+  pytest + ruff + mypy gate is green.
 - **feat(store): reject `isEmbedded` writes on date-chain nodes — the
   date-chain embedding lock (lockstep with the TS reference).** A date
   node's journal role is platform-fixed (document chrome); an
