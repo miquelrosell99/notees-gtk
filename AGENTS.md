@@ -79,6 +79,14 @@ AGENTS.md
   implementations converge — the TS reference, this client, and Flutter — each
   with fixtures exercising every affected applier. Recipe:
   `references/development-workflow.md`.
+- **displayTemplate render consumption is PENDING (store done, schema v24,
+  2026-10-29).** The store/applier layer accepts and resolves the class-level
+  `displayTemplate` (fixture `class-display-template.json`), but no GTK
+  surface renders it yet — the web reference chrome (mentions, pickers,
+  breadcrumbs, search rows) does. When building class-aware titles, read the
+  contract in the main repo's `packages/protocol/SCHEMA.md` (reference-chrome
+  only, the tri-state, the dual-key/folded placeholder rule, the
+  equal-rank first-index-wins alias precedence).
 - **Fail loud; no backward compatibility.** Retired wire keys are rejected
   outright by the strict schemas; the stored log is rewritten in place by
   one-time migrations, never read compatibly.
