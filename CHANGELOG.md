@@ -8,6 +8,19 @@ history.
 
 ## 2026-10-29
 
+- **ci: pin release.yml runners to ubuntu-22.04, add workflow-level
+  concurrency, and give ci.yml a git-ref dispatch input.** The `guard`,
+  `python-dist`, `archpkg`, and `release` jobs all ran on
+  `ubuntu-latest` while ci.yml pinned `ubuntu-22.04` — every runner is now
+  pinned to the same fleet image (the `archpkg` job's `archlinux` container
+  is unaffected; its runner is pinned for consistency). `release.yml` gains
+  `concurrency: {group: release-${{ github.ref }}, cancel-in-progress:
+  false}` at workflow level — a tag push queues behind any in-flight run
+  instead of being cancelled mid-publish. ci.yml's `workflow_dispatch` gains
+  a `git-ref` input (default `main`) and its checkout honors
+  `ref: ${{ inputs.git-ref || github.ref }}` (schedules and PRs still
+  resolve to `github.ref`). YAML validated with `yaml.safe_load`; the pytest
+  + ruff + mypy gate is green.
 - **ci(release): git-ref dispatch input + fail-loud dispatch guard on
   release.yml.** Manual dispatches can now build the `python-dist` and
   `archpkg` artifacts from an explicit `git-ref` input (default `main`) —
