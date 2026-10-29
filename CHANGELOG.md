@@ -10,26 +10,23 @@ history.
 
 - **ci: restructure the GitHub Actions workflows on the fleet RosellRamos
   pattern — PR/nightly/dispatch CI, tag/dispatch-only release pipeline,
-  SHA-pinned actions, conditional SonarQube scan; no AUR publication.**
+  SHA-pinned actions; no AUR publication.**
   Mechanism: `ci.yml` drops the `push: [main]` trigger (the recurring
   push-time failures were the pain point; the nightly cron at `23 3 * * *`
   covers `main`'s head) and gains `pull_request:`, `workflow_dispatch:`, a
   per-ref `concurrency` group with `cancel-in-progress`, pinned
   `ubuntu-22.04` runners, and SHA pins for every action (checkout v7.0.0,
-  setup-uv v10.3.3 — the same pin set as the Flutter client). A new
-  conditional `sonar` job runs `SonarSource/sonarqube-scan-action` (SHA-pinned
-  v8.4.0) on PRs and the nightly schedule, gated on the `SONAR_HOST_URL` repo
-  variable, configured by the new `sonar-project.properties`
-  (`notees-gtk`, `src` sources, `tests` tests). `release.yml` now triggers on
-  `v*` tag pushes and `workflow_dispatch` only — `python-dist` and `archpkg`
-  no longer build on every main push; the `release` job stays tag-gated, so a
-  dispatch produces artifacts only. `upload-artifact` (v7.0.1),
-  `download-artifact` (v7.0.0), and `softprops/action-gh-release` (v3.0.3)
-  are SHA-pinned. Docs agree with the new reality: the operations skill and
-  its `references/releases.md` now record **no AUR publication** (the
-  PKGBUILD is local/CI-only — nothing is pushed to the AUR; the prebuilt
-  install is the `archpkg` CI artifact), and the README install instructions
-  point at tag/dispatch runs instead of main pushes.
+  setup-uv v10.3.3 — the same pin set as the Flutter client).
+  `release.yml` now triggers on `v*` tag pushes and `workflow_dispatch`
+  only — `python-dist` and `archpkg` no longer build on every main push; the
+  `release` job stays tag-gated, so a dispatch produces artifacts only.
+  `upload-artifact` (v7.0.1), `download-artifact` (v7.0.0), and
+  `softprops/action-gh-release` (v3.0.3) are SHA-pinned. Docs agree with the
+  new reality: the operations skill and its `references/releases.md` now
+  record **no AUR publication** (the PKGBUILD is local/CI-only — nothing is
+  pushed to the AUR; the prebuilt install is the `archpkg` CI artifact), and
+  the README install instructions point at tag/dispatch runs instead of main
+  pushes.
 
 ## 2026-10-28
 
