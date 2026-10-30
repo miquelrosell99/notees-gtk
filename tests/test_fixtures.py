@@ -96,6 +96,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/property-assign.json",
     "wire/property-date-qualifier.json",
     "wire/property-datetime.json",
+    "wire/property-schema-delete.json",
     "wire/property-schema-scope.json",
     "wire/property-schema-update-fields.json",
     "wire/property-set-lww.json",

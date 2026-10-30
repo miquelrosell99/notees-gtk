@@ -827,8 +827,9 @@ class CardFamilySeedEntry:
 
     Every entry is class-bound to the ``card`` system class (the schema's
     ``scope_class_ids`` = [card]) and seed UNPINNED — the 2026-10-27 pinned
-    roster is frozen (source family, meetingDate/location, the task heads)
-    and no card field joins it. Live schedule state lives in these property
+    roster is frozen (source family, meeting family, the task heads;
+    meetingDate's pin retired with the property 2026-10-30) and no card
+    field joins it. Live schedule state lives in these property
     values (ordinary LWW property ops); the ``card.review`` op is the
     additive review journal on top.
     """

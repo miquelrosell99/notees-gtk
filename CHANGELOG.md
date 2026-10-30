@@ -6,6 +6,32 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-10-30
+
+- **feat(fixtures): the `propertySchema.delete` canonical fixture lands in
+  the vendored wire corpus (lockstep with the TS reference's meetingDate
+  retirement).** The TS monorepo withdraws the `meetingDate` property (a
+  meeting IS-A event and carries the inherited `eventDate`; the class-local
+  date duplicate rendered twice) and ships
+  `scripts/migrate-meeting-date-retirement.mts`, whose cleanup appends
+  `propertySchema.delete` — the schema's soft delete (`active = 0`), an op
+  this port has applied since the v2 promotion but which never had a
+  canonical fixture. The corpus gains `property-schema-delete.json`
+  (byte-identical, sha256
+  `90fc9502bfaffc59cd99f3888ccfee3f1d18de742e5e9e7bbeac2f3fdc202d3c`),
+  added to the wire round-trip list: a bound text schema + authored value,
+  the soft delete, a post-delete `property.set` (writes against the retained
+  row still validate — the deliberate no-active-filter rule), and a
+  delete of an unknown id (a lenient no-op). The whole suite replays it
+  clean (pytest green). Sibling seed-manifest check (the retirement's
+  lockstep law): this port carries no `meetingDate` constant — the only
+  touch is the `CardFamilySeedEntry` docstring's pin-roster sentence,
+  amended to the post-retirement roster (source family, meeting family, the
+  task heads). The Flutter port receives the same fixture vendor (its
+  verification is pending there — no toolchain on the reference host).
+  The GTK applier needed no code change — the op already soft-deletes
+  exactly like the fixture pins.
+
 ## 2026-10-29
 
 - **feat(store): class-level `displayTemplate` — the members' derived-title

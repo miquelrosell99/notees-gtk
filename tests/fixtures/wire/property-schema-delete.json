@@ -1,0 +1,185 @@
+{
+  "comment": "propertySchema.delete: the property schema's soft delete — the row flips to active = 0 (all three appliers: TS store/src/appliers.ts, GTK store.py, Flutter relay_appliers.dart — converged 2026-10-30), never a hard remove. A text schema 'Milestone' binds to the ProjectX class; a classified node carries an authored value; the delete then lands. Pinned arms: (1) the soft-deleted SCHEMA ROW survives, so authored values written BEFORE the delete still validate against — and render with — the stored type at the effective read (the deliberate no-active-filter rule, Flutter's PropertySchemaValidationRow parity comment); list/picker surfaces instead filter active = 1, so the schema vanishes from choices while its surviving values stay typed. (2) A property.set AFTER the delete succeeds against the retained row (a text value at the same slot — LWW at the element), pinning the write path's leniency. (3) A delete of an UNKNOWN schema id is a lenient no-op (a plain UPDATE tombstone, no fail-loud existence check). The op set stays inside the three-client intersection — property.assign/unassign/empty are TS-only today (the ports skip them with a warning), so this fixture deliberately authors no assignment state. The meetingDate retirement (2026-10-30) is the first canonical consumer: scripts/migrate-meeting-date-retirement.mts appends this op after copying values to eventDate + unsetting the surviving values and the binding, so no live state references the deleted schema.",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-000000000e01",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000000,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.create",
+      "timestamp": "2026-09-25T12:13:20.000Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e111",
+        "name": "Milestone",
+        "type": "text",
+        "multi": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e02",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000e112"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-25T12:13:20.100Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-00000000e112",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "ProjectX"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e03",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000e112"
+      ],
+      "opType": "class.property.set",
+      "timestamp": "2026-09-25T12:13:20.200Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-00000000e112",
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e111"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e04",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000e113"
+      ],
+      "opType": "object.create",
+      "timestamp": "2026-09-25T12:13:20.300Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000e113",
+        "classIds": [
+          "0192a000-0000-7000-8000-00000000e112"
+        ],
+        "tagIds": [],
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Launch plan"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e06",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000500,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000e113"
+      ],
+      "opType": "property.set",
+      "timestamp": "2026-09-25T12:13:20.500Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000e113",
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e111",
+        "value": "Ship it",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e07",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000600,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.delete",
+      "timestamp": "2026-09-25T12:13:20.600Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e111"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e08",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000700,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-00000000e113"
+      ],
+      "opType": "property.set",
+      "timestamp": "2026-09-25T12:13:20.700Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000e113",
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e111",
+        "value": "Ship it v2",
+        "idx": 0
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000e09",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-00000000e100",
+      "actorId": "0192a000-0000-7000-8000-00000000e101",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727300000800,
+        "logical": 0
+      },
+      "affectedNodeIds": [],
+      "opType": "propertySchema.delete",
+      "timestamp": "2026-09-25T12:13:20.800Z",
+      "payload": {
+        "propertySchemaId": "0192a000-0000-7000-8000-00000000e199"
+      }
+    }
+  ]
+}
