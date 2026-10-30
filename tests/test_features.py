@@ -186,11 +186,12 @@ class TestGatingWalk:
         EVENTS is off — exactly like meeting and birthday."""
         assert gating_features_for_class("trip") == ("events",)
 
-    def test_the_four_plain_deploy_catalog_seeds_have_no_gating(self) -> None:
-        """features.ts parity: definition/idea/place/project are plain seeds —
+    def test_the_plain_deploy_catalog_seeds_have_no_gating(self) -> None:
+        """features.ts parity: definition/idea/place/project (the #14
+        follow-up) and question/plan (workflows slice 2) are plain seeds —
         unmanaged, like the TS record (absent from ALWAYS_ON_SYSTEM_CLASSES,
         no family base ancestor, gate on nothing)."""
-        for name in ("definition", "idea", "place", "project"):
+        for name in ("definition", "idea", "place", "project", "question", "plan"):
             assert gating_features_for_class(name) == ()
 
 
@@ -249,9 +250,10 @@ class TestAlwaysOnAndAncestors:
             assert is_always_on_system_class(name)
         for name in ("task", "event", "meeting", "source", "person", "birthday", "book", "web_page", "trip"):
             assert not is_always_on_system_class(name)
-        # The #14 follow-up's four plain seeds are unmanaged, not always-on
-        # (features.ts parity — they are absent from the TS always-on list).
-        for name in ("definition", "idea", "place", "project"):
+        # The plain deploy-catalog seeds are unmanaged, not always-on
+        # (features.ts parity — they are absent from the TS always-on list):
+        # the #14 follow-up's four, plus the workflows slice 2 pair.
+        for name in ("definition", "idea", "place", "project", "question", "plan"):
             assert not is_always_on_system_class(name)
         assert set(ALWAYS_ON_SYSTEM_CLASSES).isdisjoint(
             name for feature in WORKSPACE_FEATURE_MAP for name in family_class_names(feature)
@@ -276,8 +278,9 @@ class TestAlwaysOnAndAncestors:
         # extends source; paper's edge left the map with its withdrawal.
         for name in ("artwork", "audio_recording", "patent", "tv_broadcast", "video_recording"):
             assert system_class_ancestors(name) == frozenset({"source"})
-        # The #14 follow-up's four plain seeds extend nothing.
-        for name in ("definition", "idea", "place", "project"):
+        # The #14 follow-up's four plain seeds extend nothing — and neither
+        # do the workflows slice 2 pair (question/plan).
+        for name in ("definition", "idea", "place", "project", "question", "plan"):
             assert system_class_ancestors(name) == frozenset()
         assert system_class_uuid("task") == TASK
         assert system_class_uuid("trip") == TRIP

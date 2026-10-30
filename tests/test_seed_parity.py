@@ -33,7 +33,11 @@ system-class block prefix, the extends parents, and the property specs:
   with their mdi icons + display titles; ``trip`` extends ``event`` so the
   events-family toggle cascades to it — the gating/family groupings mirror
   ``features.ts`` (the four plain ones stay unmanaged: no gating, not
-  always-on).
+  always-on);
+- the workflows slice 2 pair: ``question`` / ``plan`` (…0066/…0067), the
+  everyday classes the research workflow reuses — deploy-catalog plain
+  seeds per the #14 follow-up's ruling (no extends, unmanaged, the same
+  static-map coverage guard).
 
 It fails loud if a future registry/applier change breaks seed application.
 """
@@ -111,6 +115,13 @@ PLACE = "00000000-0000-0000-0001-000000000045"
 PROJECT = "00000000-0000-0000-0001-000000000046"
 TRIP = "00000000-0000-0000-0001-000000000047"
 EVENT = "00000000-0000-0000-0001-000000000040"
+
+#: Workflows slice 2 (2026-10-30): the everyday `question`/`plan` classes
+#: (seeds.ts …0066/…0067) — deploy-catalog plain seeds per the #14
+#: follow-up's ruling (zero wire cost, seed convergence only). No extends
+#: (neither IS anything else), unmanaged like the four plain #14 seeds.
+QUESTION = "00000000-0000-0000-0001-000000000066"
+PLAN = "00000000-0000-0000-0001-000000000067"
 
 #: An unrelated user class authored after the seed (the later-extends
 #: rebuild probe).
@@ -534,6 +545,97 @@ class TestDeployCatalogFive:
             assert gating_features_for_class(name) == ()
             assert not is_always_on_system_class(name)
         assert not is_always_on_system_class("trip")
+
+
+class TestWorkflowsEverydayPair:
+    """The workflows slice 2 seed convergence: the everyday ``question`` /
+    ``plan`` classes (seeds.ts …0066/…0067) the research workflow reuses.
+    Deploy-catalog plain seeds per the #14 follow-up's ruling — zero wire
+    cost, seed convergence only: no extends (neither IS anything else), no
+    parentlessRole flag, not archived by default, unmanaged (no gating, not
+    always-on) exactly like the four plain #14 seeds."""
+
+    PAIR: tuple[tuple[str, str, str, str], ...] = (
+        # (seed key, uuid, mdi icon, display title) — the seeds.ts record, pinned.
+        ("question", QUESTION, "mdiHelpCircleOutline", "Question"),
+        ("plan", PLAN, "mdiClipboardTextOutline", "Plan"),
+    )
+
+    def test_fixed_ids_continue_the_roster_block_contiguously(self) -> None:
+        ids = [class_id for _name, class_id, _icon, _title in self.PAIR]
+        assert len(set(ids)) == len(ids)
+        for class_id in ids:
+            assert class_id.startswith(SYSTEM_CLASS_BLOCK_PREFIX)
+        assert set(ids).isdisjoint(WITHDRAWN_CLASS_IDS)
+        # …0066/…0067 are the two slots right after the source-library
+        # roster's …0065 — no gaps, no collisions with the withdrawn slots.
+        suffixes = [int(class_id.rsplit("-", 1)[1], 16) for class_id in ids]
+        assert suffixes == [0x66, 0x67]
+
+    def test_static_map_carries_the_pair_with_seeds_icons_and_titles(self) -> None:
+        """The drift guard: both resolve through the GTK static map at their
+        fixed id, with the seeds.ts icon + display title — a future
+        main-repo seed change that skips this port fails here."""
+        from notees_gtk.core.protocol.features import (  # noqa: PLC0415
+            SYSTEM_CLASS_DISPLAY_NAMES,
+            SYSTEM_CLASS_ICONS,
+            system_class_uuid,
+        )
+
+        for name, class_id, icon, title in self.PAIR:
+            assert system_class_uuid(name) == class_id
+            assert SYSTEM_CLASS_ICONS[name] == icon
+            assert SYSTEM_CLASS_DISPLAY_NAMES[name] == title
+
+    def test_seed_replay_creates_the_classes_with_display_titles(self, store: LocalStore) -> None:
+        """The seed-op shape ``buildSeedEnvelopes`` emits for the pair
+        (class.create with the display title as content + the mdi icon —
+        the server seed authors ``SYSTEM_CLASS_DISPLAY_NAMES`` into the
+        text content, title-is-content)."""
+        for offset, (_name, class_id, icon, title) in enumerate(self.PAIR):
+            assert (
+                store.apply_remote(
+                    seed_env(
+                        "class.create",
+                        {"classId": class_id, "contentAst": [{"type": "text", "text": title}], "icon": icon},
+                        1 + offset,
+                    )
+                )
+                is True
+            )
+        for _name, class_id, _icon, title in self.PAIR:
+            row = store.node(WS, class_id)
+            assert row is not None
+            assert row.is_class is True
+            assert row.is_embedded is False  # classes converge to the standalone 0
+            assert row.content_plain == title  # title-is-content: the display title IS the content
+            assert row.parent_id is None  # classes are always roots
+        with sqlite3.connect(_db_path(store)) as raw:
+            registry = {
+                class_id: (name, icon)
+                for class_id, name, icon in raw.execute("SELECT id, name, icon FROM class WHERE active = 1").fetchall()
+            }
+        for _name, class_id, icon, title in self.PAIR:
+            assert registry[class_id] == (title, icon)
+
+    def test_gating_and_family_groupings_mirror_features_ts(self) -> None:
+        """features.ts parity: the pair are plain seeds — no extends, so
+        no family cascade and no gating, and absent from the always-on set
+        exactly like the TS record."""
+        from notees_gtk.core.protocol.features import (  # noqa: PLC0415
+            SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES,
+            SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK,
+            gating_features_for_class,
+            is_always_on_system_class,
+            system_class_ancestors,
+        )
+
+        for name in ("question", "plan"):
+            assert system_class_ancestors(name) == frozenset()
+            assert gating_features_for_class(name) == ()
+            assert not is_always_on_system_class(name)
+            assert name not in SYSTEM_ARCHIVED_BY_DEFAULT_CLASSES
+            assert name not in SYSTEM_CLASS_PARENTLESS_ROLE_BLOCK
 
 
 #: The 30 NEW source type-classes (source-library slice):

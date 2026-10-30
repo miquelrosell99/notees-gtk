@@ -8,6 +8,34 @@ history.
 
 ## 2026-10-30
 
+- **feat(seed): the workflows slice 2 pair — the everyday `question`/`plan`
+  classes ported to the static map; the seed-parity suite pins the manifest
+  so drift fails the gate.** The GTK side of the monorepo's workflows slice
+  2 seed follow-up (main `b3558430f`): the everyday `question`/`plan`
+  classes the research workflow reuses, deploy-catalog plain seeds per the
+  definition/idea/place/project/trip precedent (zero wire cost, seed
+  convergence only), ported from `packages/domain/src/seeds.ts` +
+  `features.ts`:
+  - **The static map** (`core/protocol/features.py`) gains the two fixed
+    class UUIDs (…0066/…0067, the two slots right after the source-library
+    roster's …0065) and their MDI icons + display titles (the
+    `SYSTEM_CLASS_ICONS` / `SYSTEM_CLASS_DISPLAY_NAMES` subset —
+    `mdiHelpCircleOutline`/"Question", `mdiClipboardTextOutline`/"Plan").
+    No extends edge (neither IS anything else), no parentlessRole flag,
+    not archived by default — the pair stays unmanaged: no gating, not
+    always-on (features.ts parity, exactly like the four plain #14 seeds).
+  - **The seed-parity test** (`tests/test_seed_parity.py`) grows the
+    `TestWorkflowsEverydayPair` class: the ids pinned (block prefix,
+    uniqueness, contiguous …0066/…0067 suffixes, the withdrawn slots
+    untouched), the static-map coverage guard, the seed-op replay
+    (`class.create` with the display title as content + the icon) through
+    the store appliers, and the gating/family semantics mirroring
+    `features.ts`.
+  - **The feature tests** extend the plain-seed pins: the six plain
+    deploy-catalog seeds gate on nothing, extend nothing, and stay out of
+    the always-on set.
+  - **Fixtures untouched** — the seed change emits server-side seed
+    envelopes; the corpus stays byte-identical.
 - **feat(fixtures): the `propertySchema.delete` canonical fixture lands in
   the vendored wire corpus (lockstep with the TS reference's meetingDate
   retirement).** The TS monorepo withdraws the `meetingDate` property (a
