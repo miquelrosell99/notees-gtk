@@ -727,6 +727,11 @@ class TaskFamilySeedEntry:
     # wall-clock ``time`` beside the day-node anchor; full-day stays default.
     type: Literal["select", "datetime", "object"]
     options: tuple[TaskSeedOption, ...] = ()
+    # The schema-level default (seeds.ts ``defaultValue``: the option id for
+    # select types; None = absent, NULL at the row). Only the Status schema
+    # carries one — the Pending option id — the task class supplies "Pending"
+    # as a DERIVED read (never materialized into property values).
+    default_value: str | None = None
     # the value-display position rides
     # the SCHEMA entry the ensure authors — only the Status schema defaults
     # to "bullet" (the status value rides the block bullet as an icon
@@ -754,7 +759,9 @@ class TaskFamilySeedEntry:
 #: carry the designed glyphs (seeds.ts ``TASK_STATUS_OPTIONS``): the
 #: circle-family MDI icons with a distinct color each, so a task's state
 #: reads at a glance from the block bullet. ``display`` lands on
-#: the property_schema row, never the binding.
+#: the property_schema row, never the binding. ``default_value`` rides the
+#: SCHEMA row the same way — only the Status schema carries one (the Pending
+#: option id; the 2026-11-02 derived-default parity with seeds.ts).
 TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
     TaskFamilySeedEntry(
         "taskStatus",
@@ -769,6 +776,7 @@ TASK_FAMILY_SEED: tuple[TaskFamilySeedEntry, ...] = (
             TaskSeedOption(TASK_STATUS_OPTION_UUIDS["cancelled"], "Cancelled", "mdiCloseCircle", "red"),
         ),
         display="bullet",
+        default_value=TASK_STATUS_OPTION_UUIDS["pending"],
     ),
     TaskFamilySeedEntry("taskScheduled", "Scheduled", "datetime"),
     TaskFamilySeedEntry("taskDeadline", "Deadline", "datetime"),

@@ -1866,6 +1866,7 @@ class TestClassPropertyBindings:
                     "propertySchemaId": uid("ps-1"),
                     "name": "State",
                     "type": "select",
+                    "options": [{"id": "todo", "label": "Todo"}, {"id": "doing", "label": "Doing"}],
                     "display": "bullet",
                     "defaultValue": "todo",
                 },
@@ -2906,6 +2907,96 @@ class TestWorkspaceFeatureToggle:
         }
         binding_columns = {row[1] for row in raw_rows(store, "PRAGMA table_info(class_property)")}
         assert "display" not in binding_columns
+
+    def test_status_schema_seeds_the_pending_default(self, store: LocalStore) -> None:
+        """The 2026-11-02 seeds.ts parity: the Status schema's
+        ``defaultValue`` = the Pending option id — the ensure INSERT writes
+        the column JSON-encoded ('"<uuid>"', the column stores JSON like
+        ``options``); the rest of the family stays NULL (absent = no
+        default)."""
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        defaults = dict(
+            raw_rows(
+                store,
+                "SELECT id, default_value FROM property_schema WHERE id LIKE '00000000-0000-0000-0003-%'",
+            )
+        )
+        assert defaults == {
+            "00000000-0000-0000-0003-000000000001": '"00000000-0000-0000-0004-000000000009"',  # Status
+            "00000000-0000-0000-0003-000000000002": None,  # Deadline
+            "00000000-0000-0000-0003-000000000003": None,  # Scheduled
+            "00000000-0000-0000-0003-000000000004": None,  # Priority
+            "00000000-0000-0000-0003-000000000005": None,  # Closed
+            "00000000-0000-0000-0003-000000000006": None,  # Recurrence
+            "00000000-0000-0000-0003-000000000012": None,  # Project
+        }
+
+    def test_task_class_derives_pending_status_without_a_write(self, store: LocalStore) -> None:
+        """Assigning the task class derives "Pending" at READ time (never
+        materialized): the effective read supplies the schema default as a
+        ``source="default"`` row, and an authored status shadows it."""
+        assert store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0))) is True
+        status_schema = "00000000-0000-0000-0003-000000000001"
+        pending = "00000000-0000-0000-0004-000000000009"
+        member = uid("task-member")
+        store.apply_remote(create_env(member, class_ids=(self.TASK_CLASS,), hlc=(20, 0), name="Buy milk"))
+        effective = store.get_effective_properties(member)
+        assert [(row.value, row.source, row.bound_by) for row in effective] == [(pending, "default", self.TASK_CLASS)]
+        assert raw_rows(
+            store,
+            "SELECT COUNT(*) FROM property_value WHERE node_id = ? AND property_schema_id = ?",
+            (member, status_schema),
+        ) == [(0,)]
+        # An authored transition (Done) shadows the derived default.
+        store.apply_remote(
+            make_env(
+                "property.set",
+                {"objectId": member, "propertySchemaId": status_schema, "value": "00000000-0000-0000-0004-00000000000c"},
+                hlc=(30, 0),
+            )
+        )
+        effective = store.get_effective_properties(member)
+        assert [(row.value, row.source) for row in effective] == [
+            ("00000000-0000-0000-0004-00000000000c", "authored")
+        ]
+
+    def test_dangling_select_default_yields_nothing_at_read(self, store: LocalStore) -> None:
+        """Read-side option membership (the 2026-11-02 effective.ts rule): a
+        select default whose value is no longer among the schema's stored
+        options yields no default — write-time validation stays type-only,
+        so a drifted workspace (option deleted after the default) never
+        fails loud and never derives a dangling option id."""
+        store.apply_remote(create_env(name="Owner", hlc=(1, 0)))
+        store.apply_remote(class_env("class.create", self.TASK_CLASS, hlc=(2, 0), name="C"))
+        schema_id = uid("pc2-dangling")
+        store.apply_remote(
+            make_env(
+                "propertySchema.create",
+                {
+                    "propertySchemaId": schema_id,
+                    "name": "stage",
+                    "type": "select",
+                    "options": [{"id": "b", "label": "B"}],
+                    "defaultValue": "a",
+                },
+                hlc=(3, 0),
+            )
+        )
+        store.apply_remote(class_env("class.property.set", self.TASK_CLASS, hlc=(4, 0), propertySchemaId=schema_id))
+        node = uid("pc2-dangling-node")
+        store.apply_remote(create_env(node, class_ids=(self.TASK_CLASS,), hlc=(10, 0), name="N"))
+        assert store.get_effective_properties(node) == []
+        # The default IS among the options again (update restores it): the
+        # derived row resurfaces.
+        store.apply_remote(
+            make_env(
+                "propertySchema.update",
+                {"propertySchemaId": schema_id, "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]},
+                hlc=(5, 0),
+            )
+        )
+        effective = store.get_effective_properties(node)
+        assert [(row.value, row.source) for row in effective] == [("a", "default")]
 
     def test_ensure_is_insert_or_ignore_and_never_clobbers(self, store: LocalStore) -> None:
         store.apply_remote(self.feature_env("tasks", True, hlc=(10, 0)))

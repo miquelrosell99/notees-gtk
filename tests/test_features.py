@@ -381,6 +381,14 @@ class TestTaskFamilySeed:
         assert TASK_FAMILY_SEED[0].display == "bullet"
         assert all(entry.display is None for entry in TASK_FAMILY_SEED[1:])
 
+    def test_only_the_status_entry_carries_a_default_value(self) -> None:
+        """The Status schema seeds ``defaultValue`` = the Pending option id
+        (the 2026-11-02 seeds.ts parity — the task class supplies "Pending"
+        as a derived read, never materialized); every other entry keeps
+        default_value None (absent = no default)."""
+        assert TASK_FAMILY_SEED[0].default_value == "00000000-0000-0000-0004-000000000009"
+        assert all(entry.default_value is None for entry in TASK_FAMILY_SEED[1:])
+
 
 class TestCardFamilySeed:
     """The memorization-cards slice's seed knowledge (seeds.ts parity):

@@ -3707,8 +3707,9 @@ class LocalStore:
             self._conn.execute(
                 """INSERT OR IGNORE INTO property_schema
                      (id, workspace_id, name, type, multi, icon, scope_class_ids, options, target_class_filter,
-                      date_precision, date_qualified, display, hide_when_empty, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, ?)""",
+                      date_precision, date_qualified, display, hide_when_empty, active, created_at, updated_at,
+                      default_value)
+                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, ?, ?)""",
                 (
                     schema_id,
                     env.workspace_id,
@@ -3736,6 +3737,11 @@ class LocalStore:
                     1 if entry.hide_when_empty else None,
                     ts,
                     ts,
+                    # The schema-level default (only the Status schema's
+                    # Pending option id). The column stores JSON (the
+                    # propertySchema.create/update appliers stringify) — the
+                    # ensure must match or reads parse the raw string.
+                    json.dumps(entry.default_value) if entry.default_value is not None else None,
                 ),
             )
             self._conn.execute(
@@ -4255,7 +4261,10 @@ class LocalStore:
         contracts readonly/hideWhenEmpty/display are SCHEMA-sourced —
         they ride authored and derived rows alike, unbound values included).
         A stored default that no longer matches the schema type yields no
-        default (PC2 read-side). R3/R4: every row
+        default (PC2 read-side); a select/multi_select default whose value
+        is no longer among the schema's options (dangling option id) yields
+        no default either (the 2026-11-02 read-side option-membership rule).
+        R3/R4: every row
         carries the eligibility tag — the schema's scopeClassIds (None =
         global) against the node's extends-aware class closure; an
         ineligible node reads neither the property nor a derived default,
@@ -4354,17 +4363,26 @@ class LocalStore:
         schema_ids = {str(row["property_schema_id"]) for row in authored_rows} | set(winner_by_schema)
         schemas: dict[str, EffectivePropertySchema] = {}
         schema_default: dict[str, Any] = {}
+        # The schema's options (parsed; the derived-default membership check).
+        schema_options: dict[str, tuple[str, ...]] = {}
         if schema_ids:
             placeholders = ", ".join("?" for _ in schema_ids)
             rows = self._conn.execute(
                 f"SELECT id, name, type, multi, display, hide_when_empty,"
-                f" icon, scope_class_ids, validation_rules, default_value"
+                f" icon, scope_class_ids, validation_rules, default_value, options"
                 f" FROM property_schema WHERE id IN ({placeholders})",
                 tuple(sorted(schema_ids)),
             ).fetchall()
             for row in rows:
                 if row[9] is not None:
                     schema_default[str(row[0])] = parse_json(row[9])
+                parsed_options = parse_json(row[10])
+                if isinstance(parsed_options, list):
+                    schema_options[str(row[0])] = tuple(
+                        str(option["id"])
+                        for option in parsed_options
+                        if isinstance(option, dict) and "id" in option
+                    )
                 schemas[str(row[0])] = EffectivePropertySchema(
                     id=str(row[0]),
                     name=str(row[1]),
@@ -4441,6 +4459,19 @@ class LocalStore:
             # delete+recreate changed the type) yields no default rather
             # than a wrong-typed value.
             if schema is not None and not _is_valid_default_for_type(schema.type, default_value):
+                continue
+            # Read-side option membership (the effective.ts rule): a
+            # select/multi_select default whose value is no longer among
+            # the schema's options (the option deleted after the default
+            # was written) yields no default rather than a dangling
+            # option id. Write-time validation stays type-only so drifted
+            # workspaces never fail loud.
+            if (
+                schema is not None
+                and schema.type in ("select", "multi_select")
+                and isinstance(default_value, str)
+                and default_value not in schema_options.get(schema_id, ())
+            ):
                 continue
             if schema_id in shadowed_default_schemas:
                 continue  # authored value at idx 0 shadows the default

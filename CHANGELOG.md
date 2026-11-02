@@ -8,6 +8,44 @@ history.
 
 ## 2026-11-02
 
+- **feat(seed): the task Status schema seeds `defaultValue` = the Pending
+  option id — the GTK side of the monorepo's task-status-default slice (the
+  `seeds.ts` `TASK_FAMILY_SEED` parity, no lockstep gate — `defaultValue` is
+  an existing `propertySchema.create/update` payload key every port
+  applies).** The task class now supplies "Pending" as a DERIVED read (the
+  schema-level default, never materialized into property values), so
+  removing the class drops an unchanged status automatically and no client
+  authors the value on creation:
+  - **The manifest** (`core/protocol/features.py`): `TaskFamilySeedEntry`
+    gains `default_value: str | None = None` (the seeds.ts `defaultValue`
+    parity — the option id for select types); the Status entry carries the
+    Pending option id (`TASK_STATUS_OPTION_UUIDS["pending"]`,
+    …0004-…000000000009), every other entry stays absent.
+  - **The ensure** (`data/store.py` `_ensure_task_family_rows`): the
+    `property_schema` INSERT gains the `default_value` column, written
+    JSON-encoded (`'"<uuid>"'` — the column stores JSON like `options`, the
+    TS `ensureTaskFamilyRows` parity comment).
+  - **The effective read** (`data/store.py` `get_effective_properties`):
+    read-side option membership (the `effective.ts` 2026-11-02 rule) — a
+    select/multi_select default whose value is no longer among the schema's
+    stored options (option deleted after the default was written) yields no
+    default rather than a dangling option id; write-time validation stays
+    type-only so drifted workspaces never fail loud.
+  - **No GTK code authored a Pending status write** (grepped the tree:
+    only the seed option definition carries the Pending id) — nothing to
+    remove, unlike the web cycle's assign arm. The monorepo's live-workspace
+    convergence (`migrate-task-status-default.mts`, appended
+    `propertySchema.update` + `property.unset` envelopes) flows to this
+    client through ordinary catch-up.
+  - **Verification:** the scoped gate (`uv run pytest tests/test_features.py
+    tests/test_store.py tests/test_store_fixtures.py` + ruff + mypy) and the
+    full `uv run pytest` suite green; new tests pin the manifest default,
+    the ensure's JSON encoding, the derived "Pending" read (never
+    materialized, authored statuses shadow it), and the dangling-option
+    read-side drop.
+
+## 2026-11-02
+
 - **docs(agents): gate economics + host memory discipline in the development
   skill.** The two-tier gate is written law (mirroring the notees monorepo's
   2026-10-30 ruling): scoped runs (pytest on the touched files + ruff + mypy)
