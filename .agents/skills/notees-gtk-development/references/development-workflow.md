@@ -31,9 +31,16 @@ A protocol change lands here in this order; every step is part of the change:
    orders where racing envelopes exist); unit-semantics tests live beside the
    applier tests in `tests/test_store.py`; payload-shape tests in
    `tests/test_payloads.py`; model invariants in `tests/test_envelope.py`.
-6. **Run the whole gate.** `uv sync && uv run pytest && uv run ruff check &&
-   uv run mypy src` — all green. For wire-level changes also run the live
-   e2e module against a built monorepo server (see `SKILL.md`).
+6. **Run the gate — two tiers.** Scoped (the per-task loop): `uv run pytest
+   tests/<touched-files>` + `uv run ruff check` + `uv run mypy src`; red-green
+   rides those files. Full (`uv sync && uv run pytest && uv run ruff check &&
+   uv run mypy src` — all green) is blocking at pre-landing, after a rebase
+   onto a moved main, and for wire/applier/sync changes (the lockstep
+   surfaces). Host memory discipline: one suite at a time, never parallel
+   full gates (two OOM the dev host); `uv run pytest -n 2` under pressure; a
+   red that vanishes unloaded is a load symptom — root-cause before retrying.
+   For wire-level changes also run the live e2e module against a built
+   monorepo server (see `SKILL.md`).
 7. **Record + docs.** Add the `CHANGELOG.md` entry; update `README.md`/
    `AGENTS.md`/skills when behavior they describe changed.
 

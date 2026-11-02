@@ -50,12 +50,25 @@ before touching the wire.
 
 ## Gate before declaring done
 
-```sh
-uv sync && uv run pytest && uv run ruff check && uv run mypy src
-```
+Two tiers (the notees monorepo's "Gate economics" is the shared law — same
+shape here):
 
-All green is the blocking gate (it mirrors `.github/workflows/ci.yml`). The
-live end-to-end module (`tests/test_live_server_e2e.py`) self-skips without a
+- **Scoped (the per-task loop):** `uv run pytest tests/<touched-files>` on the
+  tests covering the change + `uv run ruff check` + `uv run mypy src`.
+  Red-green rides those files.
+- **Full (`uv sync && uv run pytest && uv run ruff check && uv run mypy src`):
+  blocking at pre-landing, after a rebase onto a moved main, and when the
+  change touches the wire models, appliers, or the sync engine (the lockstep
+  surfaces a sibling client compiles against).** All green mirrors
+  `.github/workflows/ci.yml`.
+
+Host memory discipline: one suite at a time — never parallel full gates (two
+concurrent gates OOM the 15Gi dev host); sequential dispatches whose gates
+overlap; cap workers under pressure (`uv run pytest -n 2`); a red that
+vanishes on an unloaded re-run is a load symptom — root-cause before
+retrying.
+
+The live end-to-end module (`tests/test_live_server_e2e.py`) self-skips without a
 built monorepo server — run it deliberately when the change touches the wire:
 
 ```sh
