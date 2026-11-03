@@ -7,6 +7,61 @@ file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
 ## 2026-11-03
+- **feat(protocol): E2EE fixture lockstep — decrypt port for the `$e` slot, the encrypted fixture joins the gate and the replay corpus (49 fixtures).** The corpus re-vendors byte-identical from the monorepo (48 → 49 files — `envelope-encrypted.json` plus six drifted files caught by the byte-pin check). New `core/protocol/crypto.py` ports the decrypt half of the reference `packages/protocol/src/crypto.ts`: unpadded base64url, AES-256-GCM with the tag-first `ct` layout (`tag(16) ‖ ct`, NOT WebCrypto's `ct ‖ tag` — a misread fails the fixture) and the `{id}.{workspaceId}` AAD; plaintext envelopes pass through. The fixture gate (`test_fixtures.py`) gains the file in the coverage list and a decrypt-and-validate test — the fixture key opens both envelopes and each OPENED payload validates against the strict per-opType schema; `test_payloads.py` pins that a raw `$e` payload bypasses strict validation (producer gate) while opened payloads must validate. The replay harness (`test_store_fixtures.py`) decrypts crypto-carrying fixtures before replay — the auto-glob idempotence/convergence suites now replay the encrypted fixture DECRYPTED (REPLAY_EXCLUDED unchanged: the apply-time `$e` rejection stays — runtime sync still refuses encrypted ops; sibling custody is a later phase). The list round-trip dump takes `exclude_none` — the encrypted fixture is the first without a `client` claim, and the wire omits absent claims. `cryptography` joins the deps. Verification: +7 crypto vector tests (fixture deep-equal, wrong-AAD, tamper, tag-misread, wrong-key, passthrough, b64u), +1 decrypt-and-validate gate test, +1 producer-gate pin, full gate green (`uv run pytest` 1161 passed / 4 skipped / 3 xfailed, `ruff check` + `mypy src` clean on the touched files — one pre-existing F841 lives in another slice's untracked `tests/test_node_stats.py`, not this change). Lockstep: TS reference + GTK converge on `envelope-encrypted.json`; Flutter is the remaining arm (plan 03).
+
+
+- **feat(store): the materialized node counts land — `node_stats` at schema
+  v26 (the `packages/store/src/stats.ts` port) — and the strict content
+  validator gains the `heading` token (the `content-mark.ts`
+  `headingTokenSchema` parity, closing the gap the edge-index slice
+  documented).**
+  - **`node_stats`** (`data/store.py`, `_NODE_STATS_DDL` + `_migrate_v26`,
+    purely additive CREATE IF NOT EXISTS, the v25 precedent): one derived
+    row per node — child_count from node_child_order, backlink_count =
+    COUNT(DISTINCT source_id) of incoming edges, reference_count = COUNT(*)
+    of outgoing edges, descendant_count via the recursive node_child_order
+    walk, updated_at mirroring the node row's own (the LWW-winning op — the
+    order-invariance law: same semantic state → same rows). GTK's
+    nodes/edge tables carry workspace_id, so every query threads it (the
+    `_rebuild_edges` idiom). `_rebuild_node_stats(workspace_id, ids)`
+    expands the seeds to their self-inclusive ANCESTOR CLOSURE (recursive
+    CTE, ids without a live node row skipped by the node join) and
+    DELETE+re-INSERTs the closure. Wired at the TS `rebuildNodeStats`
+    trigger points: `_rebuild_edges` now consumes its own return value (the
+    live tail + the gone arm's orphaned targets), the object.create fresh
+    tail (counts LAST, after the child_order insert — the stats.ts
+    create-tail order), object.delete arm-3 archival + soft-trash
+    (node + ancestors), `_permanently_delete_subtree` (ancestors ∪
+    lost-backlink targets — collected from the purged sources' edge rows
+    BEFORE the delete, the TS `lostBacklinkTargets` port — plus the purge of
+    the subtree's own stats rows), object.restore, object.move (the seeds
+    are the node + the PRE-move ancestor chain, captured before the
+    reparenting — the closure walks current parents, so both chains
+    recompute), `_trash_text_carrier_if_orphaned` (target + ancestors), and
+    `wipe()` (the rows die with the nodes). Since `_rebuild_edges` rebuilds
+    stats internally, every edge-deriving surface (content writes, property
+    set/unset, tag assign/unassign, the create re-issue carrier) keeps
+    counts in the same transaction for free. No GTK reader consumes the
+    table yet — this is derived-state parity that unblocks the
+    backlink-badge/section chrome.
+  - **`heading` in the strict grammar** (`core/protocol/content.py`):
+    `validate_content_token` gains the `heading` branch — the same INLINE
+    union as `quote` (block-scale children like `embed_ref`/`code_block`/
+    `hr` fail loud, children recursively validated, strict keys) — and
+    `plaintext_excerpt` recurses heading children like quote (the
+    `plainTextExcerpt` parity); `stringify_content_ast` flattens headings
+    through the excerpt automatically (NOT a promotion survivor, the TS
+    stringify contract).
+  - **Verification:** new `tests/test_node_stats.py` (8 tests: the four
+    counts after a tree build + mention/tag, untag recomputing both sides,
+    soft-trash row stability, permanent-delete shrinking ancestors +
+    recomputing lost-backlink targets, the updated_at mirror, the move's
+    old/new chains, gone-node rows skipped by the node join, wipe) +
+    `tests/test_content.py` heading coverage (excerpt recursion, validator
+    accept/reject, the stringify flatten) + the full gate (`uv run pytest`
+    1161 passed / 4 skipped / 3 xfailed, `uv run mypy src` clean).
+
+## 2026-11-03
 
 - **feat(store): the derived reference-edge index — the `edge` + `node_link`
   tables land at schema v25 (the `packages/store/src/edges.ts` deep port).**

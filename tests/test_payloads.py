@@ -11,12 +11,17 @@ wins — title-is-content means no op payload carries a ``name`` key.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.colors import COLOR_PRESET_TOKENS
+from notees_gtk.core.protocol.crypto import b64u_decode, decrypt_envelope
+from notees_gtk.core.protocol.models import RelayEnvelope, new_envelope
 from notees_gtk.core.protocol.op_types import KNOWN_OP_TYPES
 from notees_gtk.core.protocol.payloads import (
     PAYLOAD_SCHEMAS,
@@ -1197,3 +1202,30 @@ class TestCardReviewPayloads:
             validate_payload("card.review", self._payload(reviewedAt=""))
         with pytest.raises(ValidationError):
             validate_payload("card.review", self._payload(reviewedAt=None))
+
+
+def test_encrypted_slot_skips_strict_schema_but_opened_payload_must_validate() -> None:
+    """The $e producer gate (models.py): a raw encrypted slot is shape-checked
+    only — it bypasses the strict payload schema (the slot would fail it,
+    ``extra="forbid"``) — while the OPENED payload is held to the strict
+    schema, pinned by the encrypted fixture's first envelope."""
+    clock = Clock("test-device")
+    slot = {"iv": "bnVjZS1pdi0xMg", "ct": "dGFnLWFuZC1jaXBoZXJ0ZXh0"}
+    envelope = new_envelope(
+        workspace_id=UUID_1,
+        actor_id=UUID_2,
+        device_id="test-device",
+        op_type="object.create",
+        payload={"$e": slot},
+        clock=clock,
+    )
+    assert envelope.payload == {"$e": slot}
+    with pytest.raises(ValueError, match="extra"):
+        validate_payload("object.create", envelope.payload)
+
+    fixture = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "wire" / "envelope-encrypted.json").read_text()
+    )
+    key = b64u_decode(fixture["crypto"]["workspaceKey"])
+    opened = decrypt_envelope(key, RelayEnvelope.model_validate(fixture["envelopes"][0]))
+    validate_payload("object.create", opened.payload)

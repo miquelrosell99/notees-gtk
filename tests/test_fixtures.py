@@ -25,6 +25,7 @@ import pytest
 from conftest import normalize_json
 from pydantic import BaseModel, ValidationError
 
+from notees_gtk.core.protocol.crypto import b64u_decode, decrypt_envelope
 from notees_gtk.core.protocol.models import (
     PROTOCOL_VERSION,
     WS_PROTOCOL_VERSION,
@@ -38,6 +39,7 @@ from notees_gtk.core.protocol.models import (
     WsHelloMessage,
     WsOpsMessage,
 )
+from notees_gtk.core.protocol.payloads import validate_payload
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -76,6 +78,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/class-unassign.json",
     "wire/code-block.json",
     "wire/embed-ref-view.json",
+    "wire/envelope-encrypted.json",
     "wire/hr.json",
     "wire/heading-content.json",
     "wire/is-embedded-date-chain.json",
@@ -141,8 +144,24 @@ def test_wire_envelope_list_fixture_round_trips(fixture_name: str) -> None:
     raw = json.loads((FIXTURES_DIR / fixture_name).read_text())
     envelopes = raw["envelopes"]
     parsed = [RelayEnvelope.model_validate(item) for item in envelopes]
-    serialized = [env.model_dump(mode="json", by_alias=True) for env in parsed]
+    # exclude_none: absent optional claims (e.g. no `client`) stay absent on
+    # the wire — the model represents them as None, the fixture omits the key.
+    serialized = [env.model_dump(mode="json", by_alias=True, exclude_none=True) for env in parsed]
     _round_trip(envelopes, serialized, fixture_name)
+
+
+def test_wire_encrypted_fixture_decrypts_and_validates_against_strict_schemas() -> None:
+    """The lockstep contract: the fixture key opens every $e envelope and the
+    OPENED payload validates against the strict per-opType schema (not just
+    "decrypts to something")."""
+    raw = json.loads((FIXTURES_DIR / "wire/envelope-encrypted.json").read_text())
+    key = b64u_decode(raw["crypto"]["workspaceKey"])
+    assert len(key) == 32
+    for item in raw["envelopes"]:
+        envelope = RelayEnvelope.model_validate(item)
+        opened = decrypt_envelope(key, envelope)
+        assert "$e" not in opened.payload
+        validate_payload(envelope.op_type, opened.payload)
 
 
 def test_every_fixture_file_is_covered() -> None:

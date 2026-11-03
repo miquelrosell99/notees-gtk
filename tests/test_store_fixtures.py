@@ -22,6 +22,7 @@ import pytest
 
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.content import validate_content_ast
+from notees_gtk.core.protocol.crypto import b64u_decode, decrypt_envelope
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.protocol.payloads import validate_payload
 from notees_gtk.data.errors import (
@@ -104,9 +105,27 @@ CYCLE_LEAF = "0192a000-0000-7000-8000-0000000000d2"
 
 
 def load_fixture(name: str) -> list[dict[str, Any]]:
+    """Load a wire fixture's envelopes, opening encrypted ones.
+
+    A fixture carrying a ``crypto`` block (the E2EE lockstep fixture) has
+    ``{"$e": {iv, ct}}`` payloads that are decrypted with its published test
+    workspace key BEFORE replay — the apply-time ``$e`` rejection stays, and a
+    raw encrypted envelope must never reach an applier (auto-glob suites
+    replay the opened payloads).
+    """
     raw = json.loads((FIXTURES_DIR / name).read_text())
     envelopes = raw.get("envelopes") if isinstance(raw, dict) else None
-    return envelopes if isinstance(envelopes, list) else [raw]
+    docs: list[dict[str, Any]] = envelopes if isinstance(envelopes, list) else [raw]
+    crypto = raw.get("crypto") if isinstance(raw, dict) else None
+    if isinstance(crypto, dict) and isinstance(crypto.get("workspaceKey"), str):
+        key = b64u_decode(crypto["workspaceKey"])
+        docs = [
+            decrypt_envelope(key, RelayEnvelope.model_validate(item)).model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
+            for item in docs
+        ]
+    return docs
 
 
 def all_fixture_envelopes() -> list[dict[str, Any]]:
