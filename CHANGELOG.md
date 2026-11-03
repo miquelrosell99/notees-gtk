@@ -6,6 +6,64 @@ goes; those stay static guidance. Before implementing a change, skim this
 file for recent related work. Anything before 2026-10-06 lives in git
 history.
 
+## 2026-11-03
+
+- **feat(store): the derived reference-edge index — the `edge` + `node_link`
+  tables land at schema v25 (the `packages/store/src/edges.ts` deep port).**
+  Edge is the single derived reference index, never authored: the appliers
+  rebuild a source node's rows from its stored content (mention + typed_link
+  tokens — top level AND inside `quote`/`heading` children), its PG5
+  visible-set property values (node-typed refs, verb = propertySchemaId;
+  datetime refs fan out to the deterministic chain ancestors — a day ref
+  also yields the month + year edges, a month ref the year edge; `{start,
+  end}` ranges project each present side), and its tag membership (the
+  2026-11-03 "tags are links" ruling — one `type='tag'` edge per
+  `nodes.tag_ids` entry, derived from the surviving row, never the tag
+  node's liveness). Edge ids are deterministic (sha256 over
+  source/type/target/verb/metadata/occurrence, the per-key multiset counter
+  in desired order), so wipe -> replay -> identical rows; `resolved_target_id`
+  materializes the alias-terminal at write time via the LIVE-AWARE chain
+  walk (a trashed/deleted/missing row is its own terminal; cycle -> the
+  starting id; depth cap 32) and `reresolve_edge_targets` re-materializes it
+  after alias writes and liveness flips through the pointer-based reverse
+  closure. The `node_link` assertion table syncs mention tokens carrying
+  `linkId` (upsert by linkId, stale sweep). PB1 holds: the permanent-delete
+  purge drops the subtree's OUTGOING rows only — incoming edges from
+  surviving sources keep theirs. `created_at`: the applying envelope
+  timestamp, except property edges which stamp their causal value row (ms
+  epoch -> ISO); the conflict path keeps the EARLIEST stamp
+  (`COALESCE(MIN(...))`, the TS upsert parity). Triggers (each inside the
+  applier's own transaction, the TS 2026-11-03 call-site parity):
+  `object.create` (fresh tail + the tagIds re-issue branch), `object.update`
+  (`contentAst` -> rebuild; `aliasedNodeId`/`active` -> reresolve),
+  `property.set`/`property.unset` tails, `tag.unassign`, `object.delete`
+  (arm-3 archival + soft-trash reresolve), `_permanently_delete_subtree`
+  (source purge + reresolve), `object.restore` (reactivation reresolve),
+  and `wipe()` (workspace-scoped delete).
+  - **Schema v25** (`data/store.py`): `_EDGE_DDL` (edge + node_link +
+    indexes, `packages/store/src/schema.ts` web-schema-parity columns)
+    joins `_CANONICAL_AUX_DDL`; `_migrate_v25` is the purely additive
+    CREATE IF NOT EXISTS (the v23 precedent) — a no-op for fresh databases.
+  - **Deferred:** `node_stats` — the TS rebuild recomputes stats for the
+    source and every affected target, but GTK has no stats table or
+    readers, so the rebuild's return value (the affected set) is currently
+    unused by callers. No `property.empty` trigger (the op does not exist
+    in GTK yet).
+  - **Known follow-up:** the GTK strict content validator does not know
+    the `heading` token yet — the edge walker recurses heading children
+    regardless (shape-tolerant, the TS walker's contract), so heading-carried
+    mentions derive; validator parity is a separate slice.
+  - **Verification:** new `tests/test_edges.py` (14 tests: mention derive
+    on create/update, the occurrence counter's distinct ids, quote + heading
+    recursion, typed_link string/bound verbs with merged metadata, the
+    node_link assertion lifecycle, node-typed + datetime fan-out + range
+    property edges with the causal stamp, tag assign/unassign/re-add, alias
+    reresolution, the trashed-alias terminal, permanent-delete PB1, and
+    edge-id determinism across two fresh stores) + the scoped regression
+    suites (`tests/test_store.py` 236 passed, `tests/test_store_fixtures.py`
+    71 passed / 3 xfailed) + the full gate (`uv run pytest` 1140 passed /
+    4 skipped / 3 xfailed, `uv run ruff check`, `uv run mypy src`).
+
 ## 2026-11-02
 
 - **feat(seed): the task Status schema seeds `defaultValue` = the Pending

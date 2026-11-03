@@ -49,7 +49,11 @@ envelope ``(hlc, actor)``, the delete side keeping a per-ref tombstone that
 kills stale concurrent sets under any delivery order, the reads
 :meth:`resolve_external_ref` / :meth:`external_refs_of`, and the hard-delete
 purge of a subtree's live rows — soft-trash keeps them, the tombstones
-survive either way).
+survive either way), and the derived reference-edge index (``edge`` +
+``node_link``: mention/typed_link/property/tag edges + link assertions,
+rebuilt by the appliers from content, property values, and tag membership —
+``packages/store/src/edges.ts`` parity, PB1's incoming-rows-survive rule,
+the live-aware alias-terminal resolution).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -71,6 +75,7 @@ rebuild.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -96,7 +101,9 @@ from notees_gtk.core.protocol.dates import (
     date_chain_parent_id,
     day_node_id,
     is_valid_time_of_day,
+    month_node_id,
     parse_date_node_id,
+    year_node_id,
 )
 from notees_gtk.core.protocol.features import (
     SYSTEM_CLASS_EXTENDS_IDS,
@@ -226,7 +233,13 @@ _log = logging.getLogger(__name__)
 #: additive guarded ALTER, a no-op for fresh v24 creates; NULL = inherit,
 #: '' = the explicit opt-out, existing rows converge by default (NULL) and
 #: the log's class.update envelopes carry any live values.
-SCHEMA_VERSION = 24
+#: v25 (the edge-index slice — web schema v17 parity, SCHEMA.md "Broken
+#: references"): the derived ``edge`` + ``node_link`` tables land (the
+#: reference index, never authored — mention/typed_link/property/tag edges
+#: plus the link-assertion rows, ``packages/store/src/edges.ts`` parity).
+#: Purely additive CREATE IF NOT EXISTS — a no-op for fresh databases whose
+#: canonical aux DDL already carries the tables (the v23 precedent).
+SCHEMA_VERSION = 25
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1158,6 +1171,8 @@ class LocalStore:
             self._conn.execute("DELETE FROM relay_operations WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM sync_watermark WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM workspace_feature WHERE workspace_id = ?", (workspace_id,))
+            self._conn.execute("DELETE FROM edge WHERE workspace_id = ?", (workspace_id,))
+            self._conn.execute("DELETE FROM node_link WHERE workspace_id = ?", (workspace_id,))
 
     # ------------------------------------------------------------ remote apply
 
@@ -1459,6 +1474,11 @@ class LocalStore:
                 self._recompute_class_ids(object_id)
             if tag_ids:
                 self._recompute_tag_ids(object_id)
+                # Tags project into the edge index (the "tags are links"
+                # ruling): a tag add on the convergence carrier re-derives
+                # the node's edges even though every other tree side effect
+                # stays skipped on the re-create.
+                self._rebuild_edges(env.workspace_id, object_id, ts)
             return False
 
         if parent_id is not None:
@@ -1521,6 +1541,7 @@ class LocalStore:
             )
             self._recompute_class_ids(object_id)
             self._recompute_tag_ids(object_id)
+            self._rebuild_edges(env.workspace_id, object_id, ts)
             if parent_id is not None:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
@@ -1736,6 +1757,18 @@ class LocalStore:
                     "UPDATE class SET active = ? WHERE id = ?",
                     (1 if payload["active"] else 0, object_id),
                 )
+            # Edges derive from content; resolved_target_id materializes the
+            # alias-terminal of every target. A content write re-derives the
+            # source's edges, an alias write re-points every chain through
+            # this node (the reverse closure covers every OTHER source's
+            # rows), and an archival flip gates the live-aware walk.
+            at = _envelope_ts(env)
+            if payload.get("contentAst") is not None:
+                self._rebuild_edges(env.workspace_id, object_id, at)
+            if "aliasedNodeId" in payload:
+                self._reresolve_edge_targets(env.workspace_id, [object_id])
+            if "active" in payload:
+                self._reresolve_edge_targets(env.workspace_id, [object_id])
         return True
 
     def _apply_object_delete(self, env: RelayEnvelope) -> bool:
@@ -1827,6 +1860,10 @@ class LocalStore:
                     self._conn.execute(
                         "UPDATE class SET active = 0, updated_at = ? WHERE id = ?", (ts, object_id)
                     )
+                    # The archival flip gates alias-chain resolution (the
+                    # walk is live-aware) — re-materialize the edge rows
+                    # touching the class node.
+                    self._reresolve_edge_targets(env.workspace_id, [object_id])
                 return True
         if not permanent:
             ids = self._subtree_ids(env.workspace_id, object_id)
@@ -1841,6 +1878,12 @@ class LocalStore:
                 # event — the pairs stand; a
                 # restored class revives with every assignment intact.
                 self._conn.execute(f"UPDATE nodes SET is_active = 0 WHERE id IN ({placeholders})", ids)
+                # Trashed nodes never resolve through (the edge resolution
+                # walk is live-aware): re-materialize the rows whose alias
+                # chains touch the subtree — a trashed alias's edges stay on
+                # the alias (inert), chains THROUGH a trashed node collapse
+                # to their last live link.
+                self._reresolve_edge_targets(env.workspace_id, ids)
             return True
         with self._conn:
             self._permanently_delete_subtree(env.workspace_id, object_id, ts)
@@ -1884,9 +1927,23 @@ class LocalStore:
             [*ids, *ids],
         )
         self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", ids)
+        # PB1 (SCHEMA.md "Broken references"): rows OWNED by the subtree die
+        # with it (the sources), but INCOMING references from SURVIVING
+        # nodes keep their edge rows — the other's property_value / mention
+        # content survives deletion by design, so its edge projection must
+        # survive too (ghost-target rows are inert: every query is keyed by
+        # a live node id, and a target restored from trash heals the set
+        # only when its rows survived).
+        self._conn.execute(f"DELETE FROM edge WHERE source_id IN ({placeholders})", ids)
+        self._conn.execute(f"DELETE FROM node_link WHERE source_id IN ({placeholders})", ids)
         self._conn.execute(
             f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
         )
+        # Deleted rows are ghosts that never resolve through: re-materialize
+        # the rows whose alias chains touched the subtree (incoming edges
+        # keep their rows by design — PB1 — with the resolution their chain
+        # now yields).
+        self._reresolve_edge_targets(workspace_id, ids)
 
     def _apply_trash_empty(self, env: RelayEnvelope) -> bool:
         """Empty the trash (lockstep with the TS reference's
@@ -1988,6 +2045,10 @@ class LocalStore:
                 f"UPDATE nodes SET is_active = 1 WHERE workspace_id = ? AND id IN ({placeholders})",
                 [workspace_id, *to_reactivate],
             )
+            # Restored rows re-enter alias chains (the resolution walk is
+            # live-aware): re-materialize every edge row whose chain touches
+            # the reactivated set.
+            self._reresolve_edge_targets(workspace_id, to_reactivate)
             self._conn.execute("DELETE FROM trash WHERE node_id = ?", (object_id,))
         return True
 
@@ -2607,6 +2668,9 @@ class LocalStore:
         with self._conn:
             self._tag_member_remove(object_id, tag_id, env)
             self._recompute_tag_ids(object_id)
+            # Tags project into the edge index (the "tags are links" ruling):
+            # the untag re-derives the node's edges.
+            self._rebuild_edges(env.workspace_id, object_id, _envelope_ts(env))
         return True
 
     def _apply_class_set_extends(self, env: RelayEnvelope) -> bool:
@@ -3243,6 +3307,9 @@ class LocalStore:
                 )
             else:
                 dropped = self._property_positional_set(env, node_id, schema_id, idx, value_json, metadata_json)
+            # Node-typed values project into the edge index (verb = schema),
+            # so every property write re-derives the owner's edges.
+            self._rebuild_edges(env.workspace_id, node_id, _envelope_ts(env))
         return not dropped
 
     def _property_element_add(
@@ -3385,6 +3452,9 @@ class LocalStore:
                 self._property_element_remove(env, node_id, schema_id, element_id)
             else:
                 self._property_positional_unset(env, node_id, schema_id, idx)
+            # The property.set precedent: a value removal re-derives the
+            # owner's edges (a tombstoned element's edges vanish with it).
+            self._rebuild_edges(env.workspace_id, node_id, _envelope_ts(env))
         return True
 
     def _property_element_remove(self, env: RelayEnvelope, node_id: str, schema_id: str, element_id: str) -> None:
@@ -4155,6 +4225,383 @@ class LocalStore:
             (node_id, workspace_id, node_id),
         ).fetchall()
         return [str(row[0]) for row in rows]
+
+    # ------------------------------------------------------------- edge index
+
+    @staticmethod
+    def _edge_id(source_id: str, edge: Mapping[str, Any], occurrence: int) -> str:
+        """Deterministic edge identity (``edges.ts`` ``edgeId`` parity):
+        sha256 over source \\0 type \\0 target \\0 verb \\0 metadata \\0
+        occurrence, so wipe -> replay -> identical rows."""
+        material = "\0".join(
+            (
+                source_id,
+                str(edge["type"]),
+                str(edge["target_id"] or ""),
+                str(edge["verb"] or ""),
+                str(edge["metadata"] or ""),
+                str(occurrence),
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _resolve_edge_target(self, workspace_id: str, target_id: str) -> str:
+        """The alias-terminal of an edge target, materialized at edge-write
+        time (``edges.ts`` ``resolveEdgeTarget`` parity): follow
+        ``aliased_node_id`` links to the final node — LIVE rows only (a
+        trashed or deleted node never resolves through; a missing/inactive
+        row is its own terminal), a non-alias row resolves to itself.
+        Cycle-safe: a revisit yields the STARTING id unchanged; depth-capped
+        (the furthest node reached is the best-effort terminal). NOT the
+        liveness-blind :meth:`resolve_alias` read helper — this walk gates on
+        ``is_active``."""
+        visited: set[str] = set()
+        current = target_id
+        for _ in range(_ALIAS_CHAIN_DEPTH_CAP):
+            if current in visited:
+                return target_id  # cycle — the starting id unchanged
+            visited.add(current)
+            row = self._conn.execute(
+                "SELECT aliased_node_id, is_active FROM nodes WHERE workspace_id = ? AND id = ?",
+                (workspace_id, current),
+            ).fetchone()
+            if row is None or int(row[1]) != 1 or row[0] is None:
+                return current
+            current = str(row[0])
+        return current  # depth cap — best-effort terminal
+
+    def _reresolve_edge_targets(self, workspace_id: str, node_ids: Iterable[str]) -> None:
+        """Re-materialize ``resolved_target_id`` after anything that can shift
+        alias chains: an ``object.update`` writing ``aliasedNodeId``, or a
+        liveness flip (trash / restore / permanent delete / archival) of any
+        node that is IN a chain. For every seed id the reverse closure over
+        ``aliased_node_id`` (LIVE rows only, pointer-based — invariant under
+        the seed's own edit or liveness flip; ``alias_nodes_of`` includes the
+        seed) plus the seed itself re-resolves its edge rows. Idempotent and
+        cheap when no aliases involve the seeds (the closure is the seed
+        alone)."""
+        targets: set[str] = set()
+        for node_id in node_ids:
+            if not node_id:
+                continue
+            rows = self._conn.execute(
+                """WITH RECURSIVE rev(id) AS (
+                     SELECT ?
+                     UNION
+                     SELECT n.id FROM nodes n JOIN rev r ON n.aliased_node_id = r.id
+                     WHERE n.workspace_id = ? AND n.is_active = 1
+                   )
+                   SELECT id FROM rev""",
+                (node_id, workspace_id),
+            ).fetchall()
+            targets.update(str(row[0]) for row in rows)
+        for target in targets:
+            self._conn.execute(
+                "UPDATE edge SET resolved_target_id = ? WHERE target_id = ?",
+                (self._resolve_edge_target(workspace_id, target), target),
+            )
+
+    def _derive_desired_edges(self, workspace_id: str, node_id: str) -> list[dict[str, Any]]:
+        """The desired edge multiset for one node (``edges.ts``
+        ``deriveDesiredEdges`` parity): content mentions + typed links (top
+        level AND inside ``quote``/``heading`` children — the walker is
+        shape-tolerant, the strict content grammar does not validate heading
+        tokens yet), node-typed property values (verb = propertySchemaId,
+        datetime refs fan out to their deterministic chain ancestors), and
+        one tag edge per ``nodes.tag_ids`` entry (the 2026-11-03 "tags are
+        links" ruling)."""
+        content_row = self._conn.execute(
+            "SELECT content FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, node_id)
+        ).fetchone()
+        if content_row is None:
+            return []
+        ast = parse_content_ast(content_row[0])
+
+        desired: list[dict[str, Any]] = []
+
+        def push(
+            edge_type: str,
+            target_id: str | None,
+            verb: str | None,
+            metadata: str | None,
+            *,
+            is_embedded: bool = False,
+            hlc_physical: int | None = None,
+        ) -> None:
+            desired.append(
+                {
+                    "type": edge_type,
+                    "target_id": target_id,
+                    "verb": verb,
+                    "metadata": metadata,
+                    "is_embedded": is_embedded,
+                    "hlc_physical": hlc_physical,
+                }
+            )
+
+        def walk(tokens: Iterable[Any]) -> None:
+            for token in tokens:
+                if not isinstance(token, Mapping):
+                    continue
+                token_type = token.get("type")
+                if token_type == "mention" and isinstance(token.get("targetNodeId"), str):
+                    push(
+                        "mention",
+                        str(token["targetNodeId"]),
+                        None,
+                        None,
+                        is_embedded=token.get("isEmbedded") is True,
+                    )
+                elif token_type == "typed_link":
+                    verb_raw = token.get("verb")
+                    verb: str | None
+                    if isinstance(verb_raw, str):
+                        verb = verb_raw
+                    elif isinstance(verb_raw, Mapping):
+                        bound = verb_raw.get("propertySchemaId")
+                        verb = str(bound) if bound is not None else None
+                    else:
+                        verb = None
+                    meta_raw = token.get("metadata")
+                    meta_obj = dict(meta_raw) if isinstance(meta_raw, Mapping) else None
+                    text_raw = token.get("text")
+                    text = text_raw if isinstance(text_raw, str) else None
+                    if meta_obj is None and text is None:
+                        metadata = None
+                    else:
+                        merged: dict[str, Any] = dict(meta_obj) if meta_obj else {}
+                        if text is not None:
+                            merged["text"] = text
+                        metadata = json.dumps(merged, ensure_ascii=False, separators=(",", ":"))
+                    push("typed_link", None, verb, metadata)
+                elif token_type in ("quote", "heading"):
+                    children = token.get("children")
+                    if isinstance(children, list):
+                        walk(children)
+
+        walk(ast)
+
+        # Node-typed property values project into the edge index (verb =
+        # schema). Keying is VALUE-SHAPE based: {"nodeId": …} refs and
+        # {start, end} ranges (each present side) project alike, and a date
+        # ref fans out to its deterministic chain ANCESTORS (SCHEMA.md
+        # "Datetime": "backlinks on a year node list everything dated that
+        # year") — a day ref also yields the month + year edges, a month ref
+        # the year edge. Rows come through the visible-set derivation (PG5):
+        # a tombstoned element's edges vanish with it.
+        def push_ref_edge(
+            property_schema_id: str,
+            ref: Any,
+            metadata: str | None,
+            hlc_physical: int,
+        ) -> None:
+            if not isinstance(ref, Mapping) or "nodeId" not in ref:
+                return
+            target = ref["nodeId"]
+            if not isinstance(target, str) or not target:
+                return
+            push("property", target, property_schema_id, metadata, hlc_physical=hlc_physical)
+            parsed = parse_date_node_id(target)
+            if parsed is not None:
+                iso = f"{int(parsed['year']):04d}-{int(parsed['month']):02d}-{int(parsed['day']):02d}"
+                if parsed["precision"] == "day":
+                    push(
+                        "property", month_node_id(iso), property_schema_id, metadata,
+                        hlc_physical=hlc_physical,
+                    )
+                if parsed["precision"] in ("day", "month"):
+                    push(
+                        "property", year_node_id(iso), property_schema_id, metadata,
+                        hlc_physical=hlc_physical,
+                    )
+
+        property_rows = sorted(
+            self._visible_property_value_rows(node_id),
+            key=lambda row: (str(row["property_schema_id"]), int(row["idx"]), str(row["id"])),
+        )
+        for row in property_rows:
+            raw_value = row["value"]
+            try:
+                parsed_value = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except ValueError:
+                continue
+            if not isinstance(parsed_value, Mapping):
+                continue
+            schema_id = str(row["property_schema_id"])
+            hlc_physical = int(row["hlc_physical"])
+            metadata = row["metadata"] if isinstance(row["metadata"], str) else None
+            if "nodeId" in parsed_value:
+                push_ref_edge(schema_id, parsed_value, metadata, hlc_physical)
+            else:
+                push_ref_edge(schema_id, parsed_value.get("start"), metadata, hlc_physical)
+                push_ref_edge(schema_id, parsed_value.get("end"), metadata, hlc_physical)
+
+        # Tag membership projects into the edge index too (the 2026-11-03
+        # ruling: tags ARE links) — one edge per tag, derived from the node's
+        # own tag_ids column (the tag OR-Set's projection — the appliers
+        # recompute it before every rebuild). PB1: membership rides deletion,
+        # so the edge derives from the surviving row, never the tag node's
+        # liveness.
+        tag_row = self._conn.execute(
+            "SELECT tag_ids FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, node_id)
+        ).fetchone()
+        if tag_row is not None and tag_row[0] is not None:
+            try:
+                tag_ids = json.loads(tag_row[0])
+            except ValueError:
+                tag_ids = None
+            if isinstance(tag_ids, list):
+                for tag_id in tag_ids:
+                    if isinstance(tag_id, str) and tag_id:
+                        push("tag", tag_id, None, None)
+
+        return desired
+
+    def _rebuild_edges(self, workspace_id: str, node_id: str, at: str) -> list[str]:
+        """Synchronize edge + node_link rows for ``node_id`` (``edges.ts``
+        ``rebuildEdges`` parity). ``at`` is the applying envelope's timestamp
+        (deterministic derived rows). Node gone: drop everything this source
+        ever derived. Returns the affected set (source ∪ previous ∪ desired
+        targets); the reference also recomputes ``node_stats`` here — GTK
+        has no stats table or readers, so that half is deferred and callers
+        currently discard the return value."""
+        node_row = self._conn.execute(
+            "SELECT workspace_id FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, node_id)
+        ).fetchone()
+        previous_targets = [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT target_id FROM edge WHERE source_id = ?", (node_id,)
+            ).fetchall()
+        ]
+
+        if node_row is None:
+            self._conn.execute("DELETE FROM edge WHERE source_id = ?", (node_id,))
+            self._conn.execute("DELETE FROM node_link WHERE source_id = ?", (node_id,))
+            return [node_id]
+
+        desired = self._derive_desired_edges(workspace_id, node_id)
+
+        # --- node_link assertions (mention tokens carrying linkId) ----------
+        content_row = self._conn.execute(
+            "SELECT content FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, node_id)
+        ).fetchone()
+        ast = parse_content_ast(content_row[0] if content_row is not None else None)
+        desired_link_ids: set[str] = set()
+
+        def walk_links(tokens: Iterable[Any]) -> None:
+            for token in tokens:
+                if not isinstance(token, Mapping):
+                    continue
+                token_type = token.get("type")
+                link_id = token.get("linkId")
+                target = token.get("targetNodeId")
+                if token_type == "mention" and isinstance(link_id, str) and isinstance(target, str):
+                    desired_link_ids.add(link_id)
+                    self._conn.execute(
+                        """INSERT INTO node_link
+                             (id, workspace_id, source_id, target_id, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(id) DO UPDATE SET
+                             source_id = excluded.source_id,
+                             target_id = excluded.target_id,
+                             created_at = excluded.created_at,
+                             updated_at = excluded.updated_at""",
+                        (link_id, workspace_id, node_id, target, at, at),
+                    )
+                elif token_type in ("quote", "heading"):
+                    children = token.get("children")
+                    if isinstance(children, list):
+                        walk_links(children)
+
+        walk_links(ast)
+        for (stale_id,) in self._conn.execute(
+            "SELECT id FROM node_link WHERE source_id = ?", (node_id,)
+        ).fetchall():
+            if str(stale_id) not in desired_link_ids:
+                self._conn.execute("DELETE FROM node_link WHERE id = ?", (stale_id,))
+
+        # --- edge rows ------------------------------------------------------
+        desired_ids: set[str] = set()
+        occurrence_by_key: dict[tuple[str, str, str, str], int] = {}
+        resolved_cache: dict[str, str] = {}
+        for edge in desired:
+            key = (
+                str(edge["type"]),
+                str(edge["target_id"] or ""),
+                str(edge["verb"] or ""),
+                str(edge["metadata"] or ""),
+            )
+            occurrence = occurrence_by_key.get(key, 0)
+            occurrence_by_key[key] = occurrence + 1
+            edge_id = self._edge_id(node_id, edge, occurrence)
+            desired_ids.add(edge_id)
+            # Content-derived edges stamp the applying (LWW-winning) op;
+            # property edges stamp their causal value row (ms epoch → ISO),
+            # so a re-derived edge carries a deterministic stamp and
+            # cross-order replays do not diverge. The conflict path keeps the
+            # EARLIEST stamp (first-appearance semantics); MIN() returns NULL
+            # for a NULL side, so COALESCE guarantees a NULL never wins over
+            # a real stamp.
+            if edge["type"] == "property":
+                hlc_physical = edge["hlc_physical"]
+                created_at = (
+                    datetime.fromtimestamp(int(hlc_physical) / 1000, tz=UTC).isoformat()
+                    if hlc_physical is not None
+                    else None
+                )
+            else:
+                created_at = at
+            target = edge["target_id"]
+            resolved: str | None
+            if target is None:
+                resolved = None
+            elif target in resolved_cache:
+                resolved = resolved_cache[target]
+            else:
+                resolved = self._resolve_edge_target(workspace_id, target)
+                resolved_cache[target] = resolved
+            self._conn.execute(
+                """INSERT INTO edge
+                     (id, workspace_id, source_id, target_id, resolved_target_id,
+                      type, verb, metadata, is_embedded, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     created_at = COALESCE(MIN(edge.created_at, excluded.created_at),
+                                           edge.created_at, excluded.created_at),
+                     resolved_target_id = excluded.resolved_target_id,
+                     is_embedded = excluded.is_embedded""",
+                (
+                    edge_id,
+                    workspace_id,
+                    node_id,
+                    target,
+                    resolved,
+                    str(edge["type"]),
+                    edge["verb"],
+                    edge["metadata"],
+                    1 if edge["is_embedded"] else 0,
+                    created_at,
+                ),
+            )
+        for (stale_id,) in self._conn.execute(
+            "SELECT id FROM edge WHERE source_id = ?", (node_id,)
+        ).fetchall():
+            if str(stale_id) not in desired_ids:
+                self._conn.execute("DELETE FROM edge WHERE id = ?", (stale_id,))
+
+        affected: list[str] = [node_id]
+        seen = {node_id}
+        for target in previous_targets:
+            if target and str(target) not in seen:
+                seen.add(str(target))
+                affected.append(str(target))
+        for edge in desired:
+            target = edge["target_id"]
+            if target and str(target) not in seen:
+                seen.add(str(target))
+                affected.append(str(target))
+        return affected
 
     # ------------------------------------------------- effective properties
 
@@ -5217,6 +5664,54 @@ CREATE TABLE IF NOT EXISTS card_review (
 CREATE INDEX IF NOT EXISTS idx_card_review_card ON card_review (card_id, hlc_physical, hlc_logical);
 """
 
+#: The derived reference index (never authored — ``packages/store/src/edges.ts``
+#: parity): type: mention | typed_link | property | tag. verb: the typed-link
+#: verb (string) or the bound propertySchemaId; NULL for plain mentions AND
+#: for tag edges (the 2026-11-03 "tags are links" ruling — tag membership
+#: projects one edge per tag, derived from nodes.tag_ids). target_id is NULL
+#: for typed_link marks (the target is unresolved by design — RECORD, DON'T
+#: RESOLVE). resolved_target_id: the alias-terminal of target_id,
+#: materialized by the applier at edge-write time (the live-aware chain walk;
+#: non-alias targets resolve to their own id; NULL stays NULL). is_embedded:
+#: the mention token's manual embedding flag (mined at edge-write time; NOT
+#: part of the edge identity). created_at: the applying envelope timestamp,
+#: except property edges which stamp their causal value row (ms epoch → ISO).
+#: Edge ids are deterministic (sha256 over source/type/target/verb/metadata/
+#: occurrence), so wipe -> replay -> identical rows.
+_EDGE_DDL = """
+CREATE TABLE IF NOT EXISTS edge (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_id TEXT,
+    resolved_target_id TEXT,
+    type TEXT NOT NULL,
+    verb TEXT,
+    metadata TEXT,
+    is_embedded INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_edge_source ON edge (source_id, type);
+CREATE INDEX IF NOT EXISTS idx_edge_target ON edge (target_id, type);
+
+-- Link analytics assertions, keyed by the mention token's optional linkId
+-- (SCHEMA.md, decided 2026-09-26). Anonymous mentions (no linkId) get no row.
+CREATE TABLE IF NOT EXISTS node_link (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    created_at TEXT,
+    updated_at TEXT,
+    click_count INTEGER NOT NULL DEFAULT 0,
+    last_navigated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_node_link_source ON node_link (source_id);
+CREATE INDEX IF NOT EXISTS idx_node_link_target ON node_link (target_id);
+CREATE INDEX IF NOT EXISTS idx_node_link_source_target
+    ON node_link (source_id, target_id);
+"""
+
 
 def _migrate_v8(conn: sqlite3.Connection) -> None:
     """Per-workspace feature toggles (web schema v9→v10 parity).
@@ -5399,7 +5894,7 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 #: a complete database is untouched and a partial one converges to the full
 #: table set. ``_NODES_DDL`` is deliberately excluded — the node table's
 #: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
-_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL + _CARD_REVIEW_DDL
+_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL + _CARD_REVIEW_DDL + _EDGE_DDL
 
 
 def _migrate_v13(conn: sqlite3.Connection) -> None:
@@ -5743,6 +6238,17 @@ def _migrate_v24(conn: sqlite3.Connection) -> None:
     LocalStore._add_column_if_missing(conn, "class", "display_template", "TEXT")
 
 
+def _migrate_v25(conn: sqlite3.Connection) -> None:
+    """v25 — the derived reference-edge index (web schema v17 parity,
+    SCHEMA.md "Broken references"): the ``edge`` + ``node_link`` tables —
+    mention/typed_link/property/tag edges plus the link-assertion rows,
+    rebuilt by the appliers from content, property values, and tag
+    membership (``packages/store/src/edges.ts`` parity). Purely additive
+    CREATE IF NOT EXISTS — a no-op for fresh databases whose canonical aux
+    DDL already carries the tables (the v23 precedent)."""
+    conn.executescript(_EDGE_DDL)
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -5769,4 +6275,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (22, _migrate_v22),
     (23, _migrate_v23),
     (24, _migrate_v24),
+    (25, _migrate_v25),
 )
