@@ -1,0 +1,635 @@
+{
+  "comment": "Query AST v2 — the parameterized grammar pins the wire corpus: the 64-variant flat condition union folds into 6 types (member/content/name/property/date/nodeField), with comparator and target mode orthogonal on the wire. The query token's AST carries one of every v2 condition shape: the member family across all 10 families × the three target modes (ids manual / query nested / self hosting page) × in/not-in, the exists/not-exists set bits where the family has an emptiness read (referencePath and root carry none — the compiler fails loud on them) and the class exact op; content (contains + the folded exists), name, property (eq + the folded between/within), date (both fields over the comparison/boundary/range/period ops) and the five nodeField wire predicates — wrapped in group/not nesting including a member-in-query target at depth 2. version is the literal 2; v1 is rejected outright (the Path-B rewrite, migrate-query-ast-v2.mts, converges stored logs).",
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-00000000e101",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": { "physical": 1727200009100, "logical": 0 },
+      "affectedNodeIds": ["0192a000-0000-7000-8000-00000000e1a1"],
+      "opType": "object.create",
+      "timestamp": "2026-09-24T12:00:09.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-00000000e1a1",
+        "isEmbedded": false,
+        "classIds": [],
+        "contentAst": [
+          { "type": "text", "text": "Query AST v2 grammar probe" },
+          {
+            "type": "query",
+            "queryAst": {
+              "version": 2,
+              "scope": { "type": "entire_workspace" },
+              "root": {
+                "type": "group",
+                "logic": "and",
+                "children": [
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "class",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000201"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "class",
+                        "op": "in",
+                        "target": {
+                          "mode": "query",
+                          "root": {
+                            "type": "group",
+                            "logic": "and",
+                            "children": [
+                              { "type": "nodeField", "field": "isClass", "op": "eq", "value": "true" }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "member",
+                        "family": "class",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "class",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000202"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "class",
+                        "op": "exact",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000203"] }
+                      },
+                      { "type": "member", "family": "class", "op": "exists" },
+                      { "type": "member", "family": "class", "op": "not-exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "tags",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000401"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "tags",
+                        "op": "in",
+                        "target": {
+                          "mode": "query",
+                          "root": {
+                            "type": "group",
+                            "logic": "and",
+                            "children": [
+                              { "type": "content", "op": "contains", "value": "urgent" }
+                            ]
+                          }
+                        }
+                      },
+                      { "type": "member", "family": "tags", "op": "in", "target": { "mode": "self" } },
+                      {
+                        "type": "member",
+                        "family": "tags",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000402"] }
+                      },
+                      { "type": "member", "family": "tags", "op": "exists" },
+                      { "type": "member", "family": "tags", "op": "not-exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "or",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "links",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000101"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "links",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "links",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000102"] }
+                      },
+                      { "type": "member", "family": "links", "op": "exists" },
+                      { "type": "member", "family": "links", "op": "not-exists" },
+                      {
+                        "type": "member",
+                        "family": "referencePath",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000103"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "referencePath",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "referencePath",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000104"] }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "parent",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000105"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "parent",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "parent",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000106"] }
+                      },
+                      { "type": "member", "family": "parent", "op": "exists" },
+                      { "type": "member", "family": "parent", "op": "not-exists" },
+                      {
+                        "type": "member",
+                        "family": "child",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000107"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "child",
+                        "op": "in",
+                        "target": { "mode": "query", "root": { "type": "group", "logic": "and", "children": [{ "type": "content", "op": "contains", "value": "kid" }] } }
+                      },
+                      {
+                        "type": "member",
+                        "family": "child",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000108"] }
+                      },
+                      { "type": "member", "family": "child", "op": "exists" },
+                      { "type": "member", "family": "child", "op": "not-exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "childPath",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000109"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "childPath",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "childPath",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010a"] }
+                      },
+                      { "type": "member", "family": "childPath", "op": "exists" },
+                      { "type": "member", "family": "childPath", "op": "not-exists" },
+                      {
+                        "type": "member",
+                        "family": "page",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010b"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "page",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "page",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010c"] }
+                      },
+                      { "type": "member", "family": "page", "op": "exists" },
+                      { "type": "member", "family": "page", "op": "not-exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "member",
+                        "family": "parentPath",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010d"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "parentPath",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "parentPath",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010e"] }
+                      },
+                      { "type": "member", "family": "parentPath", "op": "exists" },
+                      { "type": "member", "family": "parentPath", "op": "not-exists" },
+                      {
+                        "type": "member",
+                        "family": "root",
+                        "op": "in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-00000000010f"] }
+                      },
+                      {
+                        "type": "member",
+                        "family": "root",
+                        "op": "in",
+                        "target": { "mode": "query", "root": { "type": "group", "logic": "and", "children": [{ "type": "nodeField", "field": "isClass", "op": "eq", "value": "true" }] } }
+                      },
+                      {
+                        "type": "member",
+                        "family": "root",
+                        "op": "in",
+                        "target": { "mode": "self" }
+                      },
+                      {
+                        "type": "member",
+                        "family": "root",
+                        "op": "not-in",
+                        "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000110"] }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      { "type": "content", "op": "contains", "value": "capital" },
+                      { "type": "content", "op": "fts", "value": "capital city" },
+                      { "type": "content", "op": "starts", "value": "The" },
+                      { "type": "content", "op": "ends", "value": "city" },
+                      { "type": "content", "op": "eq", "value": "Capital of France" },
+                      { "type": "content", "op": "neq", "value": "Draft" },
+                      { "type": "content", "op": "exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      { "type": "name", "op": "contains", "value": "paris" },
+                      { "type": "name", "op": "eq", "value": "Paris" },
+                      { "type": "name", "op": "neq", "value": "Lyon" },
+                      { "type": "name", "op": "exists" }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000301",
+                        "op": "eq",
+                        "value": "high"
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000301",
+                        "op": "neq",
+                        "value": "low"
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000301",
+                        "op": "contains",
+                        "value": "med"
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "gt",
+                        "value": 1900
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "gte",
+                        "value": 1900
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "lt",
+                        "value": 2000
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "lte",
+                        "value": 2000
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "exists"
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000302",
+                        "op": "between",
+                        "from": 1900,
+                        "to": 2000
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000303",
+                        "op": "within",
+                        "period": "this_year"
+                      },
+                      {
+                        "type": "property",
+                        "schemaId": "0192a000-0000-7000-8000-000000000301",
+                        "op": "eq",
+                        "value": "medium",
+                        "includeDefaults": false
+                      }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "eq",
+                        "timestamp": "2026-01-01"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "neq",
+                        "timestamp": "2026-01-02"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "gt",
+                        "timestamp": "2026-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "gte",
+                        "timestamp": "2026-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "lt",
+                        "timestamp": "2027-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "lte",
+                        "timestamp": "2027-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "after",
+                        "timestamp": "2026-06-01"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "before",
+                        "timestamp": "2026-12-31"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "between",
+                        "from": "2026-01-01",
+                        "to": "2026-12-31"
+                      },
+                      {
+                        "type": "date",
+                        "field": "created",
+                        "op": "within",
+                        "period": "this_month"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "eq",
+                        "timestamp": "2026-01-01"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "neq",
+                        "timestamp": "2026-01-02"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "gt",
+                        "timestamp": "2026-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "gte",
+                        "timestamp": "2026-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "lt",
+                        "timestamp": "2027-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "lte",
+                        "timestamp": "2027-01-01T00:00:00.000Z"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "after",
+                        "timestamp": "2026-06-01"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "before",
+                        "timestamp": "2026-12-31"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "between",
+                        "from": "2026-01-01",
+                        "to": "2026-12-31"
+                      },
+                      {
+                        "type": "date",
+                        "field": "updated",
+                        "op": "within",
+                        "period": "today"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "group",
+                    "logic": "and",
+                    "children": [
+                      {
+                        "type": "nodeField",
+                        "field": "coverAsset",
+                        "op": "eq",
+                        "value": "0192a000-0000-7000-8000-000000000501"
+                      },
+                      {
+                        "type": "nodeField",
+                        "field": "coverAsset",
+                        "op": "neq",
+                        "value": "0192a000-0000-7000-8000-000000000502"
+                      },
+                      { "type": "nodeField", "field": "coverAsset", "op": "exists" },
+                      {
+                        "type": "nodeField",
+                        "field": "bannerAsset",
+                        "op": "eq",
+                        "value": "0192a000-0000-7000-8000-000000000503"
+                      },
+                      { "type": "nodeField", "field": "bannerAsset", "op": "exists" },
+                      {
+                        "type": "nodeField",
+                        "field": "aliasedNode",
+                        "op": "eq",
+                        "value": "0192a000-0000-7000-8000-000000000504"
+                      },
+                      {
+                        "type": "nodeField",
+                        "field": "aliasedNode",
+                        "op": "neq",
+                        "value": "0192a000-0000-7000-8000-000000000505"
+                      },
+                      { "type": "nodeField", "field": "aliasedNode", "op": "exists" },
+                      { "type": "nodeField", "field": "isClass", "op": "eq", "value": "true" },
+                      { "type": "nodeField", "field": "isClass", "op": "eq", "value": "false" },
+                      { "type": "nodeField", "field": "isEmbedded", "op": "eq", "value": "true" },
+                      { "type": "nodeField", "field": "isEmbedded", "op": "eq", "value": "false" }
+                    ]
+                  },
+                  {
+                    "type": "not",
+                    "child": {
+                      "type": "member",
+                      "family": "links",
+                      "op": "in",
+                      "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000111"] }
+                    }
+                  },
+                  {
+                    "type": "not",
+                    "child": {
+                      "type": "group",
+                      "logic": "or",
+                      "children": [
+                        { "type": "content", "op": "contains", "value": "draft" },
+                        {
+                          "type": "member",
+                          "family": "class",
+                          "op": "not-in",
+                          "target": { "mode": "ids", "ids": ["0192a000-0000-7000-8000-000000000204"] }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "member",
+                    "family": "links",
+                    "op": "in",
+                    "target": {
+                      "mode": "query",
+                      "root": {
+                        "type": "group",
+                        "logic": "and",
+                        "children": [
+                          {
+                            "type": "member",
+                            "family": "class",
+                            "op": "in",
+                            "target": {
+                              "mode": "query",
+                              "root": {
+                                "type": "group",
+                                "logic": "and",
+                                "children": [
+                                  { "type": "content", "op": "contains", "value": "city" }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "sort": [
+                { "field": "name", "dir": "asc" },
+                { "field": "createdAt", "dir": "desc" },
+                { "field": "isClass", "dir": "asc" },
+                { "field": "isEmbedded", "dir": "desc" }
+              ]
+            }
+          }
+        ],
+        "parentId": null
+      }
+    }
+  ]
+}

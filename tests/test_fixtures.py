@@ -108,6 +108,7 @@ WIRE_ENVELOPE_LIST_FIXTURES = [
     "wire/tag-membership.json",
     "wire/typed-link-mark.json",
     "wire/typed-link-mark-deleted.json",
+    "wire/query-ast-v2.json",
     "wire/trash-empty.json",
     "wire/workspace-feature-set.json",
     "wire/external-ref.json",
