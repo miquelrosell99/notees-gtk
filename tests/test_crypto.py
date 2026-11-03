@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from notees_gtk.core.protocol.crypto import (
+    GCM_TAG_BYTES,
     KdfRecord,
     WorkspaceKeyCrypto,
     b64u_decode,
@@ -371,7 +372,13 @@ class TestAssetBytes:
         with pytest.raises(ValueError, match="asset iv must be 12 bytes"):
             decrypt_asset_bytes(workspace_key, b"\x00" * 8, sealed.blob)
         with pytest.raises(ValueError, match="shorter than the 16-byte tag"):
-            decrypt_asset_bytes(workspace_key, sealed.iv, b"\x00" * 16)
+            decrypt_asset_bytes(workspace_key, sealed.iv, b"\x00" * 15)
+
+    def test_zero_byte_plaintext_round_trip(self, workspace_key: bytes) -> None:
+        """A sealed zero-byte asset is exactly tag(16) ‖ ct(0) — legal, TS parity."""
+        sealed = encrypt_asset_bytes(workspace_key, b"")
+        assert len(sealed.blob) == GCM_TAG_BYTES
+        assert decrypt_asset_bytes(workspace_key, sealed.iv, sealed.blob) == b""
 
     def test_seal_if_keyed_round_trip(self, workspace_key: bytes) -> None:
         blob, iv = seal_asset_if_keyed(workspace_key, b"plain")

@@ -418,7 +418,7 @@ def decrypt_asset_bytes(workspace_key: bytes, iv: bytes, blob: bytes) -> bytes:
     _check_key_bytes("workspace key", workspace_key)
     if len(iv) != GCM_NONCE_BYTES:
         raise ValueError(f"asset iv must be {GCM_NONCE_BYTES} bytes, got {len(iv)}")
-    if len(blob) <= GCM_TAG_BYTES:
+    if len(blob) < GCM_TAG_BYTES:
         raise ValueError("sealed asset shorter than the 16-byte tag")
     tag, ct = blob[:GCM_TAG_BYTES], blob[GCM_TAG_BYTES:]
     try:
