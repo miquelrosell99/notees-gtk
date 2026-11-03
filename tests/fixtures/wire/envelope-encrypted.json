@@ -1,0 +1,54 @@
+{
+  "comment": "Encrypted-payload fixture (E2EE core): payloads carry the $e slot; `crypto.workspaceKey` (b64u 32 bytes, public test key) opens them. AAD = `${envelope.id}.${envelope.workspaceId}`. GTK/Flutter ports must replay this byte-identical: decrypt each envelope, apply the plaintext payloads. Decrypted payloads MUST validate against payloadSchemaFor(opType) — the gate asserts it. Slot layout: `iv` is the base64url of the 12-byte GCM nonce; `ct` is the base64url of `tag(16) || ct` (tag FIRST — unlike wrapped keys, which are `iv || tag || ct`); the plaintext payload is the UTF-8 JSON of the payload object; the GCM additional authenticated data (AAD) is `${envelope.id}.${envelope.workspaceId}`.",
+  "crypto": {
+    "version": 1,
+    "aad": "envelope.id.envelope.workspaceId",
+    "workspaceKey": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo"
+  },
+  "envelopes": [
+    {
+      "id": "0192a000-0000-7000-8000-0000000000fa",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "hlc": {
+        "physical": 1727200000000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000fc"
+      ],
+      "opType": "object.create",
+      "timestamp": "2024-09-24T17:46:40.000Z",
+      "payload": {
+        "$e": {
+          "iv": "ROcM668mMTSrQxYd",
+          "ct": "bP-gdwI59wOnY3kwZe9EPn-Kxi0FpMnX0Af9oimkTtNULdjLqk2L84lYSmoDSBcKr8QeZhP_Mr4dbO2eIJkOjSfDBW70zZyMleQHIn0BkGBpzWRm_4mh5_hZexwPlyMNNZ_Z1RfgLe16e9_tBhJpUAnztngcE0wNvmgDSyJLTbZS8WooH7sdOCKqKozrFJ1GSRzsCzod1TNxwqGXGornt8N8Eg"
+        }
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-0000000000fb",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "hlc": {
+        "physical": 1727200001000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-0000000000fc"
+      ],
+      "opType": "object.update",
+      "timestamp": "2024-09-24T17:46:41.000Z",
+      "payload": {
+        "$e": {
+          "iv": "C-HlOV1-slbg48m_",
+          "ct": "jNZLW56oVErRdc2nHMV9aEakk_glwJ0gcigQ2SHZTDBIdMIKr8leKhbzZn-g2yvrAyyQunjo4fVO07gJ1YdLYPfPLluFiV7PCDF5QYH7XyPB"
+        }
+      }
+    }
+  ]
+}

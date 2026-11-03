@@ -1,5 +1,5 @@
 {
-  "comment": "Parent-page condition (carried into Revision 12): the isEmbedded flag is only EFFECTIVE under a page parent. Envelopes 1-2 build page P > embedded block B and apply cleanly; envelope 3 claims the standalone role (isEmbedded: false) for a child of the BLOCK and must throw MoveGuardError on apply — the fixture is in REPLAY_EXCLUDED_FIXTURES and is applied deliberately in its own store test. LOCKSTEP-PENDING: the GTK/Flutter ports converge on the same expectation before the marker clears (docs/developers/development.md §3).",
+  "comment": "Parent-page condition: the isEmbedded flag is only EFFECTIVE under a page parent. Envelopes 1-2 build page P > embedded block B and apply cleanly; envelope 3 claims the standalone role (isEmbedded: false) for a child of the BLOCK and must throw MoveGuardError on apply — the fixture is in REPLAY_EXCLUDED_FIXTURES and is applied deliberately in its own store test. LOCKSTEP-PENDING: the GTK/Flutter ports converge on the same expectation before the marker clears (docs/developers/development.md §3).",
   "envelopes": [
     {
       "id": "0192a000-0000-7000-8000-000000000101",

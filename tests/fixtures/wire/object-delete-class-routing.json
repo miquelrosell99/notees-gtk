@@ -253,6 +253,122 @@
         "objectId": "0192a000-0000-7000-8000-000000000a23",
         "permanent": false
       }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a1f",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200031000,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a25"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:31.000Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000a25",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Shelf"
+          }
+        ],
+        "icon": "mdiBookshelf"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a20",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200031100,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a25"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:31.100Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a25",
+        "permanent": false
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a21",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-laptop",
+      "client": "web",
+      "hlc": {
+        "physical": 1727200031200,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a25"
+      ],
+      "opType": "object.restore",
+      "timestamp": "2026-09-24T12:00:31.200Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a25"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a22",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200031300,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a27"
+      ],
+      "opType": "class.create",
+      "timestamp": "2026-09-24T12:00:31.300Z",
+      "payload": {
+        "classId": "0192a000-0000-7000-8000-000000000a27",
+        "contentAst": [
+          {
+            "type": "text",
+            "text": "Mood"
+          }
+        ],
+        "icon": "mdiEmoticonOutline"
+      }
+    },
+    {
+      "id": "0192a000-0000-7000-8000-000000000a23",
+      "protocolVersion": 3,
+      "workspaceId": "0192a000-0000-7000-8000-000000000001",
+      "actorId": "0192a000-0000-7000-8000-000000000002",
+      "deviceId": "test-device-phone",
+      "client": "flutter",
+      "hlc": {
+        "physical": 1727200031400,
+        "logical": 0
+      },
+      "affectedNodeIds": [
+        "0192a000-0000-7000-8000-000000000a27"
+      ],
+      "opType": "object.delete",
+      "timestamp": "2026-09-24T12:00:31.400Z",
+      "payload": {
+        "objectId": "0192a000-0000-7000-8000-000000000a27",
+        "permanent": true
+      }
     }
   ]
 }

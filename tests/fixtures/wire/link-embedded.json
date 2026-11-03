@@ -38,7 +38,6 @@
           {
             "type": "mention",
             "targetNodeId": "0192a000-0000-7000-8000-00000000bf10",
-            "text": "P",
             "isEmbedded": true
           }
         ],
@@ -61,8 +60,7 @@
         "contentAst": [
           {
             "type": "mention",
-            "targetNodeId": "0192a000-0000-7000-8000-00000000bf10",
-            "text": "P"
+            "targetNodeId": "0192a000-0000-7000-8000-00000000bf10"
           }
         ]
       }
