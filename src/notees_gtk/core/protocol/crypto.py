@@ -6,6 +6,16 @@ KDF record, master/workspace key wrap, envelope/bytes encryption). Formats
 match the server-side groundwork in ``apps/server/src/auth.ts``: wrapped keys
 and verifiers are ``base64url(iv ‖ tag ‖ ct)`` / ``base64url(HMAC-SHA256(...))``.
 
+CAS asset bytes (plan-05 contract, shared byte-for-byte with the TS and
+Flutter ports — cross-client asset sharing depends on it):
+- stored bytes = ``tag(16) ‖ ct`` — TAG FIRST, same order as the payload
+  slot's ``ct`` field;
+- the IV is EXTERNAL server metadata (the ``asset.iv`` column, b64u on the
+  wire) — never part of the blob, never op-log state;
+- keyless sessions are legal: no workspace key ⇒ plaintext upload (iv
+  absent), and a sealed download without a key surfaces the caller's
+  honest-fallback path (never a throw).
+
 Wire formats (``tests/fixtures/wire/envelope-encrypted.json`` is the
 byte-pinned contract for the slot, and its comment is authoritative):
 - slot ``iv`` = base64url of the 12-byte GCM nonce;
@@ -43,13 +53,16 @@ __all__ = [
     "SCRYPT_P",
     "SCRYPT_R",
     "KdfRecord",
+    "SealedAsset",
     "WorkspaceKeyCrypto",
     "b64u_decode",
     "b64u_encode",
     "create_kdf_record",
+    "decrypt_asset_bytes",
     "decrypt_bytes",
     "decrypt_envelope",
     "decrypt_payload",
+    "encrypt_asset_bytes",
     "encrypt_bytes",
     "encrypt_envelope",
     "encrypt_payload",
@@ -57,7 +70,9 @@ __all__ = [
     "generate_master_key",
     "generate_workspace_key",
     "key_verifier_of",
+    "open_asset_if_sealed",
     "scrypt_key_bytes",
+    "seal_asset_if_keyed",
     "unwrap_master_key",
     "unwrap_workspace_key",
     "wrap_workspace_key",
@@ -359,6 +374,87 @@ def decrypt_bytes(workspace_key: bytes, data: bytes) -> bytes:
         return AESGCM(workspace_key).decrypt(iv, ct + tag, None)
     except InvalidTag as exc:
         raise ValueError("byte decryption failed: wrong key or tampered blob") from exc
+
+
+# --- CAS asset bytes (plan-05: external IV, tag-first blob) ----------------------------
+
+
+@dataclass(frozen=True)
+class SealedAsset:
+    """The seal of one asset upload (the ``encryptAssetBytes`` return shape).
+
+    ``iv`` is the random 12-byte GCM nonce — EXTERNAL to the blob, carried as
+    server-side asset metadata (b64u on the wire, the ``asset.iv`` column);
+    ``blob`` is what CAS stores and dedupes on, ``tag(16) ‖ ct``.
+    """
+
+    iv: bytes
+    blob: bytes
+
+
+def encrypt_asset_bytes(workspace_key: bytes, data: bytes) -> SealedAsset:
+    """Seal CAS asset bytes for upload (the ``encryptAssetBytes`` port).
+
+    The blob layout is ``tag(16) ‖ ct`` — tag first, exactly like the payload
+    slot's ``ct`` field and unlike :func:`encrypt_bytes`' snapshot layout
+    (``iv ‖ tag ‖ ct``). The IV never enters the blob: it rides the upload
+    multipart + the server's ``asset.iv`` metadata column instead.
+    """
+    _check_key_bytes("workspace key", workspace_key)
+    iv = secrets.token_bytes(GCM_NONCE_BYTES)
+    sealed = AESGCM(workspace_key).encrypt(iv, data, None)  # ct ‖ tag
+    ct, tag = sealed[:-GCM_TAG_BYTES], sealed[-GCM_TAG_BYTES:]
+    return SealedAsset(iv=iv, blob=tag + ct)
+
+
+def decrypt_asset_bytes(workspace_key: bytes, iv: bytes, blob: bytes) -> bytes:
+    """Open :func:`encrypt_asset_bytes`'s seal (tag-first blob, external IV).
+
+    Raises:
+        ValueError: wrong key length, malformed IV/blob, or any GCM failure
+            (wrong key or tampered ciphertext — an honest error the caller
+            surfaces, never a corrupted render).
+    """
+    _check_key_bytes("workspace key", workspace_key)
+    if len(iv) != GCM_NONCE_BYTES:
+        raise ValueError(f"asset iv must be {GCM_NONCE_BYTES} bytes, got {len(iv)}")
+    if len(blob) <= GCM_TAG_BYTES:
+        raise ValueError("sealed asset shorter than the 16-byte tag")
+    tag, ct = blob[:GCM_TAG_BYTES], blob[GCM_TAG_BYTES:]
+    try:
+        return AESGCM(workspace_key).decrypt(iv, ct + tag, None)
+    except InvalidTag as exc:
+        raise ValueError("asset decryption failed: wrong key or tampered blob") from exc
+
+
+def seal_asset_if_keyed(workspace_key: bytes | None, data: bytes) -> tuple[bytes, str | None]:
+    """Encrypt-at-upload boundary (the ``sealAssetIfKeyed`` port).
+
+    Keyed ⇒ the sealed blob + b64u iv for the multipart ``iv`` field. Keyless
+    (a locked/API-key session with no workspace key) is legal: the bytes pass
+    through plaintext and the iv stays ``None`` — the server sniffs and stores
+    ``asset.iv NULL`` exactly as an unkeyed client always has.
+    """
+    if workspace_key is None:
+        return data, None
+    sealed = encrypt_asset_bytes(workspace_key, data)
+    return sealed.blob, b64u_encode(sealed.iv)
+
+
+def open_asset_if_sealed(workspace_key: bytes | None, iv: str | None, blob: bytes) -> bytes | None:
+    """Decrypt-at-download boundary (the ``openAssetIfSealed`` port).
+
+    Plaintext asset (``iv is None``) ⇒ the blob passes through. Sealed asset
+    with a key ⇒ the opened bytes (a GCM failure raises :class:`ValueError` —
+    the caller's honest-error surface, never a corrupted render). Sealed asset
+    WITHOUT a key ⇒ ``None`` — the caller shows its existing asset
+    error/fallback UI; this function never throws in the keyless case.
+    """
+    if iv is None:
+        return blob
+    if workspace_key is None:
+        return None
+    return decrypt_asset_bytes(workspace_key, b64u_decode(iv), blob)
 
 
 # --- engine provider (the sync ``EnvelopeCrypto`` surface) ----------------------------

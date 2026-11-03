@@ -23,9 +23,11 @@ from notees_gtk.core.protocol.crypto import (
     b64u_decode,
     b64u_encode,
     create_kdf_record,
+    decrypt_asset_bytes,
     decrypt_bytes,
     decrypt_envelope,
     decrypt_payload,
+    encrypt_asset_bytes,
     encrypt_bytes,
     encrypt_envelope,
     encrypt_payload,
@@ -33,7 +35,9 @@ from notees_gtk.core.protocol.crypto import (
     generate_master_key,
     generate_workspace_key,
     key_verifier_of,
+    open_asset_if_sealed,
     scrypt_key_bytes,
+    seal_asset_if_keyed,
     unwrap_master_key,
     unwrap_workspace_key,
     wrap_workspace_key,
@@ -326,3 +330,74 @@ class TestWorkspaceKeyCryptoProvider:
     def test_rejects_a_non_32_byte_key(self) -> None:
         with pytest.raises(ValueError, match="32 raw bytes"):
             WorkspaceKeyCrypto(b"\x00" * 16)
+
+
+class TestAssetBytes:
+    """The plan-05 CAS asset seal: external IV, tag-first blob.
+
+    The blob layout is the cross-client asset-sharing contract (TS and
+    Flutter port the same bytes) — tag(16) ‖ ct, IV never inside the blob.
+    """
+
+    def test_round_trip_and_layout(self, workspace_key: bytes) -> None:
+        data = b"\x89PNG asset bytes \x00\xff"
+        sealed = encrypt_asset_bytes(workspace_key, data)
+        assert len(sealed.iv) == 12
+        assert sealed.blob[:16] != b""  # tag leads — the blob is tag ‖ ct
+        assert len(sealed.blob) == 16 + len(data)
+        assert decrypt_asset_bytes(workspace_key, sealed.iv, sealed.blob) == data
+
+    def test_iv_is_external_and_random(self, workspace_key: bytes) -> None:
+        data = b"same plaintext"
+        first = encrypt_asset_bytes(workspace_key, data)
+        second = encrypt_asset_bytes(workspace_key, data)
+        assert first.iv != second.iv
+        assert first.blob != second.blob
+        # The iv appears nowhere in the stored blob.
+        assert first.iv not in first.blob
+
+    def test_wrong_key_and_tampering_fail(self, workspace_key: bytes) -> None:
+        data = b"a cover image"
+        sealed = encrypt_asset_bytes(workspace_key, data)
+        with pytest.raises(ValueError, match="asset decryption failed"):
+            decrypt_asset_bytes(bytes(byte ^ 0xFF for byte in workspace_key), sealed.iv, sealed.blob)
+        tampered = bytearray(sealed.blob)
+        tampered[-1] ^= 0xFF
+        with pytest.raises(ValueError, match="asset decryption failed"):
+            decrypt_asset_bytes(workspace_key, sealed.iv, bytes(tampered))
+
+    def test_malformed_iv_and_blob_fail(self, workspace_key: bytes) -> None:
+        sealed = encrypt_asset_bytes(workspace_key, b"x")
+        with pytest.raises(ValueError, match="asset iv must be 12 bytes"):
+            decrypt_asset_bytes(workspace_key, b"\x00" * 8, sealed.blob)
+        with pytest.raises(ValueError, match="shorter than the 16-byte tag"):
+            decrypt_asset_bytes(workspace_key, sealed.iv, b"\x00" * 16)
+
+    def test_seal_if_keyed_round_trip(self, workspace_key: bytes) -> None:
+        blob, iv = seal_asset_if_keyed(workspace_key, b"plain")
+        assert iv is not None
+        opened = open_asset_if_sealed(workspace_key, iv, blob)
+        assert opened == b"plain"
+
+    def test_seal_keyless_passthrough(self) -> None:
+        blob, iv = seal_asset_if_keyed(None, b"plain")
+        assert blob == b"plain"
+        assert iv is None
+
+    def test_open_keyless_sealed_returns_none_never_throws(self) -> None:
+        workspace_key = generate_workspace_key()
+        blob, iv = seal_asset_if_keyed(workspace_key, b"plain")
+        assert iv is not None
+        assert open_asset_if_sealed(None, iv, blob) is None
+
+    def test_open_plaintext_passthrough(self, workspace_key: bytes) -> None:
+        assert open_asset_if_sealed(workspace_key, None, b"plain") == b"plain"
+        assert open_asset_if_sealed(None, None, b"plain") == b"plain"
+
+    def test_open_tampered_with_key_raises_honest_error(self, workspace_key: bytes) -> None:
+        blob, iv = seal_asset_if_keyed(workspace_key, b"plain")
+        assert iv is not None
+        tampered = bytearray(blob)
+        tampered[0] ^= 0xFF
+        with pytest.raises(ValueError, match="asset decryption failed"):
+            open_asset_if_sealed(workspace_key, iv, bytes(tampered))

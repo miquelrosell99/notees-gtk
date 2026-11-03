@@ -782,3 +782,145 @@ class TestPrefs:
         with pytest.raises(ValueError, match="cards_algorithm"):
             client.patch_prefs(cards_algorithm="leitner")  # type: ignore[arg-type]
         assert requests == []
+
+
+class TestAssets:
+    """The CAS asset channel (``/api/assets``) with the plan-05 encrypted-upload fields.
+
+    Plaintext uploads keep today's shape (file part only; the server sniffs).
+    Encrypted uploads declare themselves (``encrypted``/``mimeType``/``iv``
+    multipart fields) and skip sniffing; the iv answers on the upload
+    response and on ``GET /assets/:id/info``. Downloaded bytes are whatever
+    CAS stores — openness is the crypto boundary's job, not the client's.
+    """
+
+    UPLOAD_OK: dict[str, Any] = {
+        "assetId": "0193b000-0000-7000-8000-0000000000a1",
+        "hash": "ab" * 32,
+        "mimeType": "image/png",
+        "size": 4,
+        "originalName": "cover.png",
+        "refs": 1,
+    }
+
+    def _multipart_fields(self, request: httpx.Request) -> dict[str, bool]:
+        """Field-presence probe over the multipart body (name= headers)."""
+        body = request.content
+        assert request.headers["content-type"].startswith("multipart/form-data")
+        return {
+            field: f'name="{field}"'.encode() in body
+            for field in ("encrypted", "mimeType", "iv", "objectId", "file")
+        }
+
+    def test_plaintext_upload_sends_the_file_part_only(self) -> None:
+        seen: dict[str, bool] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(self._multipart_fields(request))
+            return httpx.Response(201, json=self.UPLOAD_OK)
+
+        client, requests = _make_client(_router({("POST", "/api/assets"): handler}))
+        result = client.post_asset(b"\x89PNG", filename="cover.png")
+        assert seen == {"encrypted": False, "mimeType": False, "iv": False, "objectId": False, "file": True}
+        assert result.asset_id == self.UPLOAD_OK["assetId"]
+        assert result.iv is None
+        assert requests[0].method == "POST"
+
+    def test_encrypted_upload_declares_itself(self) -> None:
+        seen: dict[str, bool] = {}
+        sealed_ok = {**self.UPLOAD_OK, "iv": "b64u-nonce"}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(self._multipart_fields(request))
+            assert b"image/png" in request.content
+            assert b"b64u-nonce" in request.content
+            return httpx.Response(201, json=sealed_ok)
+
+        client, _ = _make_client(_router({("POST", "/api/assets"): handler}))
+        result = client.post_asset(
+            b"tag-first blob", filename="cover.png", mime_type="image/png", iv="b64u-nonce"
+        )
+        assert seen == {"encrypted": True, "mimeType": True, "iv": True, "objectId": False, "file": True}
+        assert result.iv == "b64u-nonce"
+
+    def test_encrypted_upload_requires_a_declared_mime_before_any_request(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request expected")
+
+        client, requests = _make_client(httpx.MockTransport(handler))
+        with pytest.raises(ValueError, match="mime_type"):
+            client.post_asset(b"blob", filename="cover.png", iv="b64u-nonce")
+        assert requests == []
+
+    def test_object_id_and_workspace_header_pass_through(self) -> None:
+        seen: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["fields"] = self._multipart_fields(request)
+            seen["workspace"] = request.headers.get("X-Workspace-Id")
+            return httpx.Response(201, json={**self.UPLOAD_OK, "objectId": ACTOR_ID})
+
+        client, _ = _make_client(_router({("POST", "/api/assets"): handler}))
+        result = client.post_asset(b"\x89PNG", filename="cover.png", object_id=ACTOR_ID, workspace_id=WORKSPACE_ID)
+        assert seen["fields"]["objectId"] is True
+        assert seen["workspace"] == WORKSPACE_ID
+        assert result.object_id == ACTOR_ID
+
+    def test_get_asset_returns_the_raw_stored_bytes(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"tag-first blob")
+
+        client, requests = _make_client(_router({("GET", f"/api/assets/{ACTOR_ID}"): handler}))
+        assert client.get_asset(ACTOR_ID) == b"tag-first blob"
+        assert requests[0].url.path == f"/api/assets/{ACTOR_ID}"
+
+    def test_get_asset_info_carries_the_iv(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={**self.UPLOAD_OK, "iv": "b64u-nonce"})
+
+        client, _ = _make_client(_router({("GET", f"/api/assets/{ACTOR_ID}/info"): handler}))
+        info = client.get_asset_info(ACTOR_ID)
+        assert info.iv == "b64u-nonce"
+        assert info.mime_type == "image/png"
+
+    def test_sealed_upload_download_round_trip_through_the_crypto_boundary(self) -> None:
+        """The plan-05 flow end to end: seal → declare → store → info(iv) → bytes → open."""
+        from notees_gtk.core.protocol.crypto import (
+            generate_workspace_key,
+            open_asset_if_sealed,
+            seal_asset_if_keyed,
+        )
+
+        workspace_key = generate_workspace_key()
+        plaintext = b"\xff\xd8\xff\xe0 a jpeg"
+        blob, iv = seal_asset_if_keyed(workspace_key, plaintext)
+        assert iv is not None
+
+        def upload(request: httpx.Request) -> httpx.Response:
+            fields = self._multipart_fields(request)
+            assert fields["encrypted"] and fields["mimeType"] and fields["iv"]
+            return httpx.Response(201, json={**self.UPLOAD_OK, "iv": iv})
+
+        def info(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={**self.UPLOAD_OK, "iv": iv})
+
+        def download(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=blob)
+
+        client, _ = _make_client(
+            _router(
+                {
+                    ("POST", "/api/assets"): upload,
+                    ("GET", f"/api/assets/{ACTOR_ID}/info"): info,
+                    ("GET", f"/api/assets/{ACTOR_ID}"): download,
+                }
+            )
+        )
+        uploaded = client.post_asset(blob, filename="cover.jpg", mime_type="image/jpeg", iv=iv)
+        assert uploaded.iv == iv
+        meta = client.get_asset_info(ACTOR_ID)
+        assert meta.iv == iv
+        opened = open_asset_if_sealed(workspace_key, meta.iv, client.get_asset(ACTOR_ID))
+        assert opened == plaintext
+        # Keyless download of a sealed asset: the honest-fallback signal (None), never a throw.
+        assert open_asset_if_sealed(None, meta.iv, blob) is None

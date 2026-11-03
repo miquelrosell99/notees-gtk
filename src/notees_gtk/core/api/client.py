@@ -2,10 +2,12 @@
 
 Covers the endpoints the sync engine drives: v2 relay endpoints under
 ``/api/relay/v2`` (WIRE.md: batch submit, catch-up, snapshot probe/download/
-upload, stats) plus the workspace listing and the login path (kept for
-servers that still issue bearer sessions; the v2 relay authenticates with
-a single-user API key, ``X-API-Key``). All relay request/response bodies are
-camelCase JSON; envelopes travel inside them per the protocol models.
+upload, stats) plus the object/assets API (CAS upload/download/info with the
+plan-05 encrypted-upload fields), the workspace listing and key routes, and
+the login path (kept for servers that still issue bearer sessions; the v2
+relay authenticates with a single-user API key, ``X-API-Key``). All relay
+request/response bodies are camelCase JSON; envelopes travel inside them per
+the protocol models.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from notees_gtk.core.protocol.models import (
 
 __all__ = [
     "MAX_BATCH_SIZE",
+    "AssetInfo",
+    "AssetUploadResult",
     "AuthResult",
     "CardsAlgorithm",
     "DEFAULT_CARDS_ALGORITHM",
@@ -126,6 +130,48 @@ class RelayStats(BaseModel):
     max_hlc: Hlc
     restore_epoch: int
     latest_snapshot_hlc: Hlc | None
+
+
+class AssetInfo(BaseModel):
+    """Asset metadata from ``GET /api/assets/:id/info``.
+
+    Wire shape: ``assetId``, ``hash``, ``mimeType``, ``size``, ``originalName``,
+    ``refs`` (the CAS ref count), and — plan 05 — ``iv``: the b64u 12-byte GCM
+    nonce of a sealed upload, ``None`` for plaintext assets (server metadata,
+    never op-log state). The mime type of a sealed asset is the DECLARED type
+    (sniffing is skipped on encrypted uploads).
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    asset_id: str
+    hash: str
+    mime_type: str
+    size: int
+    original_name: str
+    refs: int
+    iv: str | None = None
+
+
+class AssetUploadResult(BaseModel):
+    """Acknowledgement of ``POST /api/assets`` (201).
+
+    Carries the same metadata as :class:`AssetInfo` plus the optional
+    ``objectId`` when the upload attached to an object, and ``iv`` (plan 05):
+    the b64u nonce just stored as asset metadata on an encrypted upload,
+    ``None`` on a plaintext one.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    asset_id: str
+    hash: str
+    mime_type: str
+    size: int
+    original_name: str
+    refs: int
+    iv: str | None = None
+    object_id: str | None = None
 
 
 def _as_id_list(input_value: Any) -> tuple[str, ...]:
@@ -424,6 +470,82 @@ class NoteesClient:
         """Return the relay stats document for a workspace (WIRE.md)."""
         data = self._get_json(f"{RELAY_V2_BASE}/stats", params={"workspaceId": workspace_id})
         return RelayStats.model_validate(data)
+
+    # ----------------------------------------------------------------- assets
+
+    def post_asset(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        mime_type: str | None = None,
+        iv: str | None = None,
+        object_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> AssetUploadResult:
+        """Upload bytes to CAS (``POST /api/assets``, multipart).
+
+        Plaintext path (``iv is None``): today's shape — one file part (+
+        optional ``objectId`` text field); the server magic-byte-sniffs the
+        type. Encrypted path (plan 05): ``data`` is the sealed ``tag ‖ ct``
+        blob (see :func:`notees_gtk.core.protocol.crypto.seal_asset_if_keyed`)
+        and the upload DECLARES itself — ``encrypted``, the declared
+        ``mimeType``, and the b64u ``iv`` multipart fields — so the server
+        skips sniffing and stores the declared type + the iv as asset
+        metadata. A plaintext client cannot smuggle a declared type past
+        sniffing: without ``encrypted`` the fields are ignored.
+
+        Args:
+            data: The bytes to store (plaintext or the sealed blob).
+            filename: The file part's name (``originalName`` server-side).
+            mime_type: Declared type — REQUIRED when ``iv`` is given.
+            iv: b64u 12-byte nonce of a sealed upload, else ``None``.
+            object_id: Optional node to ``asset.attach`` the upload to.
+            workspace_id: Optional ``X-Workspace-Id`` (else the server default).
+
+        Raises:
+            ValueError: ``iv`` given without a declared ``mime_type``.
+            ApiError: The server rejected the upload.
+        """
+        fields: dict[str, str] = {}
+        if iv is not None:
+            if not mime_type:
+                raise ValueError("an encrypted asset upload must declare its mime_type")
+            fields["encrypted"] = "1"
+            fields["mimeType"] = mime_type
+            fields["iv"] = iv
+        if object_id is not None:
+            fields["objectId"] = object_id
+        headers = {"X-Workspace-Id": workspace_id} if workspace_id is not None else None
+        response = self._send(
+            "POST",
+            "/api/assets",
+            files={"file": (filename, data)},
+            data=fields or None,
+            headers=headers,
+        )
+        return AssetUploadResult.model_validate(response.json())
+
+    def get_asset(self, asset_id: str, *, workspace_id: str | None = None) -> bytes:
+        """Download an asset's raw stored bytes (``GET /api/assets/:id``).
+
+        The bytes are exactly what CAS stores — plaintext or the sealed
+        ``tag ‖ ct`` blob; openness is the caller's job via the asset info's
+        ``iv`` (see :func:`notees_gtk.core.protocol.crypto.open_asset_if_sealed`).
+        """
+        headers = {"X-Workspace-Id": workspace_id} if workspace_id is not None else None
+        response = self._send("GET", f"/api/assets/{asset_id}", headers=headers)
+        return response.content
+
+    def get_asset_info(self, asset_id: str) -> AssetInfo:
+        """Fetch an asset's metadata (``GET /api/assets/:id/info``).
+
+        ``iv`` present means the bytes are sealed — download + decrypt needs
+        the workspace key, and without one the caller's honest-fallback
+        surface applies (never a throw).
+        """
+        data = self._get_json(f"/api/assets/{asset_id}/info")
+        return AssetInfo.model_validate(data)
 
     # ----------------------------------------------------------------- plumbing
 
