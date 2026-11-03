@@ -3,6 +3,13 @@
 Server URL (default ``http://localhost:8001``), email, and password. The blocking
 :meth:`NoteesClient.login` call runs on a worker thread (see
 :mod:`notees_gtk.ui.worker`); failures surface as ``Adw.Toast`` overlays.
+
+E2EE custody: a server that carries a ``kdf`` record in the login answer gets
+its master key derived from the password ON the worker thread (the scrypt KDF
+is the expensive step) — a wrong password fails at the verifier and surfaces
+as a login-page error, never a silently unencrypted session. The raw master
+key is handed to the window's session-scoped in-memory holder; it never
+touches ``ClientConfig``/config.json.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from gi.repository import Adw, GdkPixbuf, GLib, Gtk
 
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, NoteesClient
+from notees_gtk.core.protocol.crypto import KdfRecord, unwrap_master_key
 from notees_gtk.ui import config_store
 from notees_gtk.ui.brand import ink_bbox
 from notees_gtk.ui.config_store import GTK_ACTOR_ID
@@ -27,8 +35,10 @@ from notees_gtk.ui.worker import run_in_worker
 __all__ = ["LoginView"]
 
 #: Callback invoked after a successful login with the persisted config, the
-#: authenticated client, and the server's public user record.
-LoggedInCallback = Callable[[ClientConfig, NoteesClient, dict[str, Any]], None]
+#: authenticated client, the server's public user record, and the session's
+#: in-memory master key (``None`` when the server carries no ``kdf`` record —
+#: a keyless/API-key-style session with no custody).
+LoggedInCallback = Callable[[ClientConfig, NoteesClient, dict[str, Any], bytes | None], None]
 
 #: Render width for the oversampled load — headroom for a clean crop + downscale.
 _OVERSAMPLE_WIDTH_PX = 512
@@ -78,7 +88,7 @@ class LoginView(Gtk.Box):
     """Credentials form; reports errors through an :class:`Adw.Toast`."""
 
     def __init__(self, on_logged_in: LoggedInCallback) -> None:
-        """Build the form; ``on_logged_in`` receives ``(config, client, user)``."""
+        """Build the form; ``on_logged_in`` receives ``(config, client, user, master_key)``."""
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._on_logged_in = on_logged_in
 
@@ -136,23 +146,35 @@ class LoginView(Gtk.Box):
         self._set_busy(True)
         client = NoteesClient(server_url)
 
-        def work() -> tuple[dict[str, Any], str]:
+        def work() -> tuple[dict[str, Any], str, bytes | None]:
             result = client.login(email, password)
-            return result.user, result.token
+            # Custody: derive the master key while the worker thread is hot —
+            # a wrong password fails at the verifier here, surfacing as a
+            # login-page error (never a silently unencrypted session). A
+            # server without a kdf record (or an operator login) yields None.
+            master_key = unwrap_master_key(password, KdfRecord.from_dict(result.kdf)) if result.kdf else None
+            return result.user, result.token, master_key
 
         run_in_worker(
             work,
-            on_done=lambda user_and_token: self._on_login_done(server_url, client, *user_and_token),
+            on_done=lambda user_token_key: self._on_login_done(server_url, client, *user_token_key),
             on_error=self._on_login_error,
         )
 
-    def _on_login_done(self, server_url: str, client: NoteesClient, user: dict[str, Any], token: str) -> None:
+    def _on_login_done(
+        self,
+        server_url: str,
+        client: NoteesClient,
+        user: dict[str, Any],
+        token: str,
+        master_key: bytes | None,
+    ) -> None:
         self._set_busy(False)
         config = ClientConfig(server_url=server_url, data_dir=config_store.data_dir(), token=token)
         config_store.save_config(config)
         # Envelopes ride the GTK system actor (config_store.GTK_ACTOR_ID).
         config_store.save_actor_id(GTK_ACTOR_ID)
-        self._on_logged_in(config, client, user)
+        self._on_logged_in(config, client, user, master_key)
 
     def _on_login_error(self, exc: Exception) -> None:
         self._set_busy(False)

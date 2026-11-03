@@ -242,6 +242,88 @@ class TestWorkspaces:
         assert client.list_workspaces() == []
 
 
+class TestWorkspaceKey:
+    """The E2EE custody surface (GET/PUT /api/workspaces/:id/key — the server
+    contract: GET → {wrappedKey}|404; PUT → 204|409(first-write-wins)|403)."""
+
+    KEY_PATH = f"/api/workspaces/{WORKSPACE_ID}/key"
+    WRAPPED = "b64u-iv-tag-ct-record"
+
+    def test_get_returns_the_wrapped_key(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == self.KEY_PATH
+            return httpx.Response(200, json={"wrappedKey": self.WRAPPED})
+
+        client, requests = _make_client(_router({("GET", self.KEY_PATH): handler}))
+        assert client.fetch_workspace_key(WORKSPACE_ID) == self.WRAPPED
+        assert len(requests) == 1
+
+    def test_get_404_means_no_key_stored(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": {"code": "not_found", "message": "no workspace key stored", "status": 404}})
+
+        client, _ = _make_client(_router({("GET", self.KEY_PATH): handler}))
+        assert client.fetch_workspace_key(WORKSPACE_ID) is None
+
+    def test_get_403_forbidden_is_loud(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json={"error": {"code": "forbidden", "message": "operator", "status": 403}})
+
+        client, _ = _make_client(_router({("GET", self.KEY_PATH): handler}))
+        with pytest.raises(ForbiddenError):
+            client.fetch_workspace_key(WORKSPACE_ID)
+
+    def test_get_malformed_body_fails_loud(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"unexpected": True})
+
+        client, _ = _make_client(_router({("GET", self.KEY_PATH): handler}))
+        with pytest.raises(ValueError, match="malformed workspace key body"):
+            client.fetch_workspace_key(WORKSPACE_ID)
+
+    def test_put_first_write_returns_the_sent_key(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(_json_body(request))
+            assert request.url.path == self.KEY_PATH
+            return httpx.Response(204)
+
+        client, requests = _make_client(_router({("PUT", self.KEY_PATH): handler}))
+        assert client.store_workspace_key(WORKSPACE_ID, self.WRAPPED) == self.WRAPPED
+        assert seen == [{"wrappedKey": self.WRAPPED}]
+        assert len(requests) == 1
+
+    def test_put_409_adopts_the_winners_key(self) -> None:
+        """First-write-wins: a lost race re-GETs and returns the stored key —
+        never a split-key blind upsert."""
+
+        def conflict(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(409, json={"error": {"code": "conflict", "message": "already exists", "status": 409}})
+
+        def winner(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"wrappedKey": "winners-record"})
+
+        routes = {
+            ("PUT", self.KEY_PATH): conflict,
+            ("GET", self.KEY_PATH): winner,
+        }
+        client, requests = _make_client(_router(routes))
+        assert client.store_workspace_key(WORKSPACE_ID, self.WRAPPED) == "winners-record"
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("PUT", self.KEY_PATH),
+            ("GET", self.KEY_PATH),
+        ]
+
+    def test_put_other_4xx_is_loud(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"error": {"code": "validation_failed", "message": "bad", "status": 422}})
+
+        client, _ = _make_client(_router({("PUT", self.KEY_PATH): handler}))
+        with pytest.raises(QuarantinedError):
+            client.store_workspace_key(WORKSPACE_ID, self.WRAPPED)
+
+
 class TestSubmitBatch:
     def test_body_matches_fixture_shape_and_returns_saved_ids(self) -> None:
         fixture = json.loads((FIXTURES / "batch-request.json").read_text())

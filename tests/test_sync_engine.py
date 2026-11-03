@@ -9,6 +9,7 @@ asserted without waiting real seconds.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from notees_gtk.core.api import (
     SnapshotMeta,
 )
 from notees_gtk.core.protocol.clock import Clock, Hlc
+from notees_gtk.core.protocol.crypto import WorkspaceKeyCrypto, encrypt_bytes, generate_workspace_key
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import (
     PROTOCOL_VERSION,
@@ -37,7 +39,7 @@ from notees_gtk.core.protocol.models import (
     RelayEnvelope,
     new_envelope,
 )
-from notees_gtk.core.sync import PushResult, SyncEngine
+from notees_gtk.core.sync import EnvelopeCrypto, PushResult, SyncEngine
 from notees_gtk.data.store import LocalStore
 
 WS = "ws-a"
@@ -199,6 +201,7 @@ def make_engine(
     sleeper: RecordingSleeper | None = None,
     clock: Clock | None = None,
     page_size: int = 1000,
+    crypto: EnvelopeCrypto | None = None,
 ) -> SyncEngine:
     return SyncEngine(
         relay,
@@ -208,6 +211,7 @@ def make_engine(
         sleeper=sleeper if sleeper is not None else RecordingSleeper(),
         clock=clock,
         page_size=page_size,
+        crypto=crypto,
     )
 
 
@@ -715,3 +719,131 @@ class TestRealtime:
         assert store.node(WS, uid("post-epoch-node")) is not None  # re-pulled from 0
         assert store.stored_restore_epoch(WS) == 5
         assert result.cursor == 1
+
+
+# --- E2EE boundary (plan 04): wire ciphertext, plaintext mirror, locked skip ----
+
+
+class TestE2eeBoundary:
+    """The engine's custody boundary on the FakeRelayClient harness: push seals
+    a copy (outbox + mirror stay plaintext), pull decrypts at the apply
+    chokepoint, locked workspaces skip `$e` with a counted warning, snapshot
+    blobs decrypt at download, and two devices converge on the same key."""
+
+    def _keyed_engine(self, relay: FakeRelayClient, store: LocalStore, key: bytes) -> SyncEngine:
+        return make_engine(relay, store, crypto=WorkspaceKeyCrypto(key))
+
+    def test_push_seals_the_wire_copy_but_keeps_the_mirror_plaintext(self, store: LocalStore) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        store.enqueue(create_env(uid("n1"), content="secret meeting notes", hlc=(2, 0)))
+        engine = self._keyed_engine(relay, store, key)
+        assert engine.push() == PushResult(sent=1, quarantined=0)
+
+        # The wire saw ciphertext; the local mirror kept the plaintext.
+        wire_env = relay._ops[relay.batch_calls[0][0].id][1]
+        assert "$e" in wire_env.payload
+        row = store.node(WS, uid("n1"))
+        assert row is not None and row.content_plain == "secret meeting notes"
+        assert store.pending_outbox(WS) == []
+
+    def test_pull_decrypts_before_apply_and_converges_a_second_device(self, tmp_path: Path) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        pusher_store = LocalStore(tmp_path / "a.db")
+        pusher = self._keyed_engine(relay, pusher_store, key)
+        pusher_store.enqueue(create_env(uid("shared"), content="shared secret", hlc=(2, 0)))
+        assert pusher.push().sent == 1
+
+        # Second device, same workspace key, fresh replica.
+        b_store = LocalStore(tmp_path / "b.db")
+        b_engine = self._keyed_engine(relay, b_store, key)
+        result = b_engine.pull()
+        assert result.applied == 1
+        row = b_store.node(WS, uid("shared"))
+        assert row is not None and row.content_plain == "shared secret"
+
+    def test_locked_workspace_skips_encrypted_envelopes_and_advances(self, store: LocalStore) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("plain"), content="public note", hlc=(1, 0)))
+        # A `$e` envelope as another keyed device would have produced.
+        sealed = WorkspaceKeyCrypto(key).encrypt_envelope(create_env(uid("sealed"), content="hidden", hlc=(2, 0)))
+        relay.receive_remote(sealed)
+
+        engine = make_engine(relay, store)  # no crypto — locked
+        result = engine.pull()
+        assert result.applied == 1  # the plaintext applied
+        assert engine.skipped_encrypted == 1
+        assert store.node(WS, uid("plain")) is not None
+        assert store.node(WS, uid("sealed")) is None  # skipped BEFORE store validation
+        assert result.cursor == 2  # cursor advanced past the skipped envelope
+        # Sync stays green: a second round applies nothing and does not raise.
+        assert engine.pull().applied == 0
+
+    def test_locked_skip_does_not_trip_the_store_validation(self, store: LocalStore, caplog: pytest.LogCaptureFixture) -> None:
+        """The skip happens before store.apply_remote, so the store's `$e`
+        rejection (EnvelopeValidationError) never fires for skipped envelopes."""
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(WorkspaceKeyCrypto(key).encrypt_envelope(create_env(uid("sealed"))))
+        engine = make_engine(relay, store)
+        with caplog.at_level(logging.WARNING):
+            engine.pull()
+        assert engine.skipped_encrypted == 1
+        assert not any("reserved for E2EE" in record.message for record in caplog.records)
+        assert any("locked workspace" in record.message for record in caplog.records)
+
+    def test_tampered_ciphertext_with_a_key_fails_loud(self, store: LocalStore) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        sealed = WorkspaceKeyCrypto(key).encrypt_envelope(create_env(uid("sealed"), content="hidden"))
+        tampered_payload = dict(sealed.payload["$e"])
+        tampered_payload["ct"] = tampered_payload["ct"][:-2] + (
+            "AA" if not tampered_payload["ct"].endswith("AA") else "BB"
+        )
+        relay.receive_remote(sealed.model_copy(update={"payload": {"$e": tampered_payload}}))
+        engine = self._keyed_engine(relay, store, key)
+        with pytest.raises(ValueError, match="decryption failed"):
+            engine.pull()
+
+    def test_set_crypto_swaps_the_provider_between_rounds(self, store: LocalStore) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        store.enqueue(create_env(uid("n1"), content="late key", hlc=(2, 0)))
+        engine = make_engine(relay, store)
+        engine.push()  # plaintext wire — no provider yet
+        assert "$e" not in relay.batch_calls[0][0].payload
+
+        engine.set_crypto(WorkspaceKeyCrypto(key))
+        store.enqueue(create_env(uid("n2"), content="sealed now", hlc=(3, 0)))
+        engine.push()
+        assert "$e" in relay.batch_calls[1][0].payload  # only the new chunk sealed
+
+        engine.set_crypto(None)
+        store.enqueue(create_env(uid("n3"), content="open again", hlc=(4, 0)))
+        engine.push()
+        assert "$e" not in relay.batch_calls[2][0].payload
+        assert store.node(WS, uid("n3")) is not None  # mirror self-apply stayed plaintext throughout
+
+    def test_snapshot_download_decrypts_when_keyed(self, store: LocalStore, tmp_path: Path) -> None:
+        key = generate_workspace_key()
+        blob = make_server_snapshot([{"id": uid("snap-node"), "is_class": 1, "workspace_id": WS}])
+        relay = FakeRelayClient(WS)
+        relay.snapshot_blob = encrypt_bytes(key, blob)
+        relay.snapshot_up_to_seq = 7
+        store.set_cursor(WS, 1)
+        engine = self._keyed_engine(relay, store, key)
+        assert engine.maybe_restore_snapshot() is True
+        assert store.node(WS, uid("snap-node")) is not None
+        assert store.cursor(WS) == 7
+
+    def test_snapshot_download_stays_plaintext_when_keyless(self, store: LocalStore, tmp_path: Path) -> None:
+        blob = make_server_snapshot([{"id": uid("snap-node"), "is_class": 1, "workspace_id": WS}])
+        relay = FakeRelayClient(WS)
+        relay.snapshot_blob = blob
+        relay.snapshot_up_to_seq = 7
+        store.set_cursor(WS, 1)
+        engine = make_engine(relay, store)
+        assert engine.maybe_restore_snapshot() is True
+        assert store.node(WS, uid("snap-node")) is not None

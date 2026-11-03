@@ -14,6 +14,7 @@ when worthwhile, syncs once, then re-syncs every 30 seconds.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
@@ -36,6 +37,12 @@ from notees_gtk.core.cards import (
     partition_cards_into_buckets,
 )
 from notees_gtk.core.protocol.clock import Clock
+from notees_gtk.core.protocol.crypto import (
+    WorkspaceKeyCrypto,
+    generate_workspace_key,
+    unwrap_workspace_key,
+    wrap_workspace_key,
+)
 from notees_gtk.core.protocol.features import card_property_uuid
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
@@ -60,6 +67,8 @@ from notees_gtk.ui.worker import run_in_worker
 
 __all__ = ["NoteesWindow"]
 
+_log = logging.getLogger(__name__)
+
 #: Interval-sync period in seconds.
 SYNC_INTERVAL_SECONDS = 30
 
@@ -80,6 +89,12 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._client: NoteesClient | None = None
         self._store: LocalStore | None = None
         self._engine: SyncEngine | None = None
+        # The session's master key, derived from the login password against
+        # the server's kdf record — memory-only, NEVER persisted (no keyring
+        # on this client; same threat model as the web's memory-only key).
+        # ``None`` on key-only (API-key) configs: the server 403s operators
+        # on /key, so those workspaces stay keyless (locked sync).
+        self._master_key: bytes | None = None
         self._clock = Clock(config_store.ensure_device_id())
         self._workspace_id: str | None = None
         self._workspace_names: dict[str, str] = {}
@@ -108,9 +123,12 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     # ----------------------------------------------------------------- login
 
-    def _on_logged_in(self, config: ClientConfig, client: NoteesClient, _user: dict[str, Any]) -> None:
+    def _on_logged_in(
+        self, config: ClientConfig, client: NoteesClient, _user: dict[str, Any], master_key: bytes | None
+    ) -> None:
         self._config = config
         self._client = client
+        self._master_key = master_key
         self._build_main()
         self._stack.set_visible_child_name("main")
 
@@ -121,6 +139,7 @@ class NoteesWindow(Adw.ApplicationWindow):
             engine.stop_realtime()
         self._engine = None
         self._client = None
+        self._master_key = None
         self._stack.set_visible_child_name("login")
         if message:
             self._login_view.show_toast(message)
@@ -428,11 +447,34 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._start_interval_sync()
 
         def work() -> bool:
+            self._install_workspace_crypto(client, engine, workspace_id)
             restored = engine.maybe_restore_snapshot()
             engine.sync()
             return restored
 
         run_in_worker(work, on_done=self._on_workspace_synced, on_error=self._on_sync_error)
+
+    def _install_workspace_crypto(self, client: NoteesClient, engine: SyncEngine, workspace_id: str) -> None:
+        """Fetch-or-ensure the workspace key and hand the engine its provider.
+
+        Runs on the worker thread BEFORE the first sync round (a keyed
+        engine must decrypt snapshot/envelopes from the very first apply).
+        Fetch the server's wrapped key; on 404 (never keyed) generate a
+        workspace key, wrap it under the session master key, and PUT it —
+        first write wins, so a lost race adopts the winner's record. With no
+        master key (key-only/API-key config — the server 403s operators on
+        ``/key``) the engine stays keyless: locked sync, plaintext writes.
+        """
+        master_key = self._master_key
+        if master_key is None:
+            return
+        try:
+            wrapped = client.fetch_workspace_key(workspace_id)
+            if wrapped is None:
+                wrapped = client.store_workspace_key(workspace_id, wrap_workspace_key(master_key, generate_workspace_key()))
+            engine.set_crypto(WorkspaceKeyCrypto(unwrap_workspace_key(master_key, wrapped)))
+        except ApiError as exc:
+            _log.warning("Workspace key unavailable for %s (%s); syncing keyless (locked)", workspace_id, exc.detail)
 
     def _on_workspace_synced(self, restored: bool) -> None:
         self._refresh_sidebar()

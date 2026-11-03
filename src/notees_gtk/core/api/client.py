@@ -17,7 +17,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from notees_gtk.core.api.errors import NetworkError, classify_response
+from notees_gtk.core.api.errors import NetworkError, QuarantinedError, classify_response
 from notees_gtk.core.protocol.clock import Hlc
 from notees_gtk.core.protocol.models import (
     BatchRequest,
@@ -254,6 +254,69 @@ class NoteesClient:
         """
         data = self._get_json("/api/workspaces")
         return [WorkspaceRef.model_validate(item) for item in data["workspaces"]]
+
+    # -------------------------------------------------------- workspace key
+
+    def fetch_workspace_key(self, workspace_id: str) -> str | None:
+        """Fetch the workspace's E2EE wrapped key (``GET /workspaces/:id/key``).
+
+        The server stores ONE opaque wrapped-key string per workspace (the
+        client wrapped the workspace key with its account master key; the
+        server never sees either key). Keys are user custody: an API-key
+        principal (operator) is 403 on this route, as is a non-member.
+
+        Returns:
+            The wrapped key string, or ``None`` on 404 — either no key is
+            stored yet (the caller ensures one with :meth:`store_workspace_key`)
+            or the membership does not exist (existence is never revealed).
+
+        Raises:
+            ForbiddenError: Authenticated principal may not read the key.
+            ApiError: The request failed otherwise.
+        """
+        try:
+            data = self._get_json(f"/api/workspaces/{workspace_id}/key")
+        except QuarantinedError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        wrapped = data.get("wrappedKey") if isinstance(data, dict) else None
+        if not isinstance(wrapped, str) or not wrapped:
+            raise ValueError(f"malformed workspace key body: expected {{wrappedKey}}, got {data!r}")
+        return wrapped
+
+    def store_workspace_key(self, workspace_id: str, wrapped_key: str) -> str:
+        """Ensure the workspace's wrapped key (``PUT /workspaces/:id/key``).
+
+        First write wins: the server NEVER overwrites an existing key row —
+        a concurrent sibling's PUT that lands first answers 409, and the
+        loser must adopt the winner's wrapped key (a blind upsert would
+        permanently split the workspace's keys). This method encodes that
+        rule: on 409 it re-GETs and returns the stored (winner's) key.
+
+        Args:
+            workspace_id: Workspace to key.
+            wrapped_key: The b64u ``iv ‖ tag ‖ ct`` record to store when the
+                workspace is not yet keyed.
+
+        Returns:
+            The wrapped key now authoritatively stored — ``wrapped_key`` on
+            a first write, the winner's on a 409 adopt.
+
+        Raises:
+            ForbiddenError: Authenticated principal may not write the key.
+            ApiError: The request failed otherwise.
+        """
+        try:
+            self._send("PUT", f"/api/workspaces/{workspace_id}/key", json={"wrappedKey": wrapped_key})
+        except QuarantinedError as exc:
+            if exc.status != 409:
+                raise
+            winner = self.fetch_workspace_key(workspace_id)
+            if winner is None:  # pragma: no cover — a 409 implies the row exists
+                raise QuarantinedError("409 without a stored key", status=409) from exc
+            return winner
+        return wrapped_key
 
     # ------------------------------------------------------------------ prefs
 

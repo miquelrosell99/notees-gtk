@@ -19,6 +19,15 @@ an epoch change wipes local state (the server was restored from backup), and a
 ``latest_seq`` ahead of the cursor triggers a normal pull from the cursor.
 The socket is only an accelerator — the seq cursor stays the authoritative
 recovery mechanism.
+
+E2EE (the ``EnvelopeCrypto`` boundary): when a crypto provider is installed,
+push seals a COPY of each outbox chunk before it hits the wire — outbox rows
+and the local mirror's self-apply stay plaintext — and every remote envelope
+decrypts at the single apply chokepoint before store validation. Snapshot
+blobs decrypt after download (the future upload path seals symmetrically).
+With NO provider (a keyless/API-key session, a locked workspace) the wire
+stays plaintext and remote `$e` envelopes are skipped with a counted warning
+— the cursor still advances and sync stays green.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from notees_gtk.core.api import (
     HelloInfo,
@@ -43,7 +53,23 @@ from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.errors import StoreError
 from notees_gtk.data.store import LocalStore
 
-__all__ = ["BACKOFF_SECONDS", "OUTBOX_CHUNK_SIZE", "PullResult", "PushResult", "SyncEngine"]
+__all__ = ["BACKOFF_SECONDS", "OUTBOX_CHUNK_SIZE", "EnvelopeCrypto", "PullResult", "PushResult", "SyncEngine"]
+
+_log = logging.getLogger(__name__)
+
+
+class EnvelopeCrypto(Protocol):
+    """The E2EE boundary (the TS ``packages/sync`` ``EnvelopeCrypto`` port).
+
+    The engine is key-agnostic: the client owns custody and passes a
+    provider (or ``None`` to keep the wire plaintext). All four operations
+    are synchronous — ``cryptography`` has no async surface.
+    """
+
+    def encrypt_envelope(self, envelope: RelayEnvelope) -> RelayEnvelope: ...
+    def decrypt_envelope(self, envelope: RelayEnvelope) -> RelayEnvelope: ...
+    def encrypt_bytes(self, data: bytes) -> bytes: ...
+    def decrypt_bytes(self, data: bytes) -> bytes: ...
 
 _log = logging.getLogger(__name__)
 
@@ -114,8 +140,19 @@ class SyncEngine:
         clock: Clock | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         page_size: int = 1000,
+        crypto: EnvelopeCrypto | None = None,
     ) -> None:
-        """Initialize the engine binding client, store, and workspace."""
+        """Initialize the engine binding client, store, and workspace.
+
+        Args:
+            crypto: Optional E2EE provider (a
+                :class:`notees_gtk.core.protocol.crypto.WorkspaceKeyCrypto`).
+                When installed, push seals a COPY of each envelope before it
+                hits the wire and remote envelopes decrypt before apply;
+                snapshot blobs seal/decrypt at the engine boundary. ``None``
+                keeps the whole wire plaintext (a keyless/API-key session or
+                a locked workspace).
+        """
         self._client = client
         self._store = store
         self._actor_id = actor_id
@@ -123,6 +160,11 @@ class SyncEngine:
         self._clock = clock if clock is not None else Clock(device_id=actor_id)
         self._sleeper = sleeper
         self._page_size = page_size
+        self._crypto = crypto
+        # Count of remote `$e` envelopes skipped because NO provider is
+        # installed (the locked-workspace semantic): the cursor still
+        # advances and sync stays green — see _apply_guarded.
+        self.skipped_encrypted = 0
         # Realtime state (start_realtime/stop_realtime). The lock serializes
         # catch-up pulls (main thread or the WS reader thread after a
         # reconnect hello) with live-ops buffering/application.
@@ -130,6 +172,23 @@ class SyncEngine:
         self._rt_lock = threading.RLock()
         self._rt_buffer: list[tuple[list[RelayEnvelope], dict[str, int]]] = []
         self._pull_in_flight = False
+
+    # -------------------------------------------------------------------- E2EE
+
+    def set_crypto(self, crypto: EnvelopeCrypto | None) -> None:
+        """Install, swap, or clear the E2EE provider (``None`` → plaintext wire).
+
+        Synchronous — ``cryptography`` is sync — and safe to call between
+        rounds; the next push/pull uses the new provider.
+        """
+        self._crypto = crypto
+
+    def _seal_for_wire(self, chunk: list[RelayEnvelope]) -> list[RelayEnvelope]:
+        """Encrypt a COPY of the chunk for the wire; the outbox rows and the
+        local mirror stay plaintext (the plan's encrypt-a-copy law)."""
+        if self._crypto is None:
+            return chunk
+        return [self._crypto.encrypt_envelope(env) for env in chunk]
 
     # ------------------------------------------------------------------- push
 
@@ -152,7 +211,7 @@ class SyncEngine:
                 break
             ids = [env.id for env in chunk]
             try:
-                delivered = self._submit_with_retry(chunk)
+                delivered = self._submit_with_retry(self._seal_for_wire(chunk))
             except QuarantinedError as exc:
                 self._store.quarantine_outbox(ids, reason=exc.detail)
                 quarantined += len(chunk)
@@ -260,7 +319,28 @@ class SyncEngine:
         return PullResult(applied=applied, cursor=self._store.cursor(self._workspace_id))
 
     def _apply_guarded(self, env: RelayEnvelope) -> int:
-        """Apply one envelope, quarantine-and-continue on store guard violations."""
+        """Apply one envelope, quarantine-and-continue on store guard violations.
+
+        The single remote-apply chokepoint (catch-up pages, live frames, the
+        realtime buffer all route here): under E2EE an encrypted envelope
+        decrypts BEFORE ``store.apply_remote`` — the store's `$e` rejection
+        is unreachable for decrypted envelopes, and everything below reads
+        plaintext. Locked semantic: with NO provider installed, a `$e`
+        envelope is skipped with a counted warning BEFORE store validation
+        (the cursor still advances and sync stays green); plaintext
+        envelopes still apply. A decryption failure WITH a provider raises —
+        real corruption, fail loud.
+        """
+        if "$e" in env.payload:
+            if self._crypto is None:
+                self.skipped_encrypted += 1
+                _log.warning(
+                    "Skipping encrypted envelope %s (%s): no workspace key installed (locked workspace)",
+                    env.id,
+                    env.op_type,
+                )
+                return 0
+            env = self._crypto.decrypt_envelope(env)
         try:
             return 1 if self._store.apply_remote(env) else 0
         except StoreError as exc:
@@ -390,6 +470,8 @@ class SyncEngine:
         if up_to_seq <= self._store.cursor(self._workspace_id):
             return False
         blob = self._client.snapshot_data(self._workspace_id)
+        if self._crypto is not None:
+            blob = self._crypto.decrypt_bytes(blob)
         if not self._store.restore_snapshot(blob, workspace_id=self._workspace_id):
             return False
         self._store.set_cursor(self._workspace_id, up_to_seq)
