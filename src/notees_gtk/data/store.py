@@ -53,7 +53,10 @@ survive either way), and the derived reference-edge index (``edge`` +
 ``node_link``: mention/typed_link/property/tag edges + link assertions,
 rebuilt by the appliers from content, property values, and tag membership —
 ``packages/store/src/edges.ts`` parity, PB1's incoming-rows-survive rule,
-the live-aware alias-terminal resolution).
+the live-aware alias-terminal resolution), plus the materialized node
+counts (``node_stats``: child/backlink/reference/descendant counts +
+the node-row updated_at mirror — ``packages/store/src/stats.ts`` parity,
+rebuilt over the affected ancestor closure).
 
 Thread-safety: the store is constructed on the GTK main thread while the sync
 engine runs on worker threads against the same connection. The connection is
@@ -239,7 +242,12 @@ _log = logging.getLogger(__name__)
 #: plus the link-assertion rows, ``packages/store/src/edges.ts`` parity).
 #: Purely additive CREATE IF NOT EXISTS — a no-op for fresh databases whose
 #: canonical aux DDL already carries the tables (the v23 precedent).
-SCHEMA_VERSION = 25
+#: v26 (the node_stats slice — web schema v17 parity): the materialized
+#: node-count table lands (``packages/store/src/stats.ts`` parity —
+#: child/backlink/reference/descendant counts, ``updated_at`` mirroring the
+#: node row). Purely additive CREATE IF NOT EXISTS — a no-op for fresh
+#: databases whose canonical aux DDL already carries the table.
+SCHEMA_VERSION = 26
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1166,6 +1174,7 @@ class LocalStore:
                 )
                 self._conn.execute(f"DELETE FROM trash WHERE node_id IN ({placeholders})", node_ids)
                 self._conn.execute(f"DELETE FROM class_property WHERE class_id IN ({placeholders})", node_ids)
+                self._conn.execute(f"DELETE FROM node_stats WHERE node_id IN ({placeholders})", node_ids)
             self._conn.execute("DELETE FROM nodes WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_outbox WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM relay_operations WHERE workspace_id = ?", (workspace_id,))
@@ -1256,6 +1265,45 @@ class LocalStore:
                )
                SELECT id FROM subtree ORDER BY id""",
             (workspace_id, node_id, workspace_id),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def _ancestor_ids(self, workspace_id: str, node_id: str) -> list[str]:
+        """Ancestor ids (exclusive, the node itself excluded) via a parent_id
+        walk; deterministic id order (the ``ancestorIds`` port)."""
+        rows = self._conn.execute(
+            """WITH RECURSIVE ancestors(id) AS (
+                 SELECT parent_id FROM nodes WHERE workspace_id = ? AND id = ? AND parent_id IS NOT NULL
+                 UNION
+                 SELECT n.parent_id FROM ancestors a JOIN nodes n ON n.id = a.id
+                 WHERE n.workspace_id = ? AND n.parent_id IS NOT NULL
+               )
+               SELECT id FROM ancestors ORDER BY id""",
+            (workspace_id, node_id, workspace_id),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def _stats_ancestor_closure(self, workspace_id: str, node_ids: list[str]) -> list[str]:
+        """The self-inclusive ancestor closure of ``node_ids`` (the
+        ``getAncestorClosure`` port): every id plus its parent chain up to
+        the roots, so a rebuild recomputes descendant counts all the way up.
+        Ids without a live node row are skipped by the node join
+        (order-invariance: same semantic state -> same rows)."""
+        placeholders = ", ".join("?" for _ in node_ids)
+        rows = self._conn.execute(
+            f"""WITH RECURSIVE
+                 starting(id) AS (
+                   SELECT id FROM nodes WHERE workspace_id = ? AND id IN ({placeholders})
+                 ),
+                 ancestors(id) AS (
+                   SELECT parent_id FROM nodes
+                   WHERE workspace_id = ? AND id IN (SELECT id FROM starting) AND parent_id IS NOT NULL
+                   UNION
+                   SELECT n.parent_id FROM ancestors a JOIN nodes n ON n.id = a.id
+                   WHERE n.workspace_id = ? AND n.parent_id IS NOT NULL
+                 )
+               SELECT id FROM starting UNION SELECT id FROM ancestors""",
+            [workspace_id, *node_ids, workspace_id, workspace_id],
         ).fetchall()
         return [str(row[0]) for row in rows]
 
@@ -1547,6 +1595,9 @@ class LocalStore:
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
                     (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id, before_id)),
                 )
+            # Counts LAST (the stats.ts create-tail parity): the child_order
+            # row must exist before child/descendant counts derive.
+            self._rebuild_node_stats(env.workspace_id, [object_id])
         return True
 
     def _apply_object_update(self, env: RelayEnvelope) -> bool:
@@ -1864,6 +1915,9 @@ class LocalStore:
                     # walk is live-aware) — re-materialize the edge rows
                     # touching the class node.
                     self._reresolve_edge_targets(env.workspace_id, [object_id])
+                    self._rebuild_node_stats(
+                        env.workspace_id, [object_id, *self._ancestor_ids(env.workspace_id, object_id)]
+                    )
                 return True
         if not permanent:
             ids = self._subtree_ids(env.workspace_id, object_id)
@@ -1884,6 +1938,12 @@ class LocalStore:
                 # the alias (inert), chains THROUGH a trashed node collapse
                 # to their last live link.
                 self._reresolve_edge_targets(env.workspace_id, ids)
+                # Counts recompute for the deleted node + its ancestor chain
+                # (the TS ``affected`` set — the closure expansion covers the
+                # whole path up to the roots).
+                self._rebuild_node_stats(
+                    env.workspace_id, [object_id, *self._ancestor_ids(env.workspace_id, object_id)]
+                )
             return True
         with self._conn:
             self._permanently_delete_subtree(env.workspace_id, object_id, ts)
@@ -1898,6 +1958,19 @@ class LocalStore:
         ``is_permanent = 1`` trash row survives with ``deleted_at = ts``."""
         ids = self._subtree_ids(workspace_id, object_id)
         placeholders = ", ".join("?" for _ in ids)
+        # Everything that loses a materialized count in this purge, collected
+        # BEFORE the rows die: the subtree's edge targets lose backlinks and
+        # the subtree's ancestors lose descendants — without the rebuild
+        # their node_stats rows keep counting the dead rows.
+        lost_backlink_targets = [
+            str(row[0])
+            for row in self._conn.execute(
+                f"SELECT DISTINCT target_id FROM edge"
+                f" WHERE workspace_id = ? AND source_id IN ({placeholders}) AND target_id IS NOT NULL",
+                [workspace_id, *ids],
+            ).fetchall()
+        ]
+        ancestors = self._ancestor_ids(workspace_id, object_id)
         self._conn.execute(
             "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, 1)",
             (object_id, ts),
@@ -1936,6 +2009,7 @@ class LocalStore:
         # only when its rows survived).
         self._conn.execute(f"DELETE FROM edge WHERE source_id IN ({placeholders})", ids)
         self._conn.execute(f"DELETE FROM node_link WHERE source_id IN ({placeholders})", ids)
+        self._conn.execute(f"DELETE FROM node_stats WHERE node_id IN ({placeholders})", ids)
         self._conn.execute(
             f"DELETE FROM trash WHERE node_id IN ({placeholders}) AND node_id != ?", [*ids, object_id]
         )
@@ -1944,6 +2018,9 @@ class LocalStore:
         # keep their rows by design — PB1 — with the resolution their chain
         # now yields).
         self._reresolve_edge_targets(workspace_id, ids)
+        # The survivors' counts recompute: ancestors lose descendants, the
+        # lost-backlink targets lose the purged sources' references.
+        self._rebuild_node_stats(workspace_id, [*ancestors, *lost_backlink_targets])
 
     def _apply_trash_empty(self, env: RelayEnvelope) -> bool:
         """Empty the trash (lockstep with the TS reference's
@@ -2049,6 +2126,9 @@ class LocalStore:
             # live-aware): re-materialize every edge row whose chain touches
             # the reactivated set.
             self._reresolve_edge_targets(workspace_id, to_reactivate)
+            self._rebuild_node_stats(
+                workspace_id, [object_id, *self._ancestor_ids(workspace_id, object_id)]
+            )
             self._conn.execute("DELETE FROM trash WHERE node_id = ?", (object_id,))
         return True
 
@@ -2150,6 +2230,11 @@ class LocalStore:
         # move still drops whole, flag included.
         if not self._incoming_wins(env, row[12], row[13], row[14]):
             return False
+        # Pre-move ancestor chain: the stats rebuild seeds (old ancestors
+        # lose the subtree, new ancestors gain it — the seeds must be
+        # captured before the reparenting, exactly like the TS
+        # ``oldAncestors``).
+        old_ancestors = self._ancestor_ids(env.workspace_id, object_id)
 
         sets = ["parent_id = ?"]
         values: list[Any] = [parent_id]
@@ -2188,6 +2273,11 @@ class LocalStore:
                     "INSERT OR REPLACE INTO node_child_order (parent_id, child_id, position) VALUES (?, ?, ?)",
                     (parent_id, object_id, self._allocate_child_position(parent_id, object_id, after_id, before_id)),
                 )
+            # Old ancestors lose the subtree, new ancestors gain it (child/
+            # descendant counts): the seeds are the node + the PRE-move
+            # ancestor chain (computed before the reparenting — the closure
+            # expansion walks the current parents, covering both chains).
+            self._rebuild_node_stats(env.workspace_id, [object_id, *old_ancestors])
         return True
 
     # ---------------------------------------------------------------- child order
@@ -3572,6 +3662,13 @@ class LocalStore:
         self._conn.execute(
             "INSERT OR REPLACE INTO trash (node_id, deleted_at, is_permanent) VALUES (?, ?, 0)", (target, timestamp)
         )
+        # Liveness flip — the trashed carrier never resolves through an
+        # alias chain while inactive; re-materialize the touching edge
+        # rows (appliers.ts trashTextCarrierIfOrphaned parity), then the
+        # carrier's counts + its ancestor chain recompute (target +
+        # ancestors).
+        self._reresolve_edge_targets(workspace_id, ids)
+        self._rebuild_node_stats(workspace_id, [target, *self._ancestor_ids(workspace_id, target)])
 
     # --------------------------------------------------------------------- asset.*
 
@@ -4462,9 +4559,8 @@ class LocalStore:
         ``rebuildEdges`` parity). ``at`` is the applying envelope's timestamp
         (deterministic derived rows). Node gone: drop everything this source
         ever derived. Returns the affected set (source ∪ previous ∪ desired
-        targets); the reference also recomputes ``node_stats`` here — GTK
-        has no stats table or readers, so that half is deferred and callers
-        currently discard the return value."""
+        targets) and recomputes ``node_stats`` for it (and the gone arm's
+        orphaned targets) — the counts ride the same transaction."""
         node_row = self._conn.execute(
             "SELECT workspace_id FROM nodes WHERE workspace_id = ? AND id = ?", (workspace_id, node_id)
         ).fetchone()
@@ -4476,8 +4572,12 @@ class LocalStore:
         ]
 
         if node_row is None:
+            orphaned_targets = list(dict.fromkeys(str(t) for t in previous_targets if t))
             self._conn.execute("DELETE FROM edge WHERE source_id = ?", (node_id,))
             self._conn.execute("DELETE FROM node_link WHERE source_id = ?", (node_id,))
+            # The orphaned targets lose backlinks — rebuild their stats too,
+            # not just the dead node's.
+            self._rebuild_node_stats(workspace_id, [node_id, *orphaned_targets])
             return [node_id]
 
         desired = self._derive_desired_edges(workspace_id, node_id)
@@ -4601,7 +4701,69 @@ class LocalStore:
             if target and str(target) not in seen:
                 seen.add(str(target))
                 affected.append(str(target))
+        self._rebuild_node_stats(workspace_id, affected)
         return affected
+
+    def _rebuild_node_stats(self, workspace_id: str, node_ids: Iterable[str]) -> None:
+        """Recompute ``node_stats`` rows for the given ids plus their
+        ancestor closure (``stats.ts`` ``rebuildNodeStats`` parity — the
+        counts derive from node_child_order + the edge index, so the
+        workspace predicate rides every query; the tables' ids are unique
+        but only the closure's own workspace ever addresses them). Rows are
+        deleted and re-INSERTed per id: child_count from node_child_order,
+        backlink_count = COUNT(DISTINCT source_id) of incoming edges,
+        reference_count = COUNT(*) of outgoing edges, descendant_count via
+        the recursive walk, updated_at = the node row's own (order-invariant
+        under any envelope order)."""
+        ids = list(dict.fromkeys(node_id for node_id in (str(n) for n in node_ids) if node_id))
+        if not ids:
+            return
+        ids = list(dict.fromkeys([*self._stats_ancestor_closure(workspace_id, ids), *ids]))
+        placeholders = ", ".join("?" for _ in ids)
+        self._conn.execute(f"DELETE FROM node_stats WHERE node_id IN ({placeholders})", ids)
+        targeted_values = ", ".join(f"(?, {index})" for index in range(len(ids)))
+        self._conn.execute(
+            f"""WITH RECURSIVE targeted(id, ord) AS (VALUES {targeted_values}),
+              descendants(ancestor_id, descendant_id) AS (
+                SELECT t.id, nco.child_id
+                FROM targeted t JOIN node_child_order nco ON nco.parent_id = t.id
+                UNION ALL
+                SELECT d.ancestor_id, nco.child_id
+                FROM descendants d JOIN node_child_order nco ON nco.parent_id = d.descendant_id
+              ),
+              descendant_counts AS (
+                SELECT ancestor_id, COUNT(*) AS descendant_count FROM descendants GROUP BY ancestor_id
+              ),
+              child_counts AS (
+                SELECT parent_id, COUNT(*) AS child_count FROM node_child_order
+                WHERE parent_id IN (SELECT id FROM targeted) GROUP BY parent_id
+              ),
+              backlink_counts AS (
+                SELECT target_id, COUNT(DISTINCT source_id) AS backlink_count FROM edge
+                WHERE workspace_id = ? AND target_id IN (SELECT id FROM targeted) GROUP BY target_id
+              ),
+              reference_counts AS (
+                SELECT source_id, COUNT(*) AS reference_count FROM edge
+                WHERE workspace_id = ? AND source_id IN (SELECT id FROM targeted) GROUP BY source_id
+              )
+             INSERT INTO node_stats
+               (node_id, child_count, backlink_count, reference_count, descendant_count, updated_at)
+             SELECT
+               t.id AS node_id,
+               COALESCE(cc.child_count, 0) AS child_count,
+               COALESCE(bc.backlink_count, 0) AS backlink_count,
+               COALESCE(rc.reference_count, 0) AS reference_count,
+               COALESCE(dc.descendant_count, 0) AS descendant_count,
+               n.updated_at AS updated_at
+             FROM targeted t
+             JOIN nodes n ON n.workspace_id = ? AND n.id = t.id
+             LEFT JOIN child_counts cc ON cc.parent_id = t.id
+             LEFT JOIN backlink_counts bc ON bc.target_id = t.id
+             LEFT JOIN reference_counts rc ON rc.source_id = t.id
+             LEFT JOIN descendant_counts dc ON dc.ancestor_id = t.id
+             ORDER BY t.ord""",
+            [*ids, workspace_id, workspace_id, workspace_id],
+        )
 
     # ------------------------------------------------- effective properties
 
@@ -5712,6 +5874,26 @@ CREATE INDEX IF NOT EXISTS idx_node_link_source_target
     ON node_link (source_id, target_id);
 """
 
+#: Materialized node counts (``packages/store/src/stats.ts`` parity):
+#: child_count from node_child_order (direct children), backlink/reference
+#: counts from the derived edge index (the unified reference index), and
+#: descendant_count via a recursive walk over node_child_order.
+#: ``updated_at`` mirrors the node row's own updated_at (the LWW-winning op),
+#: so the table is order-invariant: different envelope orders that produce
+#: the same semantic state produce the same rows, not just the same counts.
+#: Derived, never authored — the appliers rebuild the affected closure after
+#: every tree/edge/liveness change.
+_NODE_STATS_DDL = """
+CREATE TABLE IF NOT EXISTS node_stats (
+    node_id TEXT PRIMARY KEY,
+    child_count INTEGER NOT NULL DEFAULT 0,
+    backlink_count INTEGER NOT NULL DEFAULT 0,
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    descendant_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT
+);
+"""
+
 
 def _migrate_v8(conn: sqlite3.Connection) -> None:
     """Per-workspace feature toggles (web schema v9→v10 parity).
@@ -5894,7 +6076,16 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
 #: a complete database is untouched and a partial one converges to the full
 #: table set. ``_NODES_DDL`` is deliberately excluded — the node table's
 #: shape changes ride the v3/v7 rebuilds, never a blind CREATE.
-_CANONICAL_AUX_DDL = _AUX_DDL + _CLASS_PROPERTY_DDL + _TAG_MEMBER_SET_DDL + _WORKSPACE_FEATURE_DDL + _EXTERNAL_REF_DDL + _CARD_REVIEW_DDL + _EDGE_DDL
+_CANONICAL_AUX_DDL = (
+    _AUX_DDL
+    + _CLASS_PROPERTY_DDL
+    + _TAG_MEMBER_SET_DDL
+    + _WORKSPACE_FEATURE_DDL
+    + _EXTERNAL_REF_DDL
+    + _CARD_REVIEW_DDL
+    + _EDGE_DDL
+    + _NODE_STATS_DDL
+)
 
 
 def _migrate_v13(conn: sqlite3.Connection) -> None:
@@ -6249,6 +6440,15 @@ def _migrate_v25(conn: sqlite3.Connection) -> None:
     conn.executescript(_EDGE_DDL)
 
 
+def _migrate_v26(conn: sqlite3.Connection) -> None:
+    """v26 — the materialized node counts (web schema v17 parity): the
+    derived ``node_stats`` table for the child/backlink/reference/descendant
+    counts (``packages/store/src/stats.ts`` parity). Purely additive
+    CREATE IF NOT EXISTS — a no-op for fresh databases whose canonical aux
+    DDL already carries the table (the v25 precedent)."""
+    conn.executescript(_NODE_STATS_DDL)
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -6276,4 +6476,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (23, _migrate_v23),
     (24, _migrate_v24),
     (25, _migrate_v25),
+    (26, _migrate_v26),
 )

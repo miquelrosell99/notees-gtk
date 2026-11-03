@@ -90,6 +90,12 @@ class TestPlaintextExcerptParity:
         )
         assert plaintext_excerpt(tokens) == "a b x^2"
 
+    def test_heading_children_recurse_like_quote(self) -> None:
+        tokens = parse_content_ast(
+            '[{"type":"heading","children":[{"type":"text","text":"Top"},{"type":"mention","text":"[[bob]]"}]}]'
+        )
+        assert plaintext_excerpt(tokens) == "Top [[bob]]"
+
 
 class TestCodeBlockAndHrGrammar:
     """``code_block`` is a promotion survivor (with whiteboard/
@@ -169,6 +175,28 @@ class TestStrictTokenValidation:
         with pytest.raises(ValueError):
             validate_content_token({"type": "quote", "children": [{"type": "code_block", "text": "x"}]})
         validate_content_token({"type": "quote", "children": [{"type": "text", "text": "quoted"}]})
+
+    def test_heading_children_stay_inline_only(self) -> None:
+        """The heading union is the INLINE set — the same as quote
+        (``content-mark.ts`` ``headingTokenSchema``)."""
+        with pytest.raises(ValueError):
+            validate_content_token({"type": "heading", "children": [{"type": "embed_ref", "nodeId": "x"}]})
+        with pytest.raises(ValueError):
+            validate_content_token({"type": "heading", "children": "not-a-list"})
+        with pytest.raises(ValueError):
+            validate_content_token({"type": "heading", "children": [{"type": "text", "text": "h"}], "extra": 1})
+        validate_content_token(
+            {"type": "heading", "children": [{"type": "text", "text": "Title"}, {"type": "hard_break"}]}
+        )
+
+    def test_heading_flattens_on_stringify_like_quote(self) -> None:
+        """Not a promotion survivor: stringify folds heading prose into the
+        leading text token (the TS ``stringifyContentAst`` parity)."""
+        rich = [
+            {"type": "heading", "children": [{"type": "text", "text": "Big"}]},
+            {"type": "text", "text": "body"},
+        ]
+        assert stringify_content_ast(rich) == [{"type": "text", "text": "Big body"}]
 
     def test_validate_content_ast_walks_the_stream(self) -> None:
         validate_content_ast(

@@ -37,7 +37,9 @@ history.
     the subtree's own stats rows), object.restore, object.move (the seeds
     are the node + the PRE-move ancestor chain, captured before the
     reparenting — the closure walks current parents, so both chains
-    recompute), `_trash_text_carrier_if_orphaned` (target + ancestors), and
+    recompute), `_trash_text_carrier_if_orphaned` (target + ancestors, AND
+    the edge reresolve the TS fires on the carrier liveness flip — closing
+    the last gap the edge port documented), and
     `wipe()` (the rows die with the nodes). Since `_rebuild_edges` rebuilds
     stats internally, every edge-deriving surface (content writes, property
     set/unset, tag assign/unassign, the create re-issue carrier) keeps

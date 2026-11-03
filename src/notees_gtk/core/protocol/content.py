@@ -9,7 +9,7 @@ the renderer (display) consume:
 - :func:`plaintext_excerpt` — port of ``plainTextExcerpt``
   (``packages/domain/src/node.ts``): the FTS/sidebar text derived from tokens
   (text + typed_link text, mention ``displayText ?? text``, math expressions,
-  recursive quote children, ``hard_break`` as a space);
+  recursive quote/heading children, ``hard_break`` as a space);
 - :func:`stringify_content_ast` — port of ``stringifyContentAst``: flatten any
   token stream to text-only content (pages and classes carry text-only
   content — SCHEMA.md "title-is-content"; structural ``whiteboard``/``query``
@@ -94,7 +94,7 @@ def plaintext_excerpt(tokens: Sequence[Any]) -> str:
 
     Port of ``plainTextExcerpt``: text and typed-link runs contribute their
     text, mentions their ``displayText`` (captured ``text`` when absent), math
-    its expression, quotes recurse into their children, ``hard_break`` becomes
+    its expression, quotes and headings recurse into their children, ``hard_break`` becomes
     a space; every other token is silent. Whitespace collapses to single
     spaces. Plaintext is derived, never stored as truth.
     """
@@ -111,7 +111,7 @@ def plaintext_excerpt(tokens: Sequence[Any]) -> str:
                 parts.append(str(token.get("displayText") or token.get("text") or ""))
             elif ttype == "math":
                 parts.append(str(token.get("expression", "")))
-            elif ttype == "quote":
+            elif ttype in ("quote", "heading"):
                 children = token.get("children")
                 if isinstance(children, list):
                     walk(children)
@@ -301,6 +301,24 @@ def validate_content_token(token: Any) -> None:
                 "hr",
             ):
                 raise _fail("quote children must be inline tokens")
+            validate_content_token(child)
+    elif ttype == "heading":
+        children = token.get("children")
+        if not isinstance(children, list):
+            raise _fail("heading token needs a children list")
+        _check_no_extra(token, {"children"})
+        for child in children:
+            # The heading union is the INLINE set only — the same union as
+            # quote (content-mark.ts ``headingTokenSchema``).
+            if not isinstance(child, Mapping) or child.get("type") in (
+                "asset_ref",
+                "embed_ref",
+                "query",
+                "whiteboard",
+                "code_block",
+                "hr",
+            ):
+                raise _fail("heading children must be inline tokens")
             validate_content_token(child)
     else:
         raise _fail(f"unknown token type {ttype!r}")
