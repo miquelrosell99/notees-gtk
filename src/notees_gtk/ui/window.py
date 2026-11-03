@@ -475,6 +475,7 @@ class NoteesWindow(Adw.ApplicationWindow):
             engine.set_crypto(WorkspaceKeyCrypto(unwrap_workspace_key(master_key, wrapped)))
         except ApiError as exc:
             _log.warning("Workspace key unavailable for %s (%s); syncing keyless (locked)", workspace_id, exc.detail)
+            engine.set_crypto(None)
         except ValueError as exc:
             # The wrapped record does not open under this account's current
             # master key (wrapped under a former password of the same
@@ -482,6 +483,12 @@ class NoteesWindow(Adw.ApplicationWindow):
             # locked sync rather than failing the round with an opaque
             # sync-error toast.
             _log.warning("Workspace key unwrap failed for %s (%s); syncing keyless (locked)", workspace_id, exc)
+            engine.set_crypto(None)
+        except Exception as exc:  # noqa: BLE001 — any other failure degrades the same way
+            # Unknown failures (transport quirks, parse edges) must never
+            # fail the sync round: degrade to keyless locked sync.
+            _log.warning("Workspace key install failed for %s (%s); syncing keyless (locked)", workspace_id, exc)
+            engine.set_crypto(None)
 
     def _on_workspace_synced(self, restored: bool) -> None:
         self._refresh_sidebar()

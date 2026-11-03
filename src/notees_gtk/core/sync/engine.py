@@ -57,6 +57,13 @@ __all__ = ["BACKOFF_SECONDS", "OUTBOX_CHUNK_SIZE", "EnvelopeCrypto", "PullResult
 
 _log = logging.getLogger(__name__)
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _has_sqlite_magic(blob: bytes) -> bool:
+    """True when the bytes carry the SQLite header magic (a plaintext image)."""
+    return len(blob) >= len(_SQLITE_MAGIC) and blob[: len(_SQLITE_MAGIC)] == _SQLITE_MAGIC
+
 
 class EnvelopeCrypto(Protocol):
     """The E2EE boundary (the TS ``packages/sync`` ``EnvelopeCrypto`` port).
@@ -71,7 +78,6 @@ class EnvelopeCrypto(Protocol):
     def encrypt_bytes(self, data: bytes) -> bytes: ...
     def decrypt_bytes(self, data: bytes) -> bytes: ...
 
-_log = logging.getLogger(__name__)
 
 #: Retry backoff schedule (seconds) for network/5xx/429 push failures.
 BACKOFF_SECONDS: tuple[float, ...] = (5, 15, 60, 300, 1800)
@@ -161,6 +167,10 @@ class SyncEngine:
         self._sleeper = sleeper
         self._page_size = page_size
         self._crypto = crypto
+        # Locked-skip bookkeeping: the up_to_seq of the sealed snapshot we
+        # declined while keyless (warn counted once per snapshot; reset when
+        # a provider is installed so a later lock cycle re-warns).
+        self._locked_skipped_snapshot_seq: int | None = None
         # Count of remote `$e` envelopes skipped because NO provider is
         # installed (the locked-workspace semantic): the cursor still
         # advances and sync stays green — see _apply_guarded.
@@ -179,9 +189,13 @@ class SyncEngine:
         """Install, swap, or clear the E2EE provider (``None`` → plaintext wire).
 
         Synchronous — ``cryptography`` is sync — and safe to call between
-        rounds; the next push/pull uses the new provider.
+        rounds; the next push/pull uses the new provider. Installing a key
+        also clears the locked-snapshot skip marker (a later lock cycle
+        re-warns from a clean slate).
         """
         self._crypto = crypto
+        if crypto is not None:
+            self._locked_skipped_snapshot_seq = None
 
     def _seal_for_wire(self, chunk: list[RelayEnvelope]) -> list[RelayEnvelope]:
         """Encrypt a COPY of the chunk for the wire; the outbox rows and the
@@ -469,9 +483,25 @@ class SyncEngine:
         up_to_seq = meta.up_to_seq if meta.up_to_seq is not None else 0
         if up_to_seq <= self._store.cursor(self._workspace_id):
             return False
+        if self._crypto is None and self._locked_skipped_snapshot_seq == up_to_seq:
+            return False  # this sealed snapshot was already declined while locked
         blob = self._client.snapshot_data(self._workspace_id)
         if self._crypto is not None:
             blob = self._crypto.decrypt_bytes(blob)
+        elif not _has_sqlite_magic(blob):
+            # Locked + sealed snapshot (TS parity): without a provider the
+            # blob is opaque bytes. Skip the restore — the seq catch-up
+            # covers the content — with a counted warning (once per
+            # snapshot, and the marker declines re-downloads on later
+            # rounds; the store's restore_snapshot would return False
+            # anyway, but silently and after re-downloading every round).
+            self._locked_skipped_snapshot_seq = up_to_seq
+            _log.warning(
+                "workspace key unavailable: skipped a sealed snapshot (%d bytes, up to seq %d); seq catch-up covers the content",
+                len(blob),
+                up_to_seq,
+            )
+            return False
         if not self._store.restore_snapshot(blob, workspace_id=self._workspace_id):
             return False
         self._store.set_cursor(self._workspace_id, up_to_seq)

@@ -31,7 +31,11 @@ from notees_gtk.core.api import (
     SnapshotMeta,
 )
 from notees_gtk.core.protocol.clock import Clock, Hlc
-from notees_gtk.core.protocol.crypto import WorkspaceKeyCrypto, encrypt_bytes, generate_workspace_key
+from notees_gtk.core.protocol.crypto import (
+    WorkspaceKeyCrypto,
+    encrypt_bytes,
+    generate_workspace_key,
+)
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import (
     PROTOCOL_VERSION,
@@ -494,6 +498,34 @@ class TestSnapshotRestore:
         row = store.node(WS, uid("local"))
         assert row is not None and row.content_plain == "kept"
         assert store.cursor(WS) == 5
+
+    def test_locked_engine_skips_sealed_snapshot_with_counted_warning(self, store: LocalStore, caplog: pytest.LogCaptureFixture) -> None:
+        """Locked (no provider) + sealed snapshot: skip with a counted warning,
+        leave the cursor put, and decline re-downloads on later rounds (TS parity)."""
+        relay = FakeRelayClient(WS)
+        relay.snapshot_blob = encrypt_bytes(generate_workspace_key(), b"opaque sealed bytes")
+        relay.snapshot_up_to_seq = 42
+        store.set_cursor(WS, 5)
+        engine = make_engine(relay, store)
+        with caplog.at_level(logging.WARNING):
+            assert engine.maybe_restore_snapshot() is False
+        assert store.cursor(WS) == 5  # catch-up covers the content from here
+        assert any("sealed snapshot" in record.message for record in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert engine.maybe_restore_snapshot() is False
+        assert relay.snapshot_data_calls == 1  # declined before re-download
+        assert not any("sealed snapshot" in record.message for record in caplog.records)
+
+        # Installing a key clears the marker; a later lock cycle re-warns
+        # from a clean slate (re-download + fresh warning).
+        engine.set_crypto(WorkspaceKeyCrypto(b"\x00" * 32))
+        engine.set_crypto(None)
+        with caplog.at_level(logging.WARNING):
+            assert engine.maybe_restore_snapshot() is False
+        assert relay.snapshot_data_calls == 2
+        assert any("sealed snapshot" in record.message for record in caplog.records)
 
     def test_snapshot_older_than_cursor_is_skipped(self, store: LocalStore) -> None:
         relay = FakeRelayClient(WS)
