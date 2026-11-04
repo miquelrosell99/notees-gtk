@@ -19,10 +19,12 @@ Store-shape divergences from the TS suite (documented, deliberate):
   ``class.create`` lands the title on the INSERT directly (the LWW-gate bug
   the workaround papers over is a TS-store quirk the GTK applier avoids by
   construction — see ``_upsert_class_node``).
-- ``content``/``fts`` conditions read ``nodes.content_plain`` (D2): the
-  plaintext excerpt only — the pins below use ASCII titles/bodies so the
-  result sets agree; asset-name/property-text/diacritic-folded divergence is
-  the plan's R1 follow-up.
+- ``content``/``fts`` conditions read ``nodes.search_plain`` (D2): the
+  derived search text (mention-resolved content + asset names + text-ish
+  property values, diacritic-folded at derive time) — the pins below use
+  ASCII titles/bodies with no assets/properties so the result sets agree
+  with the excerpt-only shape; the full source matrix is pinned in
+  ``test_search_text_parity.py``.
 - The GTK mirror stores timestamps as Python ``isoformat()`` strings; the
   query-bound placeholders use the TS ``toISOString()`` shape. The two
   compare identically at second resolution, which every pin below respects.

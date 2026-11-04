@@ -19,16 +19,18 @@ ISOLATED in this constants/helpers block (the porting contract):
   one place: :func:`_nodes_ref`.
 - **D2 — no FTS (content conditions).** The TS probes ``search_index``
   (FTS5) + ``search_index_docid``; the GTK mirror has no FTS tables — it
-  derives ``nodes.content_plain``. Content conditions read ``content_plain``
-  directly (``contains`` → LIKE substring, ``eq``/``neq`` → equality,
+  derives ``nodes.search_plain``, the TS ``search_index`` row's counterpart
+  (the store's ``extractSearchPlaintext`` port: mention-resolved content
+  plaintext + asset original names + text-ish property values, diacritic-
+  folded at derive time). Content conditions read ``search_plain`` directly
+  (``contains`` → LIKE substring, ``eq``/``neq`` → equality,
   ``starts``/``ends`` → anchored LIKE, ``exists`` → the non-empty probe,
   ``fts`` → the prefix-AND terms emulated as GLOB token-prefix arms — see
-  :meth:`_Compiler._content_sql`). The divergence: GTK search text is
-  ``plaintext_excerpt`` only (no asset names / property values / diacritic
-  folding — the web's search-text build, the plan's R1 risk); the
-  ``TEXT_BACKEND`` constant names the backend so the FTS follow-up flips one
-  place. :func:`build_match_expression` ports verbatim anyway — it is the
-  FTS backend's term compiler and part of the package's public surface.
+  :meth:`_Compiler._content_sql`). The needle stays VERBATIM at compare time
+  (the fold is derive-time only, the one mirror pair — ``peru`` matches
+  "Perú" while "perú" matches nothing folded, exactly the TS SQL
+  semantics); :func:`build_match_expression` ports verbatim anyway — it is
+  the FTS backend's term compiler and part of the package's public surface.
 - **D3 — identical (verified, ported verbatim):** ``is_class``,
   ``is_embedded``, ``parent_id``, ``class_ids``, ``tag_ids``, ``content``,
   ``created_at``, ``updated_at``, the wire node fields,
@@ -114,11 +116,12 @@ class QueryCompileError(ValueError):
     """An AST shape the parser admits but the compiler cannot compile."""
 
 
-#: The derived search-text backend this compile targets (D2). ``"content_plain"``
-#: reads the mirror's plaintext excerpt column; the FTS-backend follow-up
-#: flips this constant (and the content arms below become the verbatim TS
-#: search_index probes).
-TEXT_BACKEND = "content_plain"
+#: The derived search-text backend this compile targets (D2): the mirror's
+#: folded search-text column (the TS ``search_index`` row's counterpart —
+#: mention-resolved content plaintext + asset original names + text-ish
+#: property values, diacritic-folded at derive time). The appliers maintain
+#: the column at the TS ``reindexNode`` trigger sites.
+TEXT_BACKEND = "search_plain"
 
 #: The fresh node-scope alias (D6): distinct from the outer ``n`` so the
 #: correlated CTE anchors (containing page / root walks) keep resolving the
@@ -153,7 +156,7 @@ def build_match_expression(query: str) -> str | None:
     verbatim — the FTS backend's term compiler). Each maximal run of letters/
     digits OUTSIDE double quotes becomes a bare prefix token (``term*``);
     each double-quoted segment becomes an exact FTS phrase. Null when nothing
-    searchable remains. (The content ``fts`` op under the ``content_plain``
+    searchable remains. (The content ``fts`` op under the ``search_plain``
     backend instead ANDs GLOB token-prefix arms — same filter semantics, see
     :meth:`_Compiler._content_sql`.)"""
     clauses: list[str] = []
@@ -534,10 +537,11 @@ class _Compiler:
             return self._member_sql(condition, alias)
         if isinstance(condition, ContentCondition):
             if condition.op == "exists":
-                # D2: the title/content plaintext is non-empty (the content
-                # "is set") — the mirror's plaintext column replaces the FTS
-                # length probe.
-                return f"length({alias}.content_plain) > 0"
+                # D2: the derived search text is non-empty (the content "is
+                # set" — property values alone carry the row, the TS
+                # length(s.content) > 0 arm) — the mirror's search_plain
+                # column replaces the FTS length probe.
+                return f"length({alias}.search_plain) > 0"
             return self._content_sql(condition, alias)
         if isinstance(condition, NameCondition):
             return self._name_sql(condition, alias)
@@ -886,15 +890,17 @@ class _Compiler:
         return f"{title} LIKE '%' || {param} || '%'"
 
     def _content_sql(self, condition: ContentCondition, alias: str) -> str:
-        """The plaintext condition over the mirror's search text (D2: the
-        ``content_plain`` column replaces the TS search_index probes; LIKE is
-        ASCII case-insensitive, matching the TS convention)."""
+        """The plaintext condition over the mirror's derived search text (D2:
+        the folded ``search_plain`` column — mention-resolved content +
+        asset names + text-ish property values — replaces the TS
+        search_index probes; the needle stays verbatim, LIKE is ASCII
+        case-insensitive, matching the TS convention)."""
         if condition.value is None:
             raise QueryCompileError(f"query compile: content op '{condition.op}' requires a non-null value")
         if condition.op == "fts":
             # Prefix-AND emulation: the TS fts is a prefix-AND MATCH over the
             # search text — token-prefix semantics. GLOB arms emulate exactly
-            # that over the plaintext column: a term matches at the string
+            # that over the search-text column: a term matches at the string
             # start or right after a non-alphanumeric boundary (the
             # unicode61 token boundaries), ASCII case-folded like the FTS
             # tokenizer (terms are alnum-only, so the patterns are GLOB-safe).
@@ -911,21 +917,21 @@ class _Compiler:
                 start_pattern = self._push(f"{upper}*")
                 boundary_pattern = self._push(f"*[^A-Z0-9]{upper}*")
                 arms.append(
-                    f"(upper({alias}.content_plain) GLOB {start_pattern}"
-                    f" OR upper({alias}.content_plain) GLOB {boundary_pattern})"
+                    f"(upper({alias}.search_plain) GLOB {start_pattern}"
+                    f" OR upper({alias}.search_plain) GLOB {boundary_pattern})"
                 )
             return "(" + " AND ".join(arms) + ")"
         param = self._push(condition.value)
         if condition.op == "eq":
-            return f"{alias}.content_plain = {param}"
+            return f"{alias}.search_plain = {param}"
         if condition.op == "neq":
-            return f"{alias}.content_plain != {param}"
+            return f"{alias}.search_plain != {param}"
         anchor = {
             "starts": f"{param} || '%'",
             "ends": f"'%' || {param}",
             "contains": f"'%' || {param} || '%'",
         }[condition.op]
-        return f"{alias}.content_plain LIKE {anchor}"
+        return f"{alias}.search_plain LIKE {anchor}"
 
     def _property_sql(self, condition: PropertyCondition, alias: str) -> str:
         value_ops = ("eq", "neq", "contains", "gt", "gte", "lt", "lte")

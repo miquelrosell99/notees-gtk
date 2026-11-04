@@ -168,13 +168,13 @@ class TestSqlShape:
 
     def test_content_contains_likes_the_plaintext_fts_prefix_ands_it(self) -> None:
         contains = compiled(ast(ENTIRE, [{"type": "content", "op": "contains", "value": "citi"}]))
-        assert "n.content_plain LIKE '%' || ? || '%'" in contains.sql
+        assert "n.search_plain LIKE '%' || ? || '%'" in contains.sql
         assert contains.params == (WS, "citi")
         fts = compiled(ast(ENTIRE, [{"type": "content", "op": "fts", "value": "capital city"}]))
         # Token-prefix emulation: two GLOB arms per term (string-start +
         # boundary), ASCII case-folded (the FTS tokenizer convention).
-        assert "upper(n.content_plain) GLOB ?" in fts.sql
-        assert "OR upper(n.content_plain) GLOB ?" in fts.sql
+        assert "upper(n.search_plain) GLOB ?" in fts.sql
+        assert "OR upper(n.search_plain) GLOB ?" in fts.sql
         assert fts.params == (
             WS,
             "CAPITAL*",
@@ -183,15 +183,15 @@ class TestSqlShape:
             "*[^A-Z0-9]CITY*",
         )
         exists = compiled(ast(ENTIRE, [{"type": "content", "op": "exists"}]))
-        assert "length(n.content_plain) > 0" in exists.sql
+        assert "length(n.search_plain) > 0" in exists.sql
 
     def test_content_eq_neq_starts_ends_anchor_the_plaintext(self) -> None:
         eq = compiled(ast(ENTIRE, [{"type": "content", "op": "eq", "value": "Sync"}]))
-        assert "n.content_plain = ?" in eq.sql
+        assert "n.search_plain = ?" in eq.sql
         starts = compiled(ast(ENTIRE, [{"type": "content", "op": "starts", "value": "The"}]))
-        assert "n.content_plain LIKE ? || '%'" in starts.sql
+        assert "n.search_plain LIKE ? || '%'" in starts.sql
         ends = compiled(ast(ENTIRE, [{"type": "content", "op": "ends", "value": "ing"}]))
-        assert "n.content_plain LIKE '%' || ?" in ends.sql
+        assert "n.search_plain LIKE '%' || ?" in ends.sql
 
     def test_name_conditions_probe_the_flattened_title(self) -> None:
         contains = compiled(ast(ENTIRE, [{"type": "name", "op": "contains", "value": "paris"}]))

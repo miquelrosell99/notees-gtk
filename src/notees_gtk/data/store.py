@@ -87,7 +87,8 @@ import re
 import sqlite3
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Mapping
+import unicodedata
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import wraps
@@ -95,6 +96,8 @@ from pathlib import Path
 from typing import Any, Concatenate, cast
 
 from notees_gtk.core.protocol.content import (
+    DISPLAY_NAME_MAX,
+    format_date_node_name,
     parse_content_ast,
     plaintext_excerpt,
     stringify_content_ast,
@@ -258,7 +261,16 @@ _log = logging.getLogger(__name__)
 #: child/backlink/reference/descendant counts, ``updated_at`` mirroring the
 #: node row). Purely additive CREATE IF NOT EXISTS — a no-op for fresh
 #: databases whose canonical aux DDL already carries the table.
-SCHEMA_VERSION = 26
+#: v27 (the search-text parity slice): the derived ``nodes.search_plain``
+#: column — the query compiler's ``content``-condition backend, the TS
+#: ``search_index`` row's counterpart (``packages/store/src/content.ts``
+#: ``extractSearchPlaintext`` + the index-time ``foldSearchText`` of
+#: ``search.ts``): mention-resolved content plaintext + asset original
+#: names + text-ish property values, diacritic-folded at derive time.
+#: ``content_plain`` stays the display excerpt. Purely additive guarded
+#: ALTER + a backfill that derives every existing row (the reindexAllSearch
+#: precedent) — a no-op for fresh v27 creates.
+SCHEMA_VERSION = 27
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -593,6 +605,293 @@ def _node_ref_of_value(value: Any) -> str | None:
     if isinstance(value, str) and _UUID_LIKE_RE.match(value):
         return value
     return None
+
+
+# ----------------------------------------------------------- derived search text
+#
+# The query compiler's ``content``-condition backend: the derived
+# ``nodes.search_plain`` column, the TS ``search_index`` row's counterpart
+# (``packages/store/src/content.ts`` ``extractSearchPlaintext`` + the
+# index-time ``foldSearchText`` of ``search.ts``). ``content_plain`` stays
+# the DISPLAY excerpt (content-only, unfolded); the search row is the
+# superset — mention-resolved content plaintext + asset original names +
+# text-ish property values — diacritic-folded at derive time, so the
+# compare-time needle stays verbatim (the one mirror pair: ``peru`` matches
+# "Perú" while "perú" matches nothing folded). The derivation is a pure
+# function of the committed mirror — every replica converges under any
+# delivery order. The web's client-side mirror of the same contract lives
+# in ``apps/web/src/features/collection/sectionViewResolve.ts``
+# (``searchPlaintextOf`` / ``EvalContext``).
+
+#: Schema types whose values contribute searchable text
+#: (``SEARCH_INDEXED_VALUE_TYPES`` — packages/store/src/content.ts).
+_SEARCH_INDEXED_VALUE_TYPES = frozenset({"text", "email", "select", "multi_select", "number"})
+
+_WS_COLLAPSE_RE = re.compile(r"\s+")
+
+
+def _fold_search_text(text: str) -> str:
+    """Diacritic folding — the mirror of the store's ``foldSearchText``
+    (packages/store/src/search.ts): NFD, then strip every combining mark
+    (all ``\\p{M}`` categories), so ``peru`` and "Perú" compare equal."""
+    return "".join(ch for ch in unicodedata.normalize("NFD", text) if not unicodedata.category(ch).startswith("M"))
+
+
+def _mention_resolving_excerpt(
+    tokens: Sequence[Any] | None,
+    resolve_mention: Callable[[str], str | None],
+) -> str:
+    """``plainTextExcerpt`` WITH the mention resolver (packages/domain/src/
+    node.ts): a mention contributes its one-off ``customLabel`` (the only
+    text the wire carries — a bare mention stores no captured text), else the
+    target's CURRENT display name via the resolver; a class chip contributes
+    its one-off ``displayText`` only (no class resolver rides the search
+    path); text/typed_link/math/hard_break and the quote/heading recursion
+    are the domain excerpt's arms."""
+    parts: list[str] = []
+
+    def walk(items: Sequence[Any]) -> None:
+        for token in items:
+            if not isinstance(token, Mapping):
+                continue
+            ttype = token.get("type")
+            if ttype in ("text", "typed_link"):
+                parts.append(str(token.get("text", "")))
+            elif ttype == "mention":
+                label = token.get("customLabel")
+                if not isinstance(label, str) or not label:
+                    target = token.get("targetNodeId")
+                    label = resolve_mention(str(target)) if isinstance(target, str) else None
+                if label:
+                    parts.append(str(label))
+            elif ttype == "class_link":
+                label = token.get("displayText")
+                if label:
+                    parts.append(str(label))
+            elif ttype == "math":
+                parts.append(str(token.get("expression", "")))
+            elif ttype in ("quote", "heading"):
+                children = token.get("children")
+                if isinstance(children, list):
+                    walk(children)
+            elif ttype == "hard_break":
+                parts.append(" ")
+
+    walk(list(tokens) if tokens is not None else [])
+    return _WS_COLLAPSE_RE.sub(" ", " ".join(parts)).strip()
+
+
+def _search_content_plaintext(conn: sqlite3.Connection, tokens: Sequence[Any] | None) -> str:
+    """Port of ``contentPlaintext`` (packages/store/src/content.ts): the
+    mention-resolved excerpt plus the ASSET ORIGINAL NAMES of ``asset_ref``
+    tokens (first name per asset; quote/heading children walked). A mention
+    resolves the target's CURRENT display name from the derived node row,
+    cascading through link-bearing titles with a PATH guard (a diamond's
+    second mention resolves; a true cycle folds to nothing at the loop
+    point) — the FTS row is a projection, so a rename heals only on the
+    source's next refresh (the documented online-index staleness)."""
+    path: set[str] = set()
+
+    def resolve_mention(target_id: str) -> str | None:
+        if target_id in path:
+            return None  # mention cycle: fold, never hang
+        row = conn.execute("SELECT content FROM nodes WHERE id = ?", (target_id,)).fetchone()
+        if row is None:
+            return None
+        path.add(target_id)
+        excerpt = _mention_resolving_excerpt(parse_content_ast(row[0]), resolve_mention)
+        path.discard(target_id)
+        if not excerpt:
+            return None
+        # ``deriveDisplayName`` parity: date labels format, then the cap.
+        name = format_date_node_name(excerpt) or excerpt
+        return name[:DISPLAY_NAME_MAX] or None
+
+    parts: list[str] = [_mention_resolving_excerpt(tokens, resolve_mention)]
+    seen_assets: set[str] = set()
+
+    def walk(items: Sequence[Any]) -> None:
+        for token in items:
+            if not isinstance(token, Mapping):
+                continue
+            ttype = token.get("type")
+            asset_id = token.get("assetId")
+            if ttype == "asset_ref" and isinstance(asset_id, str) and asset_id not in seen_assets:
+                seen_assets.add(asset_id)
+                row = conn.execute(
+                    "SELECT original_name FROM node_asset WHERE asset_id = ? ORDER BY node_id LIMIT 1",
+                    (asset_id,),
+                ).fetchone()
+                if row is not None and row[0]:
+                    parts.append(str(row[0]))
+            elif ttype in ("quote", "heading"):
+                children = token.get("children")
+                if isinstance(children, list):
+                    walk(children)
+
+    walk(list(tokens) if tokens is not None else [])
+    return " ".join(part for part in parts if part)
+
+
+def _search_property_values_plaintext(conn: sqlite3.Connection, node_id: str) -> str:
+    """Port of ``propertyValuesPlaintext`` (packages/store/src/content.ts):
+    text-ish property values of a node, ONE level deep — the VISIBLE set
+    only (a tombstoned element's text leaves the row with its element); a
+    text carrier contributes the carrier's content plaintext (the carrier's
+    own property values do not ride along), scalar strings as-is, select /
+    multi_select resolve to option labels (the raw id when the option is
+    gone), numbers in string form. Date refs, object refs, booleans and
+    ranges are structural — they stay out of the row."""
+    parts: list[str] = []
+    for row in _visible_property_value_rows(conn, node_id):
+        schema_row = conn.execute(
+            "SELECT type, options FROM property_schema WHERE id = ?",
+            (row["property_schema_id"],),
+        ).fetchone()
+        if schema_row is None:
+            continue
+        schema_type = str(schema_row[0])
+        if schema_type not in _SEARCH_INDEXED_VALUE_TYPES:
+            continue
+        try:
+            parsed: Any = json.loads(row["value"])
+        except (TypeError, ValueError):
+            continue
+        if parsed is None:
+            continue
+        if schema_type == "text":
+            ref = _node_ref_of_value(parsed)
+            if ref is not None:
+                carrier = conn.execute("SELECT content FROM nodes WHERE id = ?", (ref,)).fetchone()
+                if carrier is not None:
+                    carrier_text = _search_content_plaintext(conn, parse_content_ast(carrier[0]))
+                    if carrier_text:
+                        parts.append(carrier_text)
+            elif isinstance(parsed, str) and parsed:
+                parts.append(parsed)
+        elif schema_type == "email":
+            if isinstance(parsed, str) and parsed:
+                parts.append(parsed)
+        elif schema_type == "number":
+            # ``Number.isFinite`` + ``String(number)`` parity: JS renders an
+            # integral double without a fraction ("11607", not "11607.0").
+            if isinstance(parsed, bool):
+                continue
+            if isinstance(parsed, int):
+                parts.append(str(parsed))
+            elif isinstance(parsed, float) and math.isfinite(parsed):
+                parts.append(str(int(parsed)) if parsed.is_integer() else str(parsed))
+        else:
+            # select / multi_select: the value is an option id — the LABEL
+            # indexes (the raw id when the option is gone).
+            option_ids = parsed if isinstance(parsed, list) else [parsed]
+            options: list[Any] = []
+            if schema_row[1]:
+                try:
+                    decoded = json.loads(schema_row[1])
+                    options = decoded if isinstance(decoded, list) else []
+                except (TypeError, ValueError):
+                    options = []
+            for option_id in option_ids:
+                if not isinstance(option_id, str):
+                    continue
+                option = next(
+                    (
+                        entry
+                        for entry in options
+                        if isinstance(entry, Mapping) and entry.get("id") == option_id
+                    ),
+                    None,
+                )
+                label = option.get("label") if isinstance(option, Mapping) else None
+                parts.append(str(label) if label else option_id)
+    return " ".join(parts)
+
+
+def _derive_search_plain(conn: sqlite3.Connection, workspace_id: str, node_id: str) -> str:
+    """Port of ``extractSearchPlaintext`` (packages/store/src/content.ts) +
+    the index-time fold (``search.ts`` ``reindexNode``): content plaintext +
+    text-ish property values, whitespace-collapsed, diacritic-FOLDED. An
+    empty result is the absent search row (the column's '' default)."""
+    row = conn.execute(
+        "SELECT content FROM nodes WHERE workspace_id = ? AND id = ?",
+        (workspace_id, node_id),
+    ).fetchone()
+    content_text = _search_content_plaintext(conn, parse_content_ast(row[0] if row is not None else None))
+    property_text = _search_property_values_plaintext(conn, node_id)
+    joined = _WS_COLLAPSE_RE.sub(" ", " ".join(part for part in (content_text, property_text) if part)).strip()
+    return _fold_search_text(joined)
+
+
+def _visible_property_value_rows(conn: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
+    """The PG5 visible set for a node (SCHEMA.md "Multi-value element
+    identity"): live property_value rows minus
+
+    - SLOT-tombstoned rows — the legacy positional path: a
+      property_value_tombstone (node, schema, idx) with a winning (>=)
+      full (hlc, actor) tuple suppresses the row at that idx (the
+      pre-PG5 rule, unchanged); and
+    - ELEMENT-tombstoned rows — a property_value_element_tombstone whose
+      HLC is strictly newer than the row's (add-wins: equal HLC keeps the
+      row).
+
+    Every read consults this derivation so a removed element is invisible
+    everywhere at once (the effective read is the GTK client's only
+    property read surface)."""
+    rows = conn.execute(
+        "SELECT id, node_id, property_schema_id, value, idx, metadata,"
+        " hlc_physical, hlc_logical, actor_id FROM property_value WHERE node_id = ?",
+        (node_id,),
+    ).fetchall()
+    slot_tombstones = conn.execute(
+        "SELECT node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id"
+        " FROM property_value_tombstone WHERE node_id = ?",
+        (node_id,),
+    ).fetchall()
+    element_tombstones = {
+        str(row[0]): (int(row[1]), int(row[2]))
+        for row in conn.execute(
+            "SELECT element_id, hlc_physical, hlc_logical FROM property_value_element_tombstone WHERE node_id = ?",
+            (node_id,),
+        )
+    }
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        row_map = {
+            "id": str(row[0]),
+            "node_id": str(row[1]),
+            "property_schema_id": str(row[2]),
+            "value": row[3],
+            "idx": int(row[4]),
+            "metadata": row[5],
+            "hlc_physical": int(row[6]),
+            "hlc_logical": int(row[7]),
+            "actor_id": row[8],
+        }
+        element_tombstone = element_tombstones.get(row_map["id"])
+        if element_tombstone is not None and (
+            element_tombstone[0] > row_map["hlc_physical"]
+            or (element_tombstone[0] == row_map["hlc_physical"] and element_tombstone[1] > row_map["hlc_logical"])
+        ):
+            continue
+        suppressed = False
+        for tomb in slot_tombstones:
+            if str(tomb[0]) != row_map["node_id"] or str(tomb[1]) != row_map["property_schema_id"]:
+                continue
+            if int(tomb[2]) != row_map["idx"]:
+                continue
+            # Full-tuple comparison, the legacy slot rule: the tombstone
+            # wins on an equal (hlc, actor) tuple.
+            if (row_map["hlc_physical"], row_map["hlc_logical"], row_map["actor_id"] or "") <= (
+                int(tomb[3]),
+                int(tomb[4]),
+                tomb[5] or "",
+            ):
+                suppressed = True
+                break
+        if not suppressed:
+            visible.append(row_map)
+    return visible
 
 
 def _normalize_qualifier_metadata(schema: dict[str, Any] | None, metadata: Any) -> Any:
@@ -1662,6 +1961,10 @@ class LocalStore:
             # Counts LAST (the stats.ts create-tail parity): the child_order
             # row must exist before child/descendant counts derive.
             self._rebuild_node_stats(env.workspace_id, [object_id])
+            # The derived search row rides the create (the TS reindexNode at
+            # object.create) — the refresh reads the committed row, so it
+            # lands after every content-adjacent write above.
+            self._refresh_search_plain(env.workspace_id, object_id)
         return True
 
     def _apply_object_update(self, env: RelayEnvelope) -> bool:
@@ -1884,6 +2187,14 @@ class LocalStore:
                 self._reresolve_edge_targets(env.workspace_id, [object_id])
             if "active" in payload:
                 self._reresolve_edge_targets(env.workspace_id, [object_id])
+            # The derived search row refreshes on the content writes (the TS
+            # reindexNode at object.update): an explicit contentAst payload
+            # or the promotion flatten above (isEmbedded false on an
+            # embedded row rewrites content to the flattened stream).
+            if payload.get("contentAst") is not None or (
+                payload.get("isEmbedded") is False and bool(row[4])
+            ):
+                self._refresh_search_plain(env.workspace_id, object_id)
         return True
 
     def _apply_object_delete(self, env: RelayEnvelope) -> bool:
@@ -2513,6 +2824,18 @@ class LocalStore:
         tag_ids = [str(row[0]) for row in rows]
         self._conn.execute("UPDATE nodes SET tag_ids = ? WHERE id = ?", (json.dumps(tag_ids), node_id))
 
+    def _refresh_search_plain(self, workspace_id: str, node_id: str) -> None:
+        """Re-derive the node's derived search row — the TS ``reindexNode``
+        counterpart. A pure function of the committed mirror, so every
+        replica converges under any delivery order; the refresh triggers
+        mirror the TS reindex sites (content writes, class create/update,
+        property writes — NOT asset.attach/detach: a late attach heals only
+        on the node's next reindex, the documented online-index staleness)."""
+        self._conn.execute(
+            "UPDATE nodes SET search_plain = ? WHERE workspace_id = ? AND id = ?",
+            (_derive_search_plain(self._conn, workspace_id, node_id), workspace_id, node_id),
+        )
+
     def _upsert_class_node(
         self,
         env: RelayEnvelope,
@@ -2608,6 +2931,11 @@ class LocalStore:
                     )""",
                 values,
             )
+            if has_content:
+                # A class title change re-renders the class unfindable under
+                # its old text — refresh whenever the content writes (the TS
+                # reindexNode at class.update, contentAst present).
+                self._refresh_search_plain(env.workspace_id, class_id)
 
     def _apply_class_create(self, env: RelayEnvelope) -> bool:
         payload = env.payload
@@ -2669,6 +2997,10 @@ class LocalStore:
             class_id,
             _class_node_fields(payload),
         )
+        # Classes are nodes: index the new class so full-text search finds it
+        # by title (the TS reindexNode at class.create — unconditional, so
+        # the conversion path derives from the adopted content too).
+        self._refresh_search_plain(env.workspace_id, class_id)
         # Conversion (retiring the seeded `class`
         # meta class): class.create on an EXISTING node DECLARES that node a
         # class — the node row was INSERT OR IGNOREed above, which never
@@ -3464,6 +3796,11 @@ class LocalStore:
             # Node-typed values project into the edge index (verb = schema),
             # so every property write re-derives the owner's edges.
             self._rebuild_edges(env.workspace_id, node_id, _envelope_ts(env))
+            # The owner's indexed text includes its property values — refresh
+            # the derived search row exactly like a content write (the TS
+            # reindexNode at property.set; a pure re-derive, so a dropped
+            # stale write is harmless).
+            self._refresh_search_plain(env.workspace_id, node_id)
         return not dropped
 
     def _property_element_add(
@@ -3609,6 +3946,10 @@ class LocalStore:
             # The property.set precedent: a value removal re-derives the
             # owner's edges (a tombstoned element's edges vanish with it).
             self._rebuild_edges(env.workspace_id, node_id, _envelope_ts(env))
+            # The owner's indexed text includes its property values — a
+            # removal refreshes the row with the element (property.unset
+            # reindexNode parity).
+            self._refresh_search_plain(env.workspace_id, node_id)
         return True
 
     def _property_element_remove(self, env: RelayEnvelope, node_id: str, schema_id: str, element_id: str) -> None:
@@ -4966,74 +5307,10 @@ class LocalStore:
     # ------------------------------------------------- effective properties
 
     def _visible_property_value_rows(self, node_id: str) -> list[dict[str, Any]]:
-        """The PG5 visible set for a node (SCHEMA.md "Multi-value element
-        identity"): live property_value rows minus
-
-        - SLOT-tombstoned rows — the legacy positional path: a
-          property_value_tombstone (node, schema, idx) with a winning (>=)
-          full (hlc, actor) tuple suppresses the row at that idx (the
-          pre-PG5 rule, unchanged); and
-        - ELEMENT-tombstoned rows — a property_value_element_tombstone whose
-          HLC is strictly newer than the row's (add-wins: equal HLC keeps
-          the row).
-
-        Every read consults this derivation so a removed element is invisible
-        everywhere at once (the effective read is the GTK client's only
-        property read surface)."""
-        rows = self._conn.execute(
-            "SELECT id, node_id, property_schema_id, value, idx, metadata,"
-            " hlc_physical, hlc_logical, actor_id FROM property_value WHERE node_id = ?",
-            (node_id,),
-        ).fetchall()
-        slot_tombstones = self._conn.execute(
-            "SELECT node_id, property_schema_id, idx, hlc_physical, hlc_logical, actor_id"
-            " FROM property_value_tombstone WHERE node_id = ?",
-            (node_id,),
-        ).fetchall()
-        element_tombstones = {
-            str(row[0]): (int(row[1]), int(row[2]))
-            for row in self._conn.execute(
-                "SELECT element_id, hlc_physical, hlc_logical FROM property_value_element_tombstone WHERE node_id = ?",
-                (node_id,),
-            )
-        }
-        visible: list[dict[str, Any]] = []
-        for row in rows:
-            row_map = {
-                "id": str(row[0]),
-                "node_id": str(row[1]),
-                "property_schema_id": str(row[2]),
-                "value": row[3],
-                "idx": int(row[4]),
-                "metadata": row[5],
-                "hlc_physical": int(row[6]),
-                "hlc_logical": int(row[7]),
-                "actor_id": row[8],
-            }
-            element_tombstone = element_tombstones.get(row_map["id"])
-            if element_tombstone is not None and (
-                element_tombstone[0] > row_map["hlc_physical"]
-                or (element_tombstone[0] == row_map["hlc_physical"] and element_tombstone[1] > row_map["hlc_logical"])
-            ):
-                continue
-            suppressed = False
-            for tomb in slot_tombstones:
-                if str(tomb[0]) != row_map["node_id"] or str(tomb[1]) != row_map["property_schema_id"]:
-                    continue
-                if int(tomb[2]) != row_map["idx"]:
-                    continue
-                # Full-tuple comparison, the legacy slot rule: the tombstone
-                # wins on an equal (hlc, actor) tuple.
-                if (row_map["hlc_physical"], row_map["hlc_logical"], row_map["actor_id"] or "") <= (
-                    int(tomb[3]),
-                    int(tomb[4]),
-                    tomb[5] or "",
-                ):
-                    suppressed = True
-                    break
-            if not suppressed:
-                visible.append(row_map)
-        return visible
+        """The PG5 visible set for a node — the module-level derivation over
+        this store's connection (shared with the search-text build and the
+        migration backfill)."""
+        return _visible_property_value_rows(self._conn, node_id)
 
     @_synchronized
     def get_effective_properties(self, node_id: str) -> list[EffectiveProperty]:
@@ -5366,14 +5643,18 @@ class LocalStore:
                 self._conn.execute(f"INSERT OR REPLACE INTO nodes ({columns}) {select}", params)
                 # The server snapshot has no plaintext cache column (the
                 # server derives FTS text); derive the client cache's excerpt
-                # for the restored rows.
+                # AND the folded search row for the restored rows.
                 restored = self._conn.execute(
                     "SELECT id, content FROM nodes WHERE workspace_id = ?", (workspace_id,)
                 ).fetchall()
                 for node_id, content in restored:
                     self._conn.execute(
-                        "UPDATE nodes SET content_plain = ? WHERE id = ?",
-                        (plaintext_excerpt(parse_content_ast(content)), node_id),
+                        "UPDATE nodes SET content_plain = ?, search_plain = ? WHERE id = ?",
+                        (
+                            plaintext_excerpt(parse_content_ast(content)),
+                            _derive_search_plain(self._conn, workspace_id, str(node_id)),
+                            node_id,
+                        ),
                     )
             self._notify_changed()
             return True
@@ -5539,6 +5820,13 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_active INTEGER NOT NULL DEFAULT 1,
     content TEXT,
     content_plain TEXT NOT NULL DEFAULT '',
+    -- Derived search row (the query compiler's `content`-condition backend,
+    -- packages/store/src/content.ts extractSearchPlaintext parity): the
+    -- mention-resolved content plaintext + asset original names + text-ish
+    -- property values, diacritic-FOLDED at derive time (foldSearchText) —
+    -- compare-time needles stay verbatim, the one mirror pair. content_plain
+    -- above stays the DISPLAY excerpt (content-only, unfolded).
+    search_plain TEXT NOT NULL DEFAULT '',
     created_at TEXT,
     updated_at TEXT NOT NULL,
     created_by TEXT,
@@ -5803,6 +6091,7 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     copy_exprs.setdefault("is_active", "1")
     copy_exprs.setdefault("class_ids", "'[]'")
     copy_exprs.setdefault("content_plain", "''")
+    copy_exprs.setdefault("search_plain", "''")
     copy_exprs.setdefault("hlc_physical", "0")
     copy_exprs.setdefault("hlc_logical", "0")
     columns_sql = ", ".join(_quote_ident(name) for name in copy_exprs)
@@ -6648,6 +6937,24 @@ def _migrate_v26(conn: sqlite3.Connection) -> None:
     conn.executescript(_NODE_STATS_DDL)
 
 
+def _migrate_v27(conn: sqlite3.Connection) -> None:
+    """v27 — the derived search-text column (the search-text parity slice):
+    ``nodes.search_plain``, the query compiler's ``content``-condition
+    backend (the TS ``search_index`` row's counterpart — content.ts
+    ``extractSearchPlaintext`` + the index-time ``foldSearchText``). Purely
+    additive guarded ALTER, then a backfill that derives every existing row
+    (the TS reindexAllSearch precedent): the derive is a pure function of
+    the committed mirror, so any pre-v27 database converges to the same
+    column (a no-op for fresh v27 creates, whose DDL carries the column)."""
+    LocalStore._add_column_if_missing(conn, "nodes", "search_plain", "TEXT NOT NULL DEFAULT ''")
+    rows = conn.execute("SELECT workspace_id, id FROM nodes").fetchall()
+    for workspace_id, node_id in rows:
+        conn.execute(
+            "UPDATE nodes SET search_plain = ? WHERE workspace_id = ? AND id = ?",
+            (_derive_search_plain(conn, str(workspace_id), str(node_id)), str(workspace_id), str(node_id)),
+        )
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -6676,4 +6983,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (24, _migrate_v24),
     (25, _migrate_v25),
     (26, _migrate_v26),
+    (27, _migrate_v27),
 )
