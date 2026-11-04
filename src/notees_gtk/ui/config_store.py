@@ -28,10 +28,12 @@ __all__ = [
     "load_api_key",
     "load_cards_algorithm",
     "load_config",
+    "load_graph_color_groups",
     "save_actor_id",
     "save_api_key",
     "save_cards_algorithm",
     "save_config",
+    "save_graph_color_groups",
 ]
 
 #: Directory name used under ``$XDG_CONFIG_HOME`` / ``$XDG_DATA_HOME``.
@@ -153,6 +155,40 @@ def load_cards_algorithm() -> CardsAlgorithm:
     cannot be reached."""
     value = _read_raw().get("cards_algorithm")
     return value if value in ("sm2", "fsrs") else DEFAULT_CARDS_ALGORITHM
+
+
+def load_graph_color_groups(workspace_id: str) -> list[dict[str, Any]]:
+    """The device-cached graph color groups for one workspace (the same
+    device-cache idiom): rows are opaque dicts — the ``core.graph``
+    migration validates them at load. A missing or garbled key reads as no
+    groups; malformed rows are dropped (the honest-cache posture — a row
+    that is not an object has no recoverable content)."""
+    value = _read_raw().get("graph_color_groups")
+    if not isinstance(value, dict):
+        return []
+    rows = value.get(workspace_id)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def save_graph_color_groups(workspace_id: str, groups: list[dict[str, Any]]) -> None:
+    """Persist one workspace's color groups in the device cache, preserving
+    every other workspace's rows.
+
+    Raises:
+        ValueError: a row is not a JSON object — fail loud, never cache a
+            shape the at-load migration could not read back.
+    """
+    if any(not isinstance(group, dict) for group in groups):
+        raise ValueError("color groups must be a list of JSON objects")
+    raw = _read_raw()
+    value = raw.get("graph_color_groups")
+    if not isinstance(value, dict):
+        value = {}
+    value[workspace_id] = groups
+    raw["graph_color_groups"] = value
+    _write_raw(raw)
 
 
 def save_cards_algorithm(value: CardsAlgorithm) -> None:

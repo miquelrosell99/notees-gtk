@@ -52,8 +52,13 @@ AGENTS.md
   executor over the mirror, the pure global-search AST builder, the text
   query DSL (parser + name-resolution contract), and the condition-builder
   model (the `filterBlockModel.ts`/`filterQuery.ts` register port — the
-  family/operator registers, the target-mode switch, the prune). No GTK
-  imports.
+  family/operator registers, the target-mode switch, the prune), and the
+  pure v1→v2 query-AST migration mapping (the `map-query-ast-v1-v2.ts` port).
+  No GTK imports.
+- `src/notees_gtk/core/graph/` — the graph surface's headless layers (the
+  `packages/store/src/graph.ts` reduced topology projection, the
+  deterministic force-directed layout, the viewport math, and the
+  `colorGroups.ts` port with the at-load legacy migrations). No GTK imports.
 - `src/notees_gtk/data/` — the local SQLite store: outbox, dedupe log, seq
   cursor, mirrored node table, and the appliers (row-LWW, OR-Set membership,
   extends closure, property wire semantics). No GTK imports.
@@ -63,7 +68,10 @@ AGENTS.md
   (`query_section.py` + the headless `query_run.py` controller) renders the
   token's AST as a live section and opens the condition builder
   (`query_builder.py`), whose commits rewrite the token's `queryAst`
-  through the content-update op path (`query_tokens.py`, headless).
+  through the content-update op path (`query_tokens.py`, headless); the
+  graph surface (`graph_view.py`) draws the headless `core/graph/`
+  projection (topology, deterministic layout, viewport, color groups — all
+  GTK-free and unit-tested) behind the "Graph" sidebar row.
 - `tests/` — pytest suite; `tests/fixtures/wire/` is the vendored protocol
   fixture corpus (see the lockstep law below — never edit those bytes).
 - `PKGBUILD` + `.github/workflows/` — Arch packaging and CI/release

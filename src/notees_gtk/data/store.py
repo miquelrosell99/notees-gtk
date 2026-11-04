@@ -95,6 +95,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate, cast
 
+from notees_gtk.core.graph.model import GraphTopology, NodeSetRow, build_topology
 from notees_gtk.core.protocol.content import (
     DISPLAY_NAME_MAX,
     format_date_node_name,
@@ -128,7 +129,7 @@ from notees_gtk.core.protocol.features import (
 )
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.protocol.payloads import validate_payload
-from notees_gtk.core.protocol.query_ast import parse_query_ast
+from notees_gtk.core.protocol.query_ast import QueryAst, parse_query_ast
 from notees_gtk.core.query.compiler import CompileOptions
 from notees_gtk.core.query.dsl import QueryLanguageResolvers, parse_query_language
 from notees_gtk.core.query.execute import AggregateResult, QueryResult, run_aggregate, run_query
@@ -270,7 +271,18 @@ _log = logging.getLogger(__name__)
 #: ``content_plain`` stays the display excerpt. Purely additive guarded
 #: ALTER + a backfill that derives every existing row (the reindexAllSearch
 #: precedent) — a no-op for fresh v27 creates.
-SCHEMA_VERSION = 27
+#: v28 (the graph slice): the edge-index backfill the v25 slice deferred —
+#: pre-v25 databases created the derived ``edge`` + ``node_link`` tables
+#: additively and re-derived a node's rows only when a later op rewrote that
+#: node, so a database that never rewrote a node kept an empty index for it.
+#: v28 derives every stored node's edges in place, reusing the applier-time
+#: rebuild (the v27 backfill precedent): the derive is a pure function of the
+#: committed mirror, content-derived edge ids are content-addressed (the
+#: ``at`` stamp lands in ``created_at`` only), and the backfill stamps with
+#: the node row's own ``updated_at`` so any pre-v28 database converges to
+#: the same rows. No DDL change — a no-op for a database whose index is
+#: already complete (the rebuild re-derives identical rows).
+SCHEMA_VERSION = 28
 
 #: Strict pattern every interpolated snapshot identifier must match — closes
 #: the quote-breakout surface on names read from the attached snapshot.
@@ -1371,6 +1383,13 @@ class LocalStore:
             if version < target:
                 with self._conn:
                     step(self._conn)
+                    if target == 28:
+                        # The v28 backfill reuses the applier-time rebuild,
+                        # a LocalStore method, while migration steps take a
+                        # bare connection — run it here, inside the step's
+                        # transaction, so the version bump and the backfill
+                        # commit or roll back together.
+                        self._backfill_edge_index()
                     self._conn.execute(f"PRAGMA user_version = {target}")
                 version = target
 
@@ -4577,6 +4596,105 @@ class LocalStore:
         options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
         return run_query(self._conn, ast, options)
 
+    # ------------------------------------------------------------- graph surface
+    #
+    # The deferred graph slice: the topology projection the graph view
+    # renders (``packages/store/src/graph.ts`` reduced — the node set, the
+    # five structural edge families, the block/alias rollup). The store seam
+    # only runs the workspace-scoped SQL; the pure projection lives in
+    # ``core.graph.model`` so it is unit-testable without a mirror.
+
+    @_synchronized
+    def graph_topology(self, workspace_id: str) -> GraphTopology:
+        """The graph-view topology projection over this workspace's mirror.
+
+        Node set: classes + standalone pages (aliases never vertices; a
+        parentless member of an effectively parentlessRole-"block" class is
+        excluded — the same extends-aware EXISTS the render predicate and
+        the query compiler flatten). Edges: mention/property/tag from the
+        derived edge index (applier-resolved targets), parent main-node
+        parentage, class OR-Set membership; endpoints roll up through
+        embedded blocks and aliases.
+        """
+        node_rows = [
+            NodeSetRow(
+                id=str(row[0]),
+                is_class=bool(row[1]),
+                parent_id=None if row[2] is None else str(row[2]),
+                class_ids=tuple(json.loads(row[3])) if row[3] else (),
+                color=None if row[4] is None else str(row[4]),
+                icon=None if row[5] is None else str(row[5]),
+                created_at=None if row[6] is None else str(row[6]),
+            )
+            for row in self._conn.execute(
+                """SELECT id, is_class, parent_id, class_ids, color, icon, created_at
+                     FROM nodes
+                    WHERE workspace_id = ? AND is_active = 1
+                      AND (is_class = 1 OR is_embedded = 0)
+                      AND aliased_node_id IS NULL
+                      AND (parent_id IS NOT NULL OR NOT EXISTS (
+                        SELECT 1 FROM class_hierarchy ch
+                        JOIN nodes c ON c.id = ch.ancestor_id
+                        WHERE ch.class_id IN (SELECT value FROM json_each(nodes.class_ids))
+                          AND c.parentless_role = 'block'))
+                    ORDER BY id""",
+                (workspace_id,),
+            )
+        ]
+        edge_rows = [
+            (str(row[0]), str(row[1]), str(row[2]), None if row[3] is None else str(row[3]))
+            for row in self._conn.execute(
+                """SELECT source_id, resolved_target_id, type, created_at FROM edge
+                    WHERE workspace_id = ? AND resolved_target_id IS NOT NULL
+                      AND type IN ('mention', 'property', 'tag')""",
+                (workspace_id,),
+            )
+        ]
+        membership_rows = [
+            (str(row[0]), str(row[1]))
+            for row in self._conn.execute(
+                "SELECT node_id, class_id FROM class_member_set WHERE present = 1"
+            )
+        ]
+        active_rows = [
+            (str(row[0]), None if row[1] is None else str(row[1]), bool(row[2]), bool(row[3]))
+            for row in self._conn.execute(
+                "SELECT id, parent_id, is_embedded, is_class FROM nodes"
+                " WHERE workspace_id = ? AND is_active = 1",
+                (workspace_id,),
+            )
+        ]
+        alias_rows = [
+            (str(row[0]), str(row[1]))
+            for row in self._conn.execute(
+                "SELECT id, aliased_node_id FROM nodes"
+                " WHERE workspace_id = ? AND is_active = 1 AND aliased_node_id IS NOT NULL",
+                (workspace_id,),
+            )
+        ]
+        return build_topology(
+            node_rows=node_rows,
+            edge_rows=edge_rows,
+            membership_rows=membership_rows,
+            active_rows=active_rows,
+            alias_rows=alias_rows,
+        )
+
+    @_synchronized
+    def parse_query_language(self, workspace_id: str, text: str) -> QueryAst:
+        """Parse a text query-DSL string against this workspace's name
+        space — the parse-only half of :meth:`run_query_language` (the color
+        groups' migration/edit path needs the AST without running it; the
+        resolvers read the mirror, so the whole parse holds the lock, the
+        same posture as the runner). Syntax errors and unresolvable names
+        raise :class:`QueryLanguageError`."""
+        resolvers = QueryLanguageResolvers(
+            resolve_class=lambda name: self._class_id_by_name(workspace_id, name),
+            resolve_property_schema=lambda name: self._property_schema_id_by_name(workspace_id, name),
+            resolve_node=lambda name: self._node_id_by_display_name(workspace_id, name),
+        )
+        return parse_query_language(text, resolvers=resolvers)
+
     @_synchronized
     def property_schema_names(self, workspace_id: str) -> dict[str, str]:
         """Active property schemas' id → name (the aggregate grid's column
@@ -4863,6 +4981,29 @@ class LocalStore:
         return [str(row[0]) for row in rows]
 
     # ------------------------------------------------------------- edge index
+
+    def _backfill_edge_index(self) -> None:
+        """Derive the edge (+ link-assertion) rows for every stored node —
+        the v28 migration's backfill, reusing the applier-time
+        :meth:`_rebuild_edges` verbatim (the v27 search_plain backfill
+        precedent: the derive is a pure function of the committed mirror, so
+        any pre-v28 database converges to the same index).
+
+        The rebuild's ``at`` stamp lands in ``created_at`` only — content
+        edge ids are content-addressed (sha256 over source/type/target/verb/
+        metadata/occurrence), so a re-run over an already-complete index
+        re-derives identical ids and the earliest-stamp conflict path keeps
+        the live rows' stamps. The stamp itself is the node row's own
+        ``updated_at`` (order-invariant — the mirror row is the LWW winner,
+        so the same semantic state always carries the same stamp); property
+        edges stamp their causal value row regardless, exactly like the
+        applier path.
+        """
+        rows = self._conn.execute(
+            "SELECT workspace_id, id, updated_at FROM nodes ORDER BY workspace_id, id"
+        ).fetchall()
+        for workspace_id, node_id, updated_at in rows:
+            self._rebuild_edges(str(workspace_id), str(node_id), str(updated_at))
 
     @staticmethod
     def _edge_id(source_id: str, edge: Mapping[str, Any], occurrence: int) -> str:
@@ -6955,6 +7096,20 @@ def _migrate_v27(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v28(conn: sqlite3.Connection) -> None:
+    """v28 — the edge-index backfill (the graph slice): pre-v25 databases
+    created the derived ``edge`` + ``node_link`` tables additively (the v25
+    step is DDL-only for them) and re-derived a node's rows only when a later
+    op rewrote that node. The backfill itself is NOT run here — the rebuild
+    is a :class:`LocalStore` method while migration steps take a bare
+    connection, so :meth:`LocalStore._migrate` invokes
+    ``LocalStore._backfill_edge_index`` inside this step's transaction (the
+    version bump and the backfill commit or roll back together). This
+    function documents the step; the tables themselves are already canonical
+    (``_CANONICAL_AUX_DDL`` runs before the chain)."""
+    _ = conn
+
+
 #: Ordered migration chain; each entry bumps ``PRAGMA user_version`` to its target.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migrate_v1),
@@ -6984,4 +7139,5 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (25, _migrate_v25),
     (26, _migrate_v26),
     (27, _migrate_v27),
+    (28, _migrate_v28),
 )

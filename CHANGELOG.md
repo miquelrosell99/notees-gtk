@@ -8,6 +8,91 @@ history.
 
 ## 2026-11-04
 
+- **feat(graph): the minimal graph view ships — the v28 edge-index backfill,
+  the headless `core/graph/` projection (topology + deterministic layout +
+  color groups), and the GTK surface behind a pinned "Graph" sidebar row.**
+  The deferred graph slice, built in four gate-green steps on the query
+  surface's foundations; the web's `apps/web/src/features/collection/graph/`
+  + `packages/store/src/graph.ts` are the reference, reduced per the
+  minimal-surface ruling. **(1) The edge index's missing backfill** — the
+  derived `edge` + `node_link` index itself shipped at v25 (2026-11-03, the
+  `edges.ts` deep port with the applier-time write triggers), but pre-v25
+  databases created the tables additively and re-derived a node's rows only
+  when a later op rewrote that node, so untouched nodes kept an empty index.
+  `SCHEMA_VERSION` 27 → 28: `_migrate_v28` runs `_backfill_edge_index`
+  inside the migration's own transaction (the step takes a bare connection,
+  the rebuild is a `LocalStore` method — the hook lives in `_migrate` so the
+  version bump and the backfill commit or roll back together): every stored
+  node's edges re-derive through the applier-time `_rebuild_edges`, stamped
+  with the node row's own `updated_at` (order-invariant — content edge ids
+  are content-addressed, so the stamp lands in `created_at` only and a
+  re-run over a complete index is a no-op). Note: the brief named a
+  `class_link` edge vocabulary — the TS contract deliberately keeps class
+  assignment / class_link chips OUT of the index (`edges.ts`), and the v25
+  port follows it; the graph's class family is membership-derived, not an
+  edge-index family. **(2) The headless graph model** (`core/graph/`) —
+  `model.py` ports `graph.ts` reduced: the node set is classes + standalone
+  pages (aliases never vertices; parentless members of an effectively
+  parentlessRole-"block" class excluded, the same extends-aware EXISTS the
+  render predicate flattens), five structural edge families — mention /
+  property / tag from the derived index via the applier-materialized
+  `resolved_target_id`, parent main-node parentage, class OR-Set membership —
+  with the block/alias endpoint rollup, parallel merging into weighted
+  edges with the earliest contributing stamp, self-loop and out-of-tree
+  drops, and per-node degree; NOT ported (each deliberate, documented in the
+  module): the semantic/temporal co-occurrence families, the mass/content
+  metrics, and the anchor/depth scope. `layout.py` is a deterministic
+  Fruchterman–Reingold pass — golden-angle spiral init over sorted ids,
+  fixed iterations, linear cooling, zero RNG, so same state → byte-same
+  positions and input row order is irrelevant (a summation-order drift the
+  determinism pins caught). `viewport.py` carries the world↔screen camera,
+  pan/zoom-at-anchor, bounds fitting, and hit-testing. The store grows the
+  `graph_topology(workspace_id)` seam (the workspace-scoped SQL) and
+  `parse_query_language(workspace_id, text)` (a synchronized parse-only DSL
+  seam — the resolvers read the mirror, so the parse holds the lock; the
+  color-group edit path needs the AST without running it). **(3) The
+  color-group layer** (`core/graph/color_groups.py` + `core/query/ast_v1_map.py`)
+  — the `colorGroups.ts` port: the group model ({id, label, color, ast,
+  error}, the persisted list order IS the first-match-wins priority), the
+  at-load migrations (a legacy text-DSL `query` string parses through the
+  slice-2 DSL with mirror-backed name resolution; a stored v1 AST rewrites
+  through the pure `map-query-ast-v1-v2.ts` port — total over the v1 grammar,
+  fail-loud with the tree path, v2 input must NOT re-map; failures KEEP the
+  group, marked erroneous, painted nowhere), evaluation wrapping each group
+  in the workspace-scope AST and riding the slice-1 runner (a runner failure
+  skips that group, never the rest), and device-local persistence per
+  workspace in `config.json` (the prefs.ts device-cache idiom). **(4) The
+  GTK chrome** (`ui/graph_view.py`) — a fourth content-stack sibling behind
+  the pinned "Graph" sidebar row (the cards-hub pattern, `tree.py` gained
+  the parallel row + the cross-unselects): `Gtk.DrawingArea` with nodes as
+  labeled circles (group color → own `#RRGGBB` → fallback), family-colored
+  edge lines, drag to pan, scroll to zoom at the pointer, and a sub-4px
+  drag that releases on a node opens it through the window's navigate seam;
+  the color-groups popover lists / adds / edits / removes groups (label +
+  color + a query-DSL text, the slice-2 grammar — the condition-builder
+  dialog stays the query-token editor; an existing group's empty query
+  keeps its AST, a label/color edit), persisting the device cache and
+  live-recoloring on every store-change notify. This host has no PyGObject:
+  the chrome is verified by py-compile + precedent; ALL logic rides the
+  headless layers. No wire change: the fixture corpus stays at 51, both
+  fixture-count pins untouched. Verification: +5 test modules (72 tests) —
+  the backfill pins (structural convergence with a live-built index, the
+  updated_at stamp, the property family's causal stamp surviving, idempotence,
+  the end-to-end reopen-at-v27 migration, fresh-stays-empty), the topology
+  pins (the node-set law, block/alias rollup, the five families, parallel
+  merging with the earliest stamp, self-loop/out-of-set drops, degree, the
+  deterministic ordering), the layout determinism pins (same-input identity,
+  permutation independence, force sanity, finite output), the viewport
+  pins, the v1→v2 mapping battery (every member-spec kind, the folded
+  conditions, all ten date types, not/group recursion, the fail-loud paths,
+  strict-parseability of the mapped tree), and the color-group pins (legacy
+  DSL migration with mirror resolution, v1 AST migration, erroneous rows
+  kept, first-match-wins, the runner-failure skip, live recolor on a class
+  unassign, the device-cache round trip) — full gate green (`uv sync && uv
+  run pytest` 1719 passed / 5 skipped / 2 xfailed, `uv run ruff check` +
+  `uv run mypy src` clean). Lockstep: no wire change; the TS reference is
+  the ported-from side, Flutter's graph surface is its own phase.
+
 - **fix(protocol): the mention validator and the plaintext excerpt align on the wire contract — `customLabel` is the only text a mention stores (the retired `text`/`displayText` keys reject outright), and the live-e2e route drift after plan-07 is fixed.** Two findings from the search-text parity handoff, one slice. **(1) The strict content validator's mention branch** (`core/protocol/content.py`) still REQUIRED the retired captured `text` key and accepted `displayText` — the wire schema and the corpus (`mention-custom-label.json`) carry `customLabel` only: the validator now accepts exactly `content-mark.ts` `mentionTokenSchema` — `{type, targetNodeId, customLabel? (1..512), linkId?, isEmbedded?}`, strict keys, the retired captured-text keys rejected as unknown keys like any `.strict()` extra (the fail-loud / no-backward-compatibility law). `plaintext_excerpt` (the `plainTextExcerpt` port) had the same drift — it read `displayText ?? text`; it now reads `customLabel ?? the resolver's current target name`, gaining the TS-parallel optional `resolve_mention` parameter (a bare mention contributes nothing without a resolver — the store's mention-resolving search path already did this). `ui/ast_render.py`'s mention pill had the third drifted reader (`displayText`); it reads `customLabel` now. The strict-xfail pin in `test_store_fixtures.py` flips to a live pin and gains the fixture-bytes arm — the corpus's actual `contentAst` bytes validate through the strict grammar — plus the rejection pins for `text`/`displayText` mentions. The test suites that built mentions with the retired shape (store flatten/promotion arms, edges, node stats, query DSL/execute fixtures, the renderer battery, the repo's own catch-up fixture) move to the wire shape. **(2) The live end-to-end route drift** (`tests/test_live_server_e2e.py`): two of three tests 404'd against the current monorepo server — plan-07 retired the object/search/query content routes (`/api/objects*`, `/api/search`, `/api/query`), and with them the e2e's read probes and its REST property-value write. The rewrite keeps the file's intent on the surviving surface (mirroring `verify-min.mjs`'s post-plan-07 posture): the read probe is now `GET /api/resolve?name=` (name→id against the server's derived FTS state), the class catalog (`GET /api/classes` / `/api/classes/:id` — names, extends edges, member counts), and the operation feed (`GET /api/operations` — the log is the authority; the block's create envelope is audited there with the mention token intact); the server-stamped write surface is `POST /api/property-schemas` + `POST /api/classes/:id/properties` (schema-level default + the `class.property.set` binding), with the property VALUE now authored through the engine's own relay path (values ride the log — the one write plan-07 kept); the seeded mention rides `customLabel`. The self-skip posture is unchanged (no built server / no node → skip). No wire change: the fixture corpus stays byte-pinned, both fixture-count pins untouched. Verification: the previously-xfailed contract pin now passes + the new fixture-bytes validator pin; full gate green (`uv run pytest` 1647 passed / 5 skipped / 2 xfailed, `ruff check` + `mypy src` clean); all three live-e2e tests verified against the built monorepo server (`NOTEES_V2_ROOT=<checkout> uv run pytest tests/test_live_server_e2e.py` — 3 passed: relay ingest/catch-up/WS realtime/replay determinism + the surviving read surface, the server-stamped schema/binding/value convergence + effective defaults, and the login/workspace listing). Lockstep: the validator now matches the TS reference exactly; Flutter convergence on the mention grammar is its own phase (the fixture already lives in the shared corpus).
 
 - **feat(store): search-text parity — the `content` condition's plaintext source gains asset names, property values, mention resolution, and diacritic folding (the slice-1 R1 follow-up).** GTK search text was the `plaintext_excerpt` only; the TS contract (`packages/store/src/content.ts` `extractSearchPlaintext`, folded at index time by `search.ts` `foldSearchText`, mirrored client-side by the web's `sectionViewResolve.ts` `searchPlaintextOf`) is the mention-resolved content plaintext + ASSET ORIGINAL NAMES (`asset_ref` tokens, first name per asset, quote/heading children walked) + text-ish PROPERTY VALUES (authored visible rows only; a text carrier's content one level deep; select/multi_select option labels with the raw-id fallback; numbers in JS string form; date/object refs structural and out) + NFD mark-stripping at derive time. The mirror gains the derived `nodes.search_plain` column — the TS `search_index` row's counterpart — while `content_plain` stays the display excerpt (content-only, unfolded; the UI tree/search-label/name-resolution consumers untouched). The derivation lives in module-level pure-over-`conn` helpers (`_derive_search_plain` and its parts, the `content.ts` port) so the v27 migration backfill (guarded ALTER + a per-row derive, the `reindexAllSearch` precedent) and the snapshot-restore path share it; `SCHEMA_VERSION` 26 → 27 (purely additive). The appliers refresh the column at the TS `reindexNode` trigger sites within GTK's op coverage — `object.create`, `object.update` content writes (incl. the promotion flatten), `class.create` (unconditional, the conversion path adopts the content), `class.update` with content, `property.set`/`property.unset` — and deliberately NOT `asset.attach`/`detach`: a late attach heals only on the node's next reindex, the documented online-index staleness (a rename never fans out to mentioners either; both staleness arms are pinned). The compiler's content conditions flip one place (`TEXT_BACKEND = "search_plain"`): contains/starts/ends/eq/neq/exists and the GLOB token-prefix `fts` arms now read the folded superset row; the needle stays VERBATIM at compare time (the one mirror pair — `peru` matches "Perú" while `perú` matches nothing folded, exactly the TS SQL semantics; `eq` stays the BINARY case-sensitive full-row equality). No wire change: the fixture corpus stays at 51, both fixture-count pins untouched. Verification: +1 test module (37 tests) — byte pins on the derived row (diacritic fold, asset first-name-per-asset, the late-attach staleness, bare/custom-label/ghost/cyclic mention resolution, the rename no-fan-out arm, text/select-label/raw-id/number/email/object/carrier property arms, the option-removal staleness + the re-write reindex), the web-spec contains arms (needle in title / body / asset original name / text property value / mention target / nowhere), the compare-op arms (eq case-sensitivity, the property-carried exists row, the fts arms over the folded row with verbatim diacritic terms), the `property.unset` refresh, and the migration/snapshot-restore backfill pins — plus the slice-1 golden SQL pins flipped to the new column; scoped + full gate green (`uv sync && uv run pytest` 1644 passed / 5 skipped / 3 xfailed, `ruff check` + `mypy src` clean). Lockstep: no wire change; the TS reference is the ported-from side, Flutter's query surface is its own phase.

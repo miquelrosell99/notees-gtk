@@ -60,6 +60,7 @@ from notees_gtk.ui.brand import content_colors
 from notees_gtk.ui.card_ops import card_review_envelope, date_chain_envelopes, review_property_envelopes
 from notees_gtk.ui.cards_hub import CardsHubView
 from notees_gtk.ui.editor import EditorView
+from notees_gtk.ui.graph_view import GraphViewWidget
 from notees_gtk.ui.login import LoginView
 from notees_gtk.ui.page_view import PageViewWidget
 from notees_gtk.ui.query_builder import QueryBuilderDialog
@@ -174,6 +175,7 @@ class NoteesWindow(Adw.ApplicationWindow):
             on_workspace_selected=self._on_workspace_selected,
             on_node_selected=self._show_node,
             on_cards_selected=self._show_cards_hub,
+            on_graph_selected=self._show_graph,
         )
         sidebar_view = Adw.ToolbarView()
         sidebar_header = Adw.HeaderBar(show_title=False)
@@ -216,6 +218,11 @@ class NoteesWindow(Adw.ApplicationWindow):
         # The login-time prefs fetch may resolve after the hub was built —
         # keep the selector honest when it does.
         self.connect_cards_algorithm(self._cards_hub.set_algorithm)
+        # The graph surface: a fourth content-stack sibling, bound per
+        # workspace in ``_show_graph`` (the pinned sidebar row selects it, a
+        # node selection switches back — the cards-hub pattern).
+        self._graph_view = GraphViewWidget(on_open_node=self._open_node)
+        self._content_stack.add_named(self._graph_view, "graph")
 
         self._edit_toggle = Gtk.ToggleButton(label="Edit")
         self._edit_toggle.connect("toggled", self._on_edit_toggled)
@@ -300,6 +307,17 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._refresh_hub()
         self._sidebar.select_cards()
         self._content_stack.set_visible_child_name("cards")
+
+    def _show_graph(self) -> None:
+        """The graph surface: a sibling of view/edit/cards in the content
+        stack — the pinned sidebar row selects it, clicking a node opens it
+        (the window's navigate seam, which switches back to the page view)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None:
+            return
+        self._graph_view.show_graph(store=store, workspace_id=self._workspace_id)
+        self._sidebar.select_graph()
+        self._content_stack.set_visible_child_name("graph")
 
     def _refresh_hub(self) -> None:
         """Recompute the hub from the live mirror: card members → bucket
@@ -655,6 +673,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         if row is None:
             return
         self._sidebar.unselect_cards()
+        self._sidebar.unselect_graph()
         self._content_stack.set_visible_child_name("view")
         title = node_display_name(row)
         self._page_view.show_page(
