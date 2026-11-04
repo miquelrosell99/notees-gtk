@@ -140,7 +140,14 @@ from notees_gtk.data.errors import (
     UnsupportedCarrierError,
 )
 
-__all__ = ["CardReview", "EffectiveProperty", "EffectivePropertySchema", "LocalStore", "NodeRow"]
+__all__ = [
+    "CardReview",
+    "EffectiveProperty",
+    "EffectivePropertySchema",
+    "LocalStore",
+    "NodeRow",
+    "PropertySchemaSummary",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -325,6 +332,18 @@ def _snapshot_select_exprs(remote_columns: set[str]) -> dict[str, str]:
         if column in remote_columns:
             exprs[column] = _quote_ident(column)
     return exprs
+
+
+@dataclass(frozen=True)
+class PropertySchemaSummary:
+    """One active property schema row, the query-builder facts' read shape
+    (the ``BuilderFacts.boundProperties`` record — id/name/type plus the
+    select options the value dropdown offers)."""
+
+    id: str
+    name: str
+    type: str
+    options: tuple[tuple[str, str], ...]  # (option id, label) pairs, select schemas only
 
 
 @dataclass(frozen=True)
@@ -4226,6 +4245,32 @@ class LocalStore:
             "SELECT id, name FROM property_schema WHERE workspace_id = ? AND active = 1", (workspace_id,)
         ).fetchall()
         return {str(row[0]): str(row[1]) for row in rows}
+
+    @_synchronized
+    def property_schema_summaries(self, workspace_id: str) -> tuple[PropertySchemaSummary, ...]:
+        """Active property schemas' id/name/type (+ select options) — the
+        query builder's ``BuilderFacts.boundProperties`` read (the
+        ``listPropertySchemas()`` picker-source seam the web's
+        ``useBuilderFacts`` derives from)."""
+        rows = self._conn.execute(
+            "SELECT id, name, type, options FROM property_schema WHERE workspace_id = ? AND active = 1 ORDER BY id",
+            (workspace_id,),
+        ).fetchall()
+        summaries: list[PropertySchemaSummary] = []
+        for row in rows:
+            options: list[tuple[str, str]] = []
+            try:
+                decoded = json.loads(row[3]) if row[3] else []
+            except ValueError:
+                decoded = []
+            if isinstance(decoded, list):
+                for option in decoded:
+                    if isinstance(option, dict) and "id" in option and "label" in option:
+                        options.append((str(option["id"]), str(option["label"])))
+            summaries.append(
+                PropertySchemaSummary(id=str(row[0]), name=str(row[1]), type=str(row[2]), options=tuple(options))
+            )
+        return tuple(summaries)
 
     def _class_id_by_name(self, workspace_id: str, name: str) -> str | None:
         row = self._conn.execute(

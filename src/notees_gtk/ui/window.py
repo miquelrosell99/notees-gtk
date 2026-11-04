@@ -46,6 +46,7 @@ from notees_gtk.core.protocol.crypto import (
 from notees_gtk.core.protocol.features import card_property_uuid
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.query.builder import BoundProperty, BuilderFacts
 from notees_gtk.core.query.dsl import QueryLanguageError, looks_like_query_language
 from notees_gtk.core.query.search import search_wire
 from notees_gtk.core.srs import CardGrade, CardSrsState, next_card_state
@@ -61,8 +62,16 @@ from notees_gtk.ui.cards_hub import CardsHubView
 from notees_gtk.ui.editor import EditorView
 from notees_gtk.ui.login import LoginView
 from notees_gtk.ui.page_view import PageViewWidget
+from notees_gtk.ui.query_builder import QueryBuilderDialog
+from notees_gtk.ui.query_tokens import content_update_envelope, update_query_token_ast
 from notees_gtk.ui.review_session import LoadedCard, ReviewSessionDialog
-from notees_gtk.ui.tag_ops import tag_assign_candidates, tag_assign_envelope, tag_pills, tag_unassign_envelope
+from notees_gtk.ui.tag_ops import (
+    renders_with_document_chrome,
+    tag_assign_candidates,
+    tag_assign_envelope,
+    tag_pills,
+    tag_unassign_envelope,
+)
 from notees_gtk.ui.tags import build_tags_row
 from notees_gtk.ui.tree import NodeTreeSidebar, node_display_name
 from notees_gtk.ui.worker import run_in_worker
@@ -657,10 +666,98 @@ class NoteesWindow(Adw.ApplicationWindow):
             tags_row=self._tags_row(row),
             on_open_node=self._open_node,
             on_repoint=partial(self._on_alias_repoint, node_id),
+            on_edit_query=self._on_query_edit,
             store=store,
             workspace_id=self._workspace_id,
         )
         self._editor.open_node(node_id, ast_to_plaintext(row.content))
+
+    # ------------------------------------------------------------- query builder
+
+    def _builder_facts(self, store: LocalStore, workspace_id: str) -> BuilderFacts:
+        """The builder's property register: the mirror's active property
+        schemas (the ``useBuilderFacts`` read — bound-property names/types/
+        options for the operator + value columns)."""
+        return BuilderFacts(
+            bound_properties=tuple(
+                BoundProperty(id=schema.id, name=schema.name, type=schema.type, options=schema.options)
+                for schema in store.property_schema_summaries(workspace_id)
+            )
+        )
+
+    def _query_pick_candidates(self, store: LocalStore, workspace_id: str, family: str) -> list[tuple[str, str]]:
+        """The Manual-mode picker source per member family (label-sorted):
+        classes for the class family, pages for tags (a tag IS a page —
+        the tag picker's filter), every non-class node for the rest."""
+        rows = store.nodes(workspace_id)
+        by_id = {row.id: row for row in rows}
+        extends = store.class_extends_edges()
+        if family == "class":
+            candidates = [row for row in rows if row.is_class]
+        elif family == "tags":
+            candidates = [row for row in rows if renders_with_document_chrome(row, by_id, extends)]
+        else:
+            candidates = [row for row in rows if not row.is_class]
+        entries = [(row.id, node_display_name(row)) for row in candidates]
+        entries.sort(key=lambda entry: (entry[1].casefold(), entry[0]))
+        return entries
+
+    def _on_query_edit(self, node_id: str | None, token_index: int, raw_ast: object) -> None:
+        """The section builder's edit seam: open the condition builder over
+        this token. A ``None`` hosting id means the render carried no host —
+        nothing to write back, so the builder stays closed (the section only
+        offers the affordance with the store-bound render, where the host
+        always rides the view record)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None or node_id is None:
+            return
+        dialog = QueryBuilderDialog(
+            raw_ast=raw_ast,
+            facts=self._builder_facts(store, self._workspace_id),
+            self_node_id=node_id,
+            pick_candidates=lambda family: self._query_pick_candidates(store, self._workspace_id or "", family),
+            on_apply=lambda wire: self._on_query_ast_commit(node_id, token_index, wire),
+        )
+        dialog.present(self)
+
+    def _on_query_ast_commit(self, node_id: str | None, token_index: int, wire_ast: dict[str, Any]) -> None:
+        """The builder's commit: splice the token's new AST into the node's
+        content and write through the normal content-update op path — the
+        same seam the editor's save uses (enqueue + optimistic mirror apply;
+        op-id dedupe makes the server echo harmless)."""
+        store = self._require_store()
+        if store is None or self._workspace_id is None or node_id is None:
+            return
+        row = store.node(self._workspace_id, node_id)
+        if row is None:
+            return
+        try:
+            next_content = update_query_token_ast(row.content, token_index, wire_ast)
+            envelope = content_update_envelope(
+                workspace_id=self._workspace_id,
+                actor_id=config_store.load_actor_id() or config_store.GTK_ACTOR_ID,
+                device_id=config_store.ensure_device_id(),
+                node_id=node_id,
+                content_ast=next_content,
+                clock=self._clock,
+            )
+            store.enqueue(envelope)
+            store.apply_remote(envelope)
+        except (IndexError, ValueError) as exc:
+            # The token index drifted under the builder (the page re-rendered
+            # mid-edit) — the write never lands half-applied.
+            self.show_toast(str(exc))
+            return
+        self.show_toast("Query updated — syncing…")
+        engine = self._engine
+        if engine is not None:
+            run_in_worker(engine.sync, on_done=lambda _r: self._after_query_write(node_id), on_error=self._on_sync_error)
+        else:
+            self._show_node(node_id)
+
+    def _after_query_write(self, node_id: str) -> None:
+        self._refresh_sidebar()
+        self._show_node(node_id)
 
     def _tags_row(self, row: NodeRow) -> Gtk.Widget:
         """The window-built Tags row for ``row``: pill records alphabetical

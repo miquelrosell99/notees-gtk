@@ -19,10 +19,12 @@ from notees_gtk.core.protocol.query_ast import (
     IdsTarget,
     MemberCondition,
     Not,
+    QueryAst,
     QueryAstError,
     QueryTarget,
     SelfTarget,
     SubtreeScope,
+    dump_query_ast,
     parse_query_ast,
 )
 
@@ -351,3 +353,125 @@ class TestStrictness:
             parse_query_ast(
                 wrap({"type": "not", "child": {"type": "not", "child": {"type": "content", "op": "exists"}}})
             )
+
+
+# ------------------------------------------------------------------ dump
+
+#: The representative wire doc exercising every condition family, every
+#: target mode, nested groups + nots, sort, and an aggregation — the dump
+#: round-trip corpus (``parse → dump == identity`` is the serializer's contract).
+DUMP_DOC: dict[str, Any] = {
+    "version": 2,
+    "scope": {"type": "entire_workspace"},
+    "root": {
+        "type": "group",
+        "logic": "and",
+        "children": [
+            {"type": "member", "family": "class", "op": "in", "target": {"mode": "ids", "ids": [ID_A]}},
+            {"type": "member", "family": "tags", "op": "not-in", "target": {"mode": "query", "root": EMPTY_GROUP}},
+            {"type": "member", "family": "links", "op": "in", "target": {"mode": "self"}},
+            {"type": "member", "family": "parent", "op": "exists"},
+            {"type": "member", "family": "childPath", "op": "not-exists"},
+            {"type": "member", "family": "class", "op": "exact", "target": {"mode": "ids", "ids": [ID_B]}},
+            {"type": "content", "op": "contains", "value": "hello"},
+            {"type": "content", "op": "exists"},
+            {"type": "name", "op": "eq", "value": "Title"},
+            {"type": "property", "schemaId": ID_A, "op": "between", "from": 1, "to": 9},
+            {
+                "type": "property",
+                "schemaId": ID_B,
+                "op": "within",
+                "period": "this_week",
+                "includeDefaults": False,
+            },
+            {"type": "date", "field": "created", "op": "after", "timestamp": "2026-01-01"},
+            {"type": "date", "field": "updated", "op": "between", "from": "2026-01-01", "to": "2026-02-01"},
+            {"type": "nodeField", "field": "isClass", "op": "eq", "value": "true"},
+            {"type": "nodeField", "field": "coverAsset", "op": "exists"},
+            {
+                "type": "not",
+                "child": {
+                    "type": "group",
+                    "logic": "or",
+                    "children": [{"type": "content", "op": "fts", "value": "free text"}],
+                },
+            },
+        ],
+    },
+    "sort": [{"field": "name", "dir": "asc"}, {"field": "createdAt", "dir": "desc"}],
+    "aggregation": {
+        "dimensions": [{"kind": "class", "id": ID_C}, {"kind": "isEmbedded"}],
+        "measures": [{"function": "count"}, {"function": "sum", "kind": "property", "id": ID_A}],
+    },
+}
+
+
+class TestDump:
+    """The dump serializer (``dump_query_ast``) — the strict parse's exact
+    inverse: every parseable wire doc round-trips byte-for-byte through
+    ``parse → dump``, and the re-parse is the identical typed AST (the
+    builder's commit and the content-token write path serialize through it)."""
+
+    def test_dump_round_trips_the_representative_doc(self) -> None:
+        parsed = parse_query_ast(DUMP_DOC)
+        assert dump_query_ast(parsed) == DUMP_DOC
+        assert parse_query_ast(dump_query_ast(parsed)) == parsed
+
+    def test_dump_omits_absent_option_fields(self) -> None:
+        """None means "not carried", never a JSON null (the zod
+        ``exclude_none`` parity — absent-vs-present is the parse layer's
+        own rule)."""
+        ast = parse_query_ast(
+            wrap({"type": "content", "op": "contains", "value": "x"})
+            | {"scope": {"type": "pages"}, "root": wrap({"type": "content", "op": "contains", "value": "x"})["root"]}
+        )
+        dumped = dump_query_ast(ast)
+        assert dumped == {
+            "version": 2,
+            "scope": {"type": "pages"},
+            "root": {
+                "type": "group",
+                "logic": "and",
+                "children": [{"type": "content", "op": "contains", "value": "x"}],
+            },
+        }
+
+    def test_dump_carries_every_scope_shape(self) -> None:
+        for scope, wire in (
+            ({"type": "entire_workspace"}, {"type": "entire_workspace"}),
+            ({"type": "pages"}, {"type": "pages"}),
+            ({"type": "subtree", "pageId": ID_A}, {"type": "subtree", "pageId": ID_A}),
+            ({"type": "linkedTo", "nodeId": ID_B}, {"type": "linkedTo", "nodeId": ID_B}),
+        ):
+            doc = {"version": 2, "scope": scope, "root": EMPTY_GROUP}
+            assert dump_query_ast(parse_query_ast(doc))["scope"] == wire
+
+    def test_dump_keeps_half_typed_drafts_dumpable(self) -> None:
+        """Draft shapes the strict parse rejects (an empty ids pick, a blank
+        content value) still serialize — the builder prunes them before the
+        dump; the parse layer's rejection is the producer-side gate, not the
+        serializer's."""
+        from notees_gtk.core.protocol.query_ast import ContentCondition, Group, IdsTarget, MemberCondition, PagesScope
+
+        draft = QueryAst(
+            scope=PagesScope(),
+            root=Group(
+                logic="and",
+                children=(
+                    MemberCondition(family="class", op="in", target=IdsTarget(ids=())),
+                    ContentCondition(op="contains", value=""),
+                ),
+            ),
+        )
+        assert dump_query_ast(draft) == {
+            "version": 2,
+            "scope": {"type": "pages"},
+            "root": {
+                "type": "group",
+                "logic": "and",
+                "children": [
+                    {"type": "member", "family": "class", "op": "in", "target": {"mode": "ids", "ids": []}},
+                    {"type": "content", "op": "contains", "value": ""},
+                ],
+            },
+        }

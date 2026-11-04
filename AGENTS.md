@@ -49,14 +49,21 @@ AGENTS.md
   catch-up pull, realtime WS acceleration, op-id dedupe).
 - `src/notees_gtk/core/query/` — the query-AST v2 surface (the
   `packages/query` port): compile-time placeholders, the SQLite compiler +
-  executor over the mirror, the pure global-search AST builder, and the text
-  query DSL (parser + name-resolution contract). No GTK imports.
+  executor over the mirror, the pure global-search AST builder, the text
+  query DSL (parser + name-resolution contract), and the condition-builder
+  model (the `filterBlockModel.ts`/`filterQuery.ts` register port — the
+  family/operator registers, the target-mode switch, the prune). No GTK
+  imports.
 - `src/notees_gtk/data/` — the local SQLite store: outbox, dedupe log, seq
   cursor, mirrored node table, and the appliers (row-LWW, OR-Set membership,
   extends closure, property wire semantics). No GTK imports.
 - `src/notees_gtk/ui/` — GTK4/libadwaita chrome (window, tree, editor,
   page view, worker); `ast_render.py` is the pure token-stream → view-record
-  renderer and stays headless-testable.
+  renderer and stays headless-testable; the query-token section
+  (`query_section.py` + the headless `query_run.py` controller) renders the
+  token's AST as a live section and opens the condition builder
+  (`query_builder.py`), whose commits rewrite the token's `queryAst`
+  through the content-update op path (`query_tokens.py`, headless).
 - `tests/` — pytest suite; `tests/fixtures/wire/` is the vendored protocol
   fixture corpus (see the lockstep law below — never edit those bytes).
 - `PKGBUILD` + `.github/workflows/` — Arch packaging and CI/release

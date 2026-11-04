@@ -64,6 +64,7 @@ __all__ = [
     "SortSpec",
     "SubtreeScope",
     "TargetRef",
+    "dump_query_ast",
     "parse_query_ast",
 ]
 
@@ -666,3 +667,111 @@ def parse_query_ast(raw: object) -> QueryAst:
         sort=_parse_sort(root["sort"]) if "sort" in root else None,
         aggregation=_parse_aggregation(root["aggregation"]) if "aggregation" in root else None,
     )
+
+
+# --- dump (AST → wire JSON) ---------------------------------------------------------
+# The inverse of the strict parse: the condition builder's commit and the
+# content-token write path serialize the typed AST back to the canonical
+# wire shape (the TS side's zod `.parse()` round-trip shape). Absent option
+# fields stay absent (zod `exclude_none` parity — None means "not carried",
+# never a JSON null, exactly the parse layer's absent-vs-present rule).
+
+
+def _dump_scope(scope: Scope) -> dict[str, Any]:
+    if isinstance(scope, EntireWorkspaceScope):
+        return {"type": "entire_workspace"}
+    if isinstance(scope, PagesScope):
+        return {"type": "pages"}
+    if isinstance(scope, SubtreeScope):
+        return {"type": "subtree", "pageId": scope.page_id}
+    return {"type": "linkedTo", "nodeId": scope.node_id}
+
+
+def _dump_target(target: TargetRef) -> dict[str, Any]:
+    if isinstance(target, IdsTarget):
+        return {"mode": "ids", "ids": list(target.ids)}
+    if isinstance(target, QueryTarget):
+        return {"mode": "query", "root": _dump_group(target.root)}
+    return {"mode": "self"}
+
+
+def _dump_group(group: Group) -> dict[str, Any]:
+    return {"type": "group", "logic": group.logic, "children": [_dump_child(child) for child in group.children]}
+
+
+def _dump_not(child: Condition | Group) -> dict[str, Any]:
+    return {"type": "not", "child": _dump_group(child) if isinstance(child, Group) else _dump_condition(child)}
+
+
+def _dump_child(child: Child) -> dict[str, Any]:
+    if isinstance(child, Group):
+        return _dump_group(child)
+    if isinstance(child, Not):
+        return _dump_not(child.child)
+    return _dump_condition(child)
+
+
+def _dump_condition(condition: Condition) -> dict[str, Any]:
+    if isinstance(condition, MemberCondition):
+        node: dict[str, Any] = {"type": "member", "family": condition.family, "op": condition.op}
+        if condition.op in ("in", "not-in", "exact"):
+            assert condition.target is not None  # in/not-in/exact carry a target by grammar
+            node["target"] = _dump_target(condition.target)
+        return node
+    if isinstance(condition, (ContentCondition, NameCondition)):
+        node = {"type": "content" if isinstance(condition, ContentCondition) else "name", "op": condition.op}
+        if condition.value is not None:
+            node["value"] = condition.value
+        return node
+    if isinstance(condition, PropertyCondition):
+        node = {"type": "property", "schemaId": condition.schema_id, "op": condition.op}
+        if condition.value is not None:
+            node["value"] = condition.value
+        if condition.from_ is not None:
+            node["from"] = condition.from_
+        if condition.to is not None:
+            node["to"] = condition.to
+        if condition.period is not None:
+            node["period"] = condition.period
+        if condition.include_defaults is not None:
+            node["includeDefaults"] = condition.include_defaults
+        return node
+    if isinstance(condition, DateCondition):
+        node = {"type": "date", "field": condition.field, "op": condition.op}
+        if condition.timestamp is not None:
+            node["timestamp"] = condition.timestamp
+        if condition.from_ is not None:
+            node["from"] = condition.from_
+        if condition.to is not None:
+            node["to"] = condition.to
+        if condition.period is not None:
+            node["period"] = condition.period
+        return node
+    node = {"type": "nodeField", "field": condition.field, "op": condition.op}
+    if condition.value is not None:
+        node["value"] = condition.value
+    return node
+
+
+def dump_query_ast(ast: QueryAst) -> dict[str, Any]:
+    """Serialize a typed AST to the canonical wire document (the strict
+    parse's exact inverse: ``parse_query_ast(dump_query_ast(ast)) == ast``
+    for every parseable AST). Draft shapes the strict parse rejects (an
+    empty ids pick, a blank content value) serialize fine — the builder
+    prunes them before dump; the parse layer's rejection is the
+    producer-side gate, exactly the monorepo's contract."""
+    node: dict[str, Any] = {"version": 2, "scope": _dump_scope(ast.scope), "root": _dump_group(ast.root)}
+    if ast.sort is not None:
+        node["sort"] = [{"field": spec.field, "dir": spec.dir} for spec in ast.sort]
+    if ast.aggregation is not None:
+        node["aggregation"] = {
+            "dimensions": [
+                {"kind": dim.kind, **({"id": dim.id} if dim.id is not None else {})} for dim in ast.aggregation.dimensions
+            ],
+            "measures": [
+                {"function": measure.function, **({"kind": measure.kind} if measure.kind is not None else {})}
+                | ({"id": measure.id} if measure.id is not None else {})
+                for measure in ast.aggregation.measures
+            ],
+        }
+    return node

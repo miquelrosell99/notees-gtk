@@ -259,7 +259,7 @@ def test_view_query_token_is_a_live_section_run_request() -> None:
     ast = {"version": 2, "scope": {"type": "pages"}, "root": {"type": "group", "logic": "and", "children": []}}
     doc = [{"type": "query", "queryAst": ast}]
     view = ast_render.ast_to_view(doc_json(doc), self_node_id="page-1")
-    assert view == PageView(items=(QuerySectionView(query_ast=ast, self_node_id="page-1"),))
+    assert view == PageView(items=(QuerySectionView(query_ast=ast, self_node_id="page-1", token_index=0),))
 
 
 def test_view_query_token_without_host_carries_none() -> None:
@@ -283,7 +283,7 @@ def test_view_query_token_payload_passthrough_is_identity() -> None:
     }
     doc = [{"type": "text", "text": "intro"}, {"type": "query", "queryAst": ast}, {"type": "text", "text": "outro"}]
     view = ast_render.ast_to_view(doc_json(doc), self_node_id="host-9")
-    assert view.items[1] == QuerySectionView(query_ast=ast, self_node_id="host-9")
+    assert view.items[1] == QuerySectionView(query_ast=ast, self_node_id="host-9", token_index=1)
     assert view.items[0] == TextRun(text="intro")
     assert view.items[2] == TextRun(text="outro")
 

@@ -40,7 +40,7 @@ from notees_gtk.ui.ast_render import (
     TypedLinkRun,
 )
 from notees_gtk.ui.brand import ContentColors, content_colors
-from notees_gtk.ui.query_section import QuerySectionWidget
+from notees_gtk.ui.query_section import EditRequest, QuerySectionWidget
 
 __all__ = ["PageViewWidget", "run_markup", "runs_to_markup"]
 
@@ -126,6 +126,7 @@ class PageViewWidget(Gtk.Box):
         empty_state: str | None = None,
         on_open_node: Callable[[str], None] | None = None,
         on_repoint: Callable[[str | None], None] | None = None,
+        on_edit_query: EditRequest | None = None,
         store: LocalStore | None = None,
         workspace_id: str | None = None,
     ) -> None:
@@ -144,7 +145,9 @@ class PageViewWidget(Gtk.Box):
         records as each section's ``self`` anchor): each section subscribes
         to the store's change notification and re-runs its AST until the
         next ``show_page`` replaces it — the previous page's sections are
-        stopped here.
+        stopped here. ``on_edit_query`` is the section builder's edit seam
+        (hosting node id, token index, the token's AST) — the window opens
+        the condition builder and commits through the content-update path.
         """
         for section in self._query_sections:
             section.close()
@@ -187,7 +190,9 @@ class PageViewWidget(Gtk.Box):
                 self._content.append(label)
             elif isinstance(item, QuerySectionView):
                 self._flush_line(line)
-                self._content.append(self._query_section_widget(item, store, workspace_id, on_open_node))
+                self._content.append(
+                    self._query_section_widget(item, store, workspace_id, on_open_node, on_edit_query)
+                )
             elif isinstance(item, PlaceholderView):
                 self._flush_line(line)
                 self._content.append(self._placeholder_widget(item))
@@ -222,6 +227,7 @@ class PageViewWidget(Gtk.Box):
         store: LocalStore | None,
         workspace_id: str | None,
         on_open_node: Callable[[str], None] | None,
+        on_edit_query: EditRequest | None,
     ) -> Gtk.Widget:
         """The live query section — or the labeled fallback when the window
         did not hand the store across (a render without a run surface)."""
@@ -229,6 +235,12 @@ class PageViewWidget(Gtk.Box):
             label = Gtk.Label(label="[query]", xalign=0)
             label.add_css_class("dim-label")
             return label
-        widget = QuerySectionWidget(store, workspace_id, section, on_open_node=on_open_node)
+        widget = QuerySectionWidget(
+            store,
+            workspace_id,
+            section,
+            on_open_node=on_open_node,
+            on_edit=on_edit_query,
+        )
         self._query_sections.append(widget)
         return widget

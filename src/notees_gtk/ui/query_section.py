@@ -1,8 +1,8 @@
 """The ``query`` content token's live section chrome — the
 ``apps/web/src/ui/QueryNodeSection.tsx`` + ``queryResults.tsx`` result-body
-port (deliberately thinner: no tabs/toolbar/builder chrome — the GTK client
-has no query builder yet; the token's own AST is the only surface, task
-ruling: render what the token carries).
+port (deliberately thinner: no tabs/hosted views — the token's own AST is
+the only surface, task ruling: render what the token carries; the slice-4
+builder edits that AST back through the content-update path).
 
 The section hosts a :class:`~notees_gtk.ui.query_run.QuerySectionRun` — the
 coalesced live re-run: store notifies marshal onto the GTK main loop (the
@@ -15,7 +15,11 @@ Rows render like the web's query-node rows — display name + minimal chrome,
 open on activate through :func:`notees_gtk.ui.query_run.open_query_result`
 (document-chrome rows open directly, an inline block resolves to its
 containing page). An AST carrying an ``aggregation`` renders the grouped
-grid (dimension columns + measure columns).
+grid (dimension columns + measure columns). The header carries the slice-4
+edit affordance: "Edit query…" (or "Set a query…" on the unspecified AST)
+opens the condition builder (:mod:`notees_gtk.ui.query_builder`) over this
+token; the commit rewrites the token's ``queryAst`` through the normal
+content-update op path (:mod:`notees_gtk.ui.query_tokens`).
 """
 
 from __future__ import annotations
@@ -43,6 +47,11 @@ from notees_gtk.ui.query_run import (
 
 __all__ = ["QUERY_RESULT_CAP", "QuerySectionWidget"]
 
+#: The section's edit seam: (hosting node id, token index, the token's own
+#: AST) — the window opens the condition builder over it; the commit writes
+#: back through the normal content-update path (ui.query_tokens).
+type EditRequest = Callable[[str | None, int, object], None]
+
 #: Result list cap (TS ``QUERY_RESULT_CAP`` — a per-render window on the web,
 #: widened by a load-more the GTK chrome does not carry yet; the overflow
 #: renders an honest "+N more" line instead).
@@ -67,11 +76,14 @@ class QuerySectionWidget(Gtk.Box):
         section: QuerySectionView,
         *,
         on_open_node: Callable[[str], None] | None = None,
+        on_edit: EditRequest | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._store = store
         self._workspace_id = workspace_id
+        self._section = section
         self._on_open_node = on_open_node
+        self._on_edit = on_edit
         # Worker-thread notify → one pending main-loop refresh (the batching
         # mirror): the flag flips on both threads; a benign race costs one
         # extra run, never a lost one.
@@ -127,7 +139,14 @@ class QuerySectionWidget(Gtk.Box):
             self.remove(child)
         state = self._run.result
         if not self._run.enabled:
-            self.append(self._dim_label("Set a query to see results."))
+            if self._on_edit is not None:
+                # The unspecified query: the affordance IS the empty state —
+                # "Set a query" opens the builder (the web's panel-open arm).
+                button = Gtk.Button(label="Set a query…", halign=Gtk.Align.START)
+                button.connect("clicked", self._on_edit_clicked)
+                self.append(button)
+            else:
+                self.append(self._dim_label("Set a query to see results."))
             return
         if self._run.error is not None:
             label = self._dim_label("invalid query")
@@ -136,10 +155,21 @@ class QuerySectionWidget(Gtk.Box):
             return
         if state is None:
             return
+        if self._on_edit is not None:
+            edit = Gtk.Button(label="Edit query…", halign=Gtk.Align.START)
+            edit.connect("clicked", self._on_edit_clicked)
+            self.append(edit)
         if isinstance(state, AggregateRunState):
             self._render_aggregate(state.result, state.dimension_count)
         elif isinstance(state, PlainRunState):
             self._render_rows(state.result)
+
+    def _on_edit_clicked(self, *_args: object) -> None:
+        """Open the condition builder over THIS token: the hosting page id,
+        the token's content-array index (the write address), the token's own
+        AST (the draft seed)."""
+        if self._on_edit is not None:
+            self._on_edit(self._section.self_node_id, self._section.token_index, self._section.query_ast)
 
     def _dim_label(self, text: str) -> Gtk.Label:
         label = Gtk.Label(label=text, xalign=0)

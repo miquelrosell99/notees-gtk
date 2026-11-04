@@ -146,8 +146,11 @@ class QuerySectionView:
     """The ``query`` content token as a live-section run request.
 
     Carries the token's OWN ``queryAst`` payload (the default-tab
-    distinction is web-specific — GTK renders what the token carries) and
-    the hosting page's node id as the ``self`` member-target anchor. The
+    distinction is web-specific — GTK renders what the token carries), the
+    hosting page's node id as the ``self`` member-target anchor, and the
+    token's INDEX in the content array (the builder chrome's write address:
+    the commit splices the token's ``queryAst`` at this index through the
+    normal content-update path, :mod:`notees_gtk.ui.query_tokens`). The
     compiler's fail-loud-without-host contract makes the hosting page id
     part of the run's identity: the chrome must always supply it (the
     :func:`ast_to_view` ``self_node_id`` parameter, the window's shown-node
@@ -158,6 +161,7 @@ class QuerySectionView:
 
     query_ast: Any
     self_node_id: str | None
+    token_index: int
 
 
 #: Anything :class:`PageView` can hold at top level.
@@ -285,19 +289,20 @@ def _inline_views(token: Any, resolver: NameResolver | None) -> list[InlineView]
     return []
 
 
-def _page_items(token: Any, resolver: NameResolver | None, self_node_id: str | None) -> tuple[PageItem, ...]:
+def _page_items(token: Any, resolver: NameResolver | None, self_node_id: str | None, token_index: int) -> tuple[PageItem, ...]:
     """Render one top-level token to one or more page items.
 
     Only ``text`` tokens can fan out (one run per markdown-link segment);
     quotes recurse their children through the same splitter, the ``query``
-    token becomes a live-section run request, remaining block-scale tokens
+    token becomes a live-section run request (its content-array index rides
+    along as the builder's write address), remaining block-scale tokens
     stay labeled placeholders, and unknown types render unsupported.
     """
     if not isinstance(token, Mapping):
         return (PlaceholderView(kind="unsupported"),)
     ttype = token.get("type")
     if ttype == "query":
-        return (QuerySectionView(query_ast=token.get("queryAst"), self_node_id=self_node_id),)
+        return (QuerySectionView(query_ast=token.get("queryAst"), self_node_id=self_node_id, token_index=token_index),)
     if ttype == "quote":
         children = token.get("children")
         inner: list[InlineView] = []
@@ -336,7 +341,11 @@ def ast_to_view(
             query AST fails loud at run time without the host.
     """
     tokens = parse_content_ast(ast_json)
-    items = tuple(item for token in tokens for item in _page_items(token, resolve_name, self_node_id))
+    items = tuple(
+        item
+        for index, token in enumerate(tokens)
+        for item in _page_items(token, resolve_name, self_node_id, index)
+    )
     return PageView(items=items)
 
 
