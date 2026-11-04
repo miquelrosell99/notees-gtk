@@ -1859,15 +1859,6 @@ class TestMentionCustomLabelFixture:
             }
         ]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "lockstep-pending: the mention customLabel reshape is not ported to main yet — "
-            "the content grammar still REQUIRES the retired captured `text` key and rejects "
-            "customLabel as an extra key (content.py); the plaintext flatten still reads "
-            "displayText ?? text instead of customLabel ?? the target's display name"
-        ),
-    )
     def test_retired_captured_text_keys_rejected_custom_label_accepted(self) -> None:
         """The strict grammar pins (mirroring the monorepo protocol test):
         bare and customLabel-carrying mentions validate; the retired
@@ -1879,6 +1870,16 @@ class TestMentionCustomLabelFixture:
             validate_content_ast([{"type": "mention", "targetNodeId": target, "text": "captured"}])
         with pytest.raises(ValueError):
             validate_content_ast([{"type": "mention", "targetNodeId": target, "displayText": "the Republic"}])
+
+    def test_fixture_content_ast_bytes_pass_the_strict_validator(self) -> None:
+        """The fixture's actual payload bytes are the pin: every contentAst
+        the corpus carries (a bare mention, a customLabel mention, and the
+        cleared single-bare-mention rewrite) validates against the strict
+        grammar — the validator accepts exactly what the wire carries."""
+        for envelope in self._load():
+            content_ast = envelope.payload.get("contentAst")
+            if content_ast is not None:
+                validate_content_ast(list(content_ast))
 
 
 class TestClassPropertyPinnedFixture:

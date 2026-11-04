@@ -8,8 +8,10 @@ the renderer (display) consume:
   (serialized JSON array, or legacy plaintext) to a token list;
 - :func:`plaintext_excerpt` — port of ``plainTextExcerpt``
   (``packages/domain/src/node.ts``): the FTS/sidebar text derived from tokens
-  (text + typed_link text, mention ``displayText ?? text``, math expressions,
-  recursive quote/heading children, ``hard_break`` as a space);
+  (text + typed_link text, a mention's ``customLabel`` — the only text the
+  wire carries, else the resolver's current target name when one is passed —
+  math expressions, recursive quote/heading children, ``hard_break`` as a
+  space);
 - :func:`stringify_content_ast` — port of ``stringifyContentAst``: flatten any
   token stream to text-only content (pages and classes carry text-only
   content — SCHEMA.md "title-is-content"; structural ``whiteboard``/``query``
@@ -31,7 +33,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
@@ -89,14 +91,19 @@ def parse_content_ast(raw: str | Sequence[Any] | None) -> list[Any]:
     return list(raw)
 
 
-def plaintext_excerpt(tokens: Sequence[Any]) -> str:
+def plaintext_excerpt(tokens: Sequence[Any], resolve_mention: Callable[[str], str | None] | None = None) -> str:
     """Derive the search/sidebar plaintext of a token array.
 
     Port of ``plainTextExcerpt``: text and typed-link runs contribute their
-    text, mentions their ``displayText`` (captured ``text`` when absent), math
-    its expression, quotes and headings recurse into their children, ``hard_break`` becomes
-    a space; every other token is silent. Whitespace collapses to single
-    spaces. Plaintext is derived, never stored as truth.
+    text; a mention contributes its one-off ``customLabel`` — THE ONLY text a
+    mention stores (the retired captured-text keys are rejected by the strict
+    grammar) — else the target's CURRENT display name when ``resolve_mention``
+    is passed; without a resolver a bare mention contributes nothing (the
+    caller falls back to its own placeholder). A class chip contributes its
+    ``displayText``; math its expression; quotes and headings recurse into
+    their children, ``hard_break`` becomes a space; every other token is
+    silent. Whitespace collapses to single spaces. Plaintext is derived, never
+    stored as truth.
     """
     parts: list[str] = []
 
@@ -108,7 +115,12 @@ def plaintext_excerpt(tokens: Sequence[Any]) -> str:
             if ttype in ("text", "typed_link"):
                 parts.append(str(token.get("text", "")))
             elif ttype == "mention":
-                parts.append(str(token.get("displayText") or token.get("text") or ""))
+                label = token.get("customLabel")
+                if not isinstance(label, str) or not label:
+                    target = token.get("targetNodeId")
+                    label = resolve_mention(str(target)) if resolve_mention is not None and isinstance(target, str) else None
+                if label:
+                    parts.append(str(label))
             elif ttype == "math":
                 parts.append(str(token.get("expression", "")))
             elif ttype in ("quote", "heading"):
@@ -232,10 +244,15 @@ def validate_content_token(token: Any) -> None:
                 raise _fail("typed_link metadata 'candidateSpans' must be a list of ≤64 non-empty strings")
     elif ttype == "mention":
         _check_uuid(token.get("targetNodeId"), "mention targetNodeId")
-        _require_str(token, "text", min_length=1)
-        _check_no_extra(token, {"targetNodeId", "text", "displayText", "linkId", "isEmbedded"})
-        if token.get("displayText") is not None:
-            _require_str(token, "displayText", min_length=1, max_length=512)
+        _check_no_extra(token, {"targetNodeId", "customLabel", "linkId", "isEmbedded"})
+        # The mention's ONLY stored text is the optional customLabel — a
+        # one-off wording ("the Republic"); the link's visible text is NEVER
+        # captured (render computes customLabel ?? the target's current
+        # display name, so renames re-resolve). The retired captured-text
+        # keys (text, displayText) are rejected outright by the strict keys
+        # check above (content-mark.ts mentionTokenSchema).
+        if token.get("customLabel") is not None:
+            _require_str(token, "customLabel", min_length=1, max_length=512)
         if token.get("linkId") is not None:
             _check_uuid(token.get("linkId"), "mention linkId")
         # Link embedding: the manual per-link

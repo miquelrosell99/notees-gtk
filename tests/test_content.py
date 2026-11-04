@@ -28,7 +28,7 @@ class TestStringifyContentAst:
         rich = [
             {"type": "text", "text": "Kuhn "},
             {"type": "typed_link", "verb": "cites", "text": "cites"},
-            {"type": "mention", "text": "[[bob]]", "displayText": "Bob"},
+            {"type": "mention", "targetNodeId": "11111111-1111-7111-8111-111111111111", "customLabel": "Bob"},
         ]
         assert stringify_content_ast(rich) == [{"type": "text", "text": "Kuhn cites Bob"}]
 
@@ -92,9 +92,9 @@ class TestPlaintextExcerptParity:
 
     def test_heading_children_recurse_like_quote(self) -> None:
         tokens = parse_content_ast(
-            '[{"type":"heading","children":[{"type":"text","text":"Top"},{"type":"mention","text":"[[bob]]"}]}]'
+            '[{"type":"heading","children":[{"type":"text","text":"Top"},{"type":"mention","targetNodeId":"11111111-1111-7111-8111-111111111111","customLabel":"Bob"}]}]'
         )
-        assert plaintext_excerpt(tokens) == "Top [[bob]]"
+        assert plaintext_excerpt(tokens) == "Top Bob"
 
 
 class TestCodeBlockAndHrGrammar:

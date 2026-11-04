@@ -103,8 +103,8 @@ def property_set_env(
     )
 
 
-def mention(target: str, *, text: str = "m", link_id: str | None = None, embedded: bool = False) -> dict[str, Any]:
-    token: dict[str, Any] = {"type": "mention", "targetNodeId": target, "text": text}
+def mention(target: str, *, label: str = "m", link_id: str | None = None, embedded: bool = False) -> dict[str, Any]:
+    token: dict[str, Any] = {"type": "mention", "targetNodeId": target, "customLabel": label}
     if link_id is not None:
         token["linkId"] = link_id
     if embedded:
@@ -161,7 +161,7 @@ class TestMentionEdges:
     def test_two_identical_mentions_yield_two_distinct_edge_rows(self, store: LocalStore) -> None:
         target = uid("target-a")
         source = uid("source-a")
-        make_embedded_source(store, source, content=[mention(target, text="x"), mention(target, text="y")])
+        make_embedded_source(store, source, content=[mention(target, label="x"), mention(target, label="y")])
         rows = edges_of(store, source)
         assert len(rows) == 2
         edge_ids = [
@@ -180,8 +180,8 @@ class TestMentionEdges:
             store,
             source,
             content=[
-                {"type": "quote", "children": [mention(in_quote, text="q")]},
-                {"type": "heading", "children": [mention(in_heading, text="h")]},
+                {"type": "quote", "children": [mention(in_quote, label="q")]},
+                {"type": "heading", "children": [mention(in_heading, label="h")]},
             ],
         )
         targets = {row[1] for row in edges_of(store, source)}
@@ -199,7 +199,7 @@ class TestMentionEdges:
                 "SELECT id, target_id, click_count FROM node_link WHERE source_id = ?", (source,)
             ).fetchall() == [(link, target, 0)]
         # The assertion dies with the token (stale rows are swept).
-        store.apply_remote(update_env(source, hlc=(5, 0), contentAst=[mention(target, text="anon")]))
+        store.apply_remote(update_env(source, hlc=(5, 0), contentAst=[mention(target, label="anon")]))
         with sqlite3.connect(store._conn.execute("PRAGMA database_list").fetchone()[2]) as raw:  # noqa: SLF001
             assert raw.execute("SELECT id FROM node_link WHERE source_id = ?", (source,)).fetchall() == []
 
@@ -398,10 +398,10 @@ class TestDeterminism:
     ) -> None:
         target = uid("target-a")
         source = uid("source-a")
-        make_embedded_source(store, source, content=[mention(target), mention(target, text="second")])
+        make_embedded_source(store, source, content=[mention(target), mention(target, label="second")])
         second = LocalStore(tmp_path / "second.db")
         try:
-            make_embedded_source(second, source, content=[mention(target), mention(target, text="second")])
+            make_embedded_source(second, source, content=[mention(target), mention(target, label="second")])
             first_ids = [
                 row[0]
                 for row in store._conn.execute("SELECT id FROM edge ORDER BY id")  # noqa: SLF001

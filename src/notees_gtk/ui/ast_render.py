@@ -7,9 +7,10 @@ SCHEMA.md's Content grammar is normative: a block node's content is ONE flat,
 ordered token array — there are no block-level segments, and rendering defines
 presentation. Resolution rules implemented here:
 
-- ``mention``: ``displayText`` wins, then the resolver's current target name
-  (auto-rename free), then the raw target id — never an "…" placeholder;
-  the captured ``text`` is non-authoritative (Fork 4);
+- ``mention``: ``customLabel`` wins (the only text a mention stores), then
+  the resolver's current target name (auto-rename free), then the raw target
+  id — never an "…" placeholder; the wire captures no link text at all
+  (content-mark.ts ``mentionTokenSchema``);
 - ``class_link``: render-only (Fork 3) — ``displayText`` ?? resolved class
   name ?? raw class id; inserting/deleting a chip never mutates ``class_ids``;
 - ``typed_link``: a mark on the prose word —
@@ -84,7 +85,7 @@ class HardBreakRun:
 
 @dataclass(frozen=True)
 class MentionRun:
-    """Mention pill: ``displayText`` ?? resolved name ?? raw target id."""
+    """Mention pill: ``customLabel`` ?? resolved name ?? raw target id."""
 
     target_id: str
     text: str
@@ -190,12 +191,12 @@ def _resolve(resolver: NameResolver | None, node_id: str) -> str | None:
 
 def _mention_text(token: Mapping[str, Any], resolver: NameResolver | None) -> tuple[str, str]:
     target_id = str(token.get("targetNodeId") or "")
-    display = token.get("displayText")
+    display = token.get("customLabel")
     if isinstance(display, str) and display:
         return target_id, display
     resolved = _resolve(resolver, target_id)
-    # Fork 4: broken targets render the raw id; captured ``text`` is
-    # non-authoritative and never surfaces when the target is unresolvable.
+    # A bare mention renders the target's current name — or the raw id when
+    # unresolvable; the wire stores no captured text to fall back to.
     return target_id, resolved or target_id
 
 
@@ -356,10 +357,11 @@ def ast_to_plaintext(
     """Flatten content to plain text (editor seed; sidebar names).
 
     This is the excerpt derivation (``plainTextExcerpt``): text and
-    typed-link runs contribute their text, mentions their ``displayText``
-    (captured text when absent), math its expression, quotes recurse, and
-    ``hard_break`` becomes a space; whitespace collapses to single spaces.
-    ``resolve_name`` is accepted for call-site compatibility and unused —
-    plaintext is a derivation of stored content, not of current names.
+    typed-link runs contribute their text, a mention its ``customLabel``
+    (a bare mention contributes nothing — no resolver rides this path),
+    math its expression, quotes recurse, and ``hard_break`` becomes a space;
+    whitespace collapses to single spaces. ``resolve_name`` is accepted for
+    call-site compatibility and unused — plaintext is a derivation of stored
+    content, not of current names.
     """
     return plaintext_excerpt(parse_content_ast(ast_json))

@@ -501,7 +501,7 @@ def _world(store: LocalStore) -> None:
             {
                 "objectId": "0192a000-0000-7000-8000-000000000501",
                 "parentId": ESSAY_A,
-                "contentAst": [*_text("About "), {"type": "mention", "targetNodeId": CITY_PARIS, "text": "Paris"}],
+                "contentAst": [*_text("About "), {"type": "mention", "targetNodeId": CITY_PARIS, "customLabel": "Paris"}],
             },
             t0 + 9000,
         ),

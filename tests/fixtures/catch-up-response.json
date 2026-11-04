@@ -42,7 +42,7 @@
           {
             "type": "mention",
             "targetNodeId": "0192a000-0000-7000-8000-000000000011",
-            "text": "The Structure of Scientific Revolutions"
+            "customLabel": "The Structure of Scientific Revolutions"
           }
         ]
       }

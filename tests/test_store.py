@@ -691,7 +691,7 @@ class TestObjectCreate:
         (is_class or present_as_main) carry text-only content — a parentless
         node (present_as_main defaults to 1) created with rich tokens
         flattens to a single text token."""
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(content=rich))
         row = store.node(WS_A, NODE)
         assert row is not None
@@ -700,7 +700,7 @@ class TestObjectCreate:
 
     def test_block_create_keeps_the_full_token_stream(self, store: LocalStore) -> None:
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), content=rich))
         row = store.node(WS_A, uid("child"))
         assert row is not None
@@ -797,7 +797,7 @@ class TestObjectCreate:
         a class node may parent non-class children (object.create only ever
         makes is_class=0 nodes)."""
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), name="Tag"))
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(uid("child"), parent_id=uid("cls-1"), content=rich, hlc=(2, 0)))
         row = store.node(WS_A, uid("child"))
         assert row is not None
@@ -892,7 +892,7 @@ class TestObjectUpdate:
         """The presentAsMain toggle is promotion/demotion: a 0→1 flip
         (promotion) stringifies the rich token stream in the same op."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(create_env(uid("child"), parent_id=uid("parent"), content=rich, hlc=(2, 0)))
         assert store.apply_remote(update_env(uid("child"), hlc=(3, 0), isEmbedded=False)) is True
         row = store.node(WS_A, uid("child"))
@@ -904,7 +904,7 @@ class TestObjectUpdate:
         """A 1→0 demotion leaves the (already flattened) content untouched —
         demotion never un-flattens."""
         store.apply_remote(create_env(uid("parent"), parent_id=None))
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         store.apply_remote(
             create_env(uid("child"), parent_id=uid("parent"), is_embedded=False, content=rich, hlc=(2, 0))
         )
@@ -923,7 +923,7 @@ class TestObjectUpdate:
         links). Class rows still flatten; create-as-main and promotion remain
         the lossy boundaries (mirrors the monorepo store test)."""
         store.apply_remote(create_env(hlc=(10, 0)))
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " said hi"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " said hi"}]
         assert store.apply_remote(update_env(NODE, hlc=(11, 0), contentAst=rich)) is True
         row = store.node(WS_A, NODE)
         assert row is not None
@@ -1598,7 +1598,7 @@ class TestClassOps:
         assert raw_rows(store, f"SELECT name FROM class WHERE id = '{uid('cls-1')}'") == [("Meeting notes",)]
 
     def test_class_create_flattens_rich_content_to_text_only(self, store: LocalStore) -> None:
-        rich = [{"type": "mention", "text": "[[bob]]", "displayText": "Bob"}, {"type": "text", "text": " notes"}]
+        rich = [{"type": "mention", "targetNodeId": uid("bob"), "customLabel": "Bob"}, {"type": "text", "text": " notes"}]
         store.apply_remote(class_env("class.create", uid("cls-1"), hlc=(1, 0), contentAst=rich))
         row = store.node(WS_A, uid("cls-1"))
         assert row is not None

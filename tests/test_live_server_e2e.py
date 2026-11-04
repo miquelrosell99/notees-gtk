@@ -14,23 +14,29 @@ The flow mirrors a two-device sync scenario:
 
 1. spawn the server on an ephemeral port with a fixed API key (fresh data dir);
 2. Device A locally applies + enqueues a small workspace (two classes with an
-   extends edge, a page with two blocks — one carrying a mention token — and a
-   property value) and pushes it over HTTP;
+   extends edge, a page with two blocks — one carrying a mention token — and
+   a property value) and pushes it over HTTP;
 3. Device B catches up — B's store dump must equal A's for every derived table;
-4. the server-side object API (``/api/objects``, ``/api/classes``) must
-   agree with the client stores on names, render state (isClass /
-   presentAsMain), parents, classIds, and parentClassIds — three-way
-   equality;
+4. the server's surviving read surface must agree with the client stores:
+   name→id resolution (``/api/resolve``), the class catalog (``/api/classes``),
+   and the operation feed (``/api/operations`` — the post-plan-07 content
+   audit: the log is the authority, so agents read content there) — three-way
+   equality on names, render state, parents, and classIds;
 5. Device B subscribes over WS; Device A pushes another block — B must receive
    it through the live ops frame;
 6. a fresh Device C re-pulls the whole log from seq 0 and must converge to the
    identical dump (replay determinism against the live server log).
 
-A second test exercises the newer write surface end-to-end: a property write
-through the server's REST endpoint (``POST /api/objects/:id/properties`` —
-a server-stamped ``property.set`` envelope), and a ``class.property.set``
-binding authored through the GTK engine's own write path, converging into
-Device B's effective-properties read model.
+A second test exercises the surviving server-stamped write surface end-to-end:
+a property schema create and a ``class.property.set`` binding authored through
+the server's REST endpoints (server-stamped envelopes, ``client: "api"``),
+plus a property value authored through the GTK engine's own write path —
+converging into Device B's effective-properties read model.
+
+(Both tests date from before plan-07 retired the object/search/query content
+routes — ``/api/objects*``, ``/api/search``, ``/api/query`` answer 404 on the
+current server; the surviving surface above carries the same intent. See the
+monorepo's ``apps/server/src/openapi.ts`` route table.)
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ import pytest
 from conftest import wait_until
 
 from notees_gtk.core.api import NoteesClient
+from notees_gtk.core.api.errors import ApiError
 from notees_gtk.core.protocol.clock import Clock
 from notees_gtk.core.protocol.models import new_envelope
 from notees_gtk.core.sync import SyncEngine
@@ -278,7 +285,7 @@ def _seed_device_a(device: Device) -> None:
             "parentId": PAGE_MAIN,
             "contentAst": [
                 {"type": "text", "text": "See "},
-                {"type": "mention", "targetNodeId": PAGE_TARGET, "text": "Target Page"},
+                {"type": "mention", "targetNodeId": PAGE_TARGET, "customLabel": "Target Page"},
                 {"type": "text", "text": " for context."},
             ],
         },
@@ -332,32 +339,48 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
     assert block_one is not None and block_one.parent_id == PAGE_MAIN
     assert block_one.content_plain == "See Target Page for context."
 
-    # --- 4: the server's object API agrees — three-way equality. ---
-    main = device_a.client._get_json(f"/api/objects/{PAGE_MAIN}")["object"]
-    assert main["isClass"] is False
-    assert main["isEmbedded"] is False
-    assert main["name"] == "Live Page"  # server object API still exposes the derived name
-    assert main["classIds"] == [CLASS_SOURCE]
-    assert main["parentId"] is None
-    block = device_a.client._get_json(f"/api/objects/{BLOCK_ONE}")["object"]
-    assert block["isClass"] is False
-    assert block["isEmbedded"] is True
-    assert block["parentId"] == PAGE_MAIN
-    assert block["contentAst"] == [
-        {"type": "text", "text": "See "},
-        {"type": "mention", "targetNodeId": PAGE_TARGET, "text": "Target Page"},
-        {"type": "text", "text": " for context."},
-    ]
-    pages = device_a.client._get_json("/api/objects", params={"isClass": False})["objects"]
-    page_ids = {entry["id"] for entry in pages}
-    assert {PAGE_MAIN, PAGE_TARGET} <= page_ids
-    annotated = device_a.client._get_json(f"/api/classes/{CLASS_ANNOTATED}")["class"]
-    assert annotated["name"] == "Annotated"  # registry name cache = content excerpt
-    assert annotated["parentClassIds"] == [CLASS_SOURCE]
+    # --- 4: the server's surviving read surface agrees — three-way equality.
+    # plan-07 retired the object/search/query content reads; the surviving
+    # content probes are the name resolver, the class catalog, and the
+    # operation feed (the log is the authority — content is audited there).
+    # Name→id resolution against the server's derived FTS state:
+    resolved = device_a.client._get_json("/api/resolve", params={"name": "Live Page"})
+    assert resolved["id"] == PAGE_MAIN
+    assert resolved["isClass"] is False
+    assert resolved["isEmbedded"] is False
+    assert resolved["parentId"] is None
+    assert device_a.client._get_json("/api/resolve", params={"name": "Target Page"})["id"] == PAGE_TARGET
+    with pytest.raises(ApiError):  # a name nobody carries fails loud (404)
+        device_a.client._get_json("/api/resolve", params={"name": "No Such Page"})
+    # The class catalog: title-is-content names, extends edges, member counts.
+    classes = {entry["id"]: entry for entry in device_a.client._get_json("/api/classes")["classes"]}
+    assert classes[CLASS_SOURCE]["name"] == "Source"
+    assert classes[CLASS_ANNOTATED]["name"] == "Annotated"
+    assert classes[CLASS_ANNOTATED]["parentClassIds"] == [CLASS_SOURCE]
+    assert classes[CLASS_SOURCE]["memberCount"] == 1
     # classIds OR-Set membership: PAGE_MAIN joined Source (Annotated has none).
     source = device_a.client._get_json(f"/api/classes/{CLASS_SOURCE}")
     assert {entry["id"] for entry in source["members"]} == {PAGE_MAIN}
-    assert device_a.client._get_json(f"/api/classes/{CLASS_ANNOTATED}")["members"] == []
+    assert source["class"]["name"] == "Source"  # registry name cache = content excerpt
+    annotated = device_a.client._get_json(f"/api/classes/{CLASS_ANNOTATED}")
+    assert annotated["class"]["name"] == "Annotated"
+    assert annotated["class"]["parentClassIds"] == [CLASS_SOURCE]
+    assert annotated["members"] == []
+    # The operation feed carries the block's create envelope with the mention
+    # token content intact — the surviving content audit route.
+    feed = device_a.client._get_json("/api/operations", params={"afterSeq": 0, "limit": 100})
+    assert feed["hasMore"] is False
+    block_create = next(
+        item
+        for item in feed["operations"]
+        if item["opType"] == "object.create" and item["payload"]["objectId"] == BLOCK_ONE
+    )
+    assert block_create["payload"]["contentAst"] == [
+        {"type": "text", "text": "See "},
+        {"type": "mention", "targetNodeId": PAGE_TARGET, "customLabel": "Target Page"},
+        {"type": "text", "text": " for context."},
+    ]
+    assert block_create["payload"]["parentId"] == PAGE_MAIN
 
     # --- 5: realtime — B subscribes, A pushes a new block over HTTP. ---
     device_b.engine.start_realtime()
@@ -389,31 +412,26 @@ def test_live_server_end_to_end(server_url: str, device_factory: Any) -> None:
 
 
 def test_live_property_writes_and_effective_defaults(server_url: str, device_factory: Any) -> None:
-    """The newer write surface against the real server.
+    """The surviving server-stamped write surface against the real server.
 
-    1. A property write through the server's REST endpoint (a server-stamped
-       property.set envelope, ``client: "api"``) converges into both client
-       stores — property_value rows (value, metadata, row HLCs) land identically
-       on every replica.
-    2. A class.property.set binding authored through the GTK engine's own write
-       path (local apply + push) converges; Device B's effective-properties
-       read model shows the derived default for a classed node without an
-       authored value, and the authored row (which shadows the default) tagged
-       correctly for the node that has one.
+    plan-07 retired the object write API (``POST /api/objects/:id/properties``
+    answers 404), so the server-stamped envelopes the REST surface still
+    submits are the property-schema management routes and the class binding
+    route — while property VALUES ride the relay log (the one write path).
+
+    1. A property schema create through ``POST /api/property-schemas`` (a
+       server-stamped ``propertySchema.create`` envelope, ``client: "api"``,
+       the schema-level default riding it) converges into both client stores.
+    2. A ``class.property.set`` binding through
+       ``POST /api/classes/:id/properties`` (server-stamped) converges; a
+       property value authored through the GTK engine's own write path
+       (local apply + push) lands identically on every replica (value +
+       metadata + row HLCs).
+    3. Device B's effective-properties read model shows the derived default
+       for a classed node without an authored value, and the authored row
+       (which shadows the default) tagged with the binding class.
     """
     device_a = device_factory("device-a")
-    device_a.produce(
-        "propertySchema.create",
-        {
-            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
-            "name": "Priority",
-            "type": "select",
-            "options": [{"id": "low", "label": "low"}, {"id": "medium", "label": "medium"}],
-            # The default is SCHEMA-level (one
-            # global default per property, the Logseq shape).
-            "defaultValue": "medium",
-        },
-    )
     device_a.produce(
         "class.create",
         {"classId": CLASS_KIND, "contentAst": [{"type": "text", "text": "Kind"}]},
@@ -441,66 +459,71 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
     )
     push = device_a.engine.push()
     assert push.quarantined == 0
-    assert push.sent == 4
+    assert push.sent == 3
 
     device_b = device_factory("device-b")
-    assert device_b.engine.pull().applied == 4
+    assert device_b.engine.pull().applied == 3
     assert _store_dump(device_a.store) == _store_dump(device_b.store)
 
-    # --- 1: property write over the REST endpoint (server-stamped envelope). ---
-    written = device_a.client._post_json(
-        f"/api/objects/{PAGE_PROPS}/properties",
+    # --- 1: property schema create over the REST endpoint (server-stamped). ---
+    schema = device_a.client._post_json(
+        "/api/property-schemas",
         {
             "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
-            "value": "high",
-            "metadata": {"via": "rest"},
+            "name": "Priority",
+            "type": "select",
+            "options": [{"id": "low", "label": "low"}, {"id": "medium", "label": "medium"}],
+            # The default is SCHEMA-level (one
+            # global default per property, the Logseq shape).
+            "defaultValue": "medium",
         },
-    )["object"]
-    authored_server = [
-        entry for entry in written["properties"] if entry["schemaId"] == PROPERTY_SCHEMA_PRIORITY and entry["idx"] == 0
-    ]
-    assert authored_server == [
-        {
-            "schemaId": PROPERTY_SCHEMA_PRIORITY,
-            "schemaName": "Priority",
-            "schemaType": "select",
-            # PG5: each property entry carries its element id — the
-            # deterministic positional id for a legacy positional write.
-            "elementId": f"{PAGE_PROPS}:{PROPERTY_SCHEMA_PRIORITY}:0",
-            "idx": 0,
-            "value": "high",
-            "metadata": {"via": "rest"},
-        }
-    ]
+    )["propertySchema"]
+    assert schema["id"] == PROPERTY_SCHEMA_PRIORITY
+    assert schema["defaultValue"] == "medium"
 
-    # Both devices catch up the server-stamped envelope; the authored row
-    # (value + metadata + row HLCs) converges byte-for-byte.
+    # Both devices catch up the server-stamped envelope; the schema row
+    # converges byte-for-byte.
     assert device_b.engine.pull().applied == 1
     assert device_a.engine.pull().applied == 1  # A learns its own REST write via catch-up
     assert _store_dump(device_a.store) == _store_dump(device_b.store)
-    authored_b = device_b.store.get_effective_properties(PAGE_PROPS)
-    # No class_property binding exists yet: authored row, bound_by None.
-    assert [(row.source, row.value, row.metadata, row.bound_by) for row in authored_b] == [
-        ("authored", "high", {"via": "rest"}, None)
-    ]
 
-    # --- 2: class binding through the engine's write path + effective default. ---
+    # --- 2: class binding + property value — one write path each. ---
     # The binding carries ONLY the per-class mechanic (active — sequence
-    # retired) — the default rode the schema create
-    # above.
-    device_a.produce(
-        "class.property.set",
-        {
-            "classId": CLASS_KIND,
-            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
-        },
-        affected=(CLASS_KIND,),
+    # retired) — the default rode the schema create above. Both land as
+    # server-stamped / engine-authored envelopes on the same log.
+    binding = device_a.client._post_json(
+        f"/api/classes/{CLASS_KIND}/properties",
+        {"propertySchemaId": PROPERTY_SCHEMA_PRIORITY, "active": True},
     )
-    binding_push = device_a.engine.push()
-    assert binding_push.sent == 1
-    assert device_b.engine.pull().applied == 1
+    assert binding == {
+        "classId": CLASS_KIND,
+        "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
+        "binding": {"propertySchemaId": PROPERTY_SCHEMA_PRIORITY, "active": True, "pinned": False},
+    }
+    device_a.produce(
+        "property.set",
+        {
+            "objectId": PAGE_PROPS,
+            "propertySchemaId": PROPERTY_SCHEMA_PRIORITY,
+            "value": "high",
+            "idx": 0,
+            "metadata": {"via": "relay"},
+        },
+        affected=(PAGE_PROPS,),
+    )
+    assert device_a.engine.push().sent == 1
+    assert device_b.engine.pull().applied == 2
+    # A learns the REST binding via catch-up (its own pushed value rode the
+    # push ack — the cursor already advanced past it).
+    assert device_a.engine.pull().applied == 1
     assert _store_dump(device_a.store) == _store_dump(device_b.store)
 
+    authored_b = device_b.store.get_effective_properties(PAGE_PROPS)
+    assert [(row.source, row.value, row.metadata, row.bound_by) for row in authored_b] == [
+        ("authored", "high", {"via": "relay"}, CLASS_KIND)
+    ]
+
+    # --- 3: the effective read model — derived default + authored shadow. ---
     # Node WITHOUT an authored value reads the derived default (never
     # materialized: no property_value row exists for it).
     defaults_b = device_b.store.get_effective_properties(PAGE_DEFAULTS)
@@ -508,21 +531,33 @@ def test_live_property_writes_and_effective_defaults(server_url: str, device_fac
         ("default", "medium", CLASS_KIND)
     ]
 
-    # The authored row still shadows the default on the other node — and now
-    # carries the binding metadata (bound_by).
+    # The authored row still shadows the default on the other node.
     authored_after = device_b.store.get_effective_properties(PAGE_PROPS)
     assert [(row.source, row.bound_by) for row in authored_after] == [("authored", CLASS_KIND)]
 
-    # Server-side authored truth agrees. NOTE THE GAP: the object API
-    # surfaces AUTHORED property_value rows only (fullObject joins
-    # property_value); the effective read model — derived defaults included —
-    # lives in the store's getEffectiveProperties, which has no REST exposure
-    # yet. So Defaults Page shows no properties server-side while every
-    # client's effective read returns "medium".
-    props_server = device_a.client._get_json(f"/api/objects/{PAGE_PROPS}")["object"]["properties"]
-    assert [entry["value"] for entry in props_server] == ["high"]
-    defaults_server = device_a.client._get_json(f"/api/objects/{PAGE_DEFAULTS}")["object"]["properties"]
-    assert defaults_server == []
+    # Server-side authored truth agrees through the surviving values route.
+    # NOTE THE GAP: the values read surfaces AUTHORED property_value rows
+    # only; the effective read model — derived defaults included — lives in
+    # the store's getEffectiveProperties, which has no REST exposure yet. So
+    # Defaults Page shows no values server-side while every client's effective
+    # read returns "medium".
+    values_server = device_a.client._get_json(f"/api/properties/{PROPERTY_SCHEMA_PRIORITY}/values")["values"]
+    # objectName is the registry cache column — NULL for relay-authored nodes
+    # (title-is-content: names derive from content, the cache is API-create
+    # bookkeeping only).
+    assert values_server == [
+        {
+            "objectId": PAGE_PROPS,
+            "objectName": None,
+            # PG5: each value row carries its element id — the deterministic
+            # positional id for a legacy positional write.
+            "elementId": f"{PAGE_PROPS}:{PROPERTY_SCHEMA_PRIORITY}:0",
+            "idx": 0,
+            "value": "high",
+        }
+    ]
+
+
 def test_live_login_and_workspace_listing(server_url: str) -> None:
     """The user-facing login path against the real server.
 

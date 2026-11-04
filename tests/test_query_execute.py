@@ -97,8 +97,8 @@ def text(value: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": value}]
 
 
-def mention(target_node_id: str, captured: str) -> dict[str, Any]:
-    return {"type": "mention", "targetNodeId": target_node_id, "text": captured}
+def mention(target_node_id: str, label: str) -> dict[str, Any]:
+    return {"type": "mention", "targetNodeId": target_node_id, "customLabel": label}
 
 
 def world_envelopes() -> list[RelayEnvelope]:

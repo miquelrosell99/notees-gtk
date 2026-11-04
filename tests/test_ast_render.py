@@ -1,7 +1,7 @@
 """Tests for the token-stream renderer (``notees_gtk.ui.ast_render``).
 
 Covers the SCHEMA.md Content grammar mapping to view records — text runs
-with marks, hard_break, mention (displayText → resolved name → raw id),
+with marks, hard_break, mention (customLabel → resolved name → raw id),
 class_link, typed_link (underlined verb mark), markdown link spans parsed
 out of text tokens, math, quote (the only nested token), block tokens as
 labeled placeholders — plus the plaintext excerpt derivation and the
@@ -80,21 +80,22 @@ def test_view_typed_link_verb_may_bind_a_property_schema() -> None:
     assert view == PageView(items=(TypedLinkRun(verb="sch-1", text="authored"),))
 
 
-def test_view_mention_display_text_wins() -> None:
-    doc = [{"type": "mention", "targetNodeId": "target-1", "text": "captured", "displayText": "the Republic"}]
+def test_view_mention_custom_label_wins() -> None:
+    doc = [{"type": "mention", "targetNodeId": "target-1", "customLabel": "the Republic"}]
     view = ast_render.ast_to_view(doc_json(doc))
     assert view == PageView(items=(MentionRun(target_id="target-1", text="the Republic"),))
 
 
 def test_view_mention_resolves_current_name() -> None:
-    doc = [{"type": "mention", "targetNodeId": "target-1", "text": "captured"}]
+    doc = [{"type": "mention", "targetNodeId": "target-1"}]
     view = ast_render.ast_to_view(doc_json(doc), resolve_name=lambda target: f"name({target})")
     assert view == PageView(items=(MentionRun(target_id="target-1", text="name(target-1)"),))
 
 
-def test_view_mention_falls_back_to_raw_id_not_captured_text() -> None:
-    """Fork 4: broken targets render the raw id; captured text is non-authoritative."""
-    doc = [{"type": "mention", "targetNodeId": "dead-1", "text": "captured"}]
+def test_view_mention_falls_back_to_raw_id_when_unresolvable() -> None:
+    """A bare mention with an unresolvable target renders the raw id — the
+    wire stores no captured text to fall back to."""
+    doc = [{"type": "mention", "targetNodeId": "dead-1"}]
     view = ast_render.ast_to_view(doc_json(doc))  # no resolver at all
     assert view == PageView(items=(MentionRun(target_id="dead-1", text="dead-1"),))
 
@@ -103,7 +104,7 @@ def test_view_mention_resolver_error_still_renders() -> None:
     def boom(_target: str) -> str:
         raise RuntimeError("store exploded")
 
-    doc = [{"type": "mention", "targetNodeId": "t-1", "text": "captured"}]
+    doc = [{"type": "mention", "targetNodeId": "t-1"}]
     view = ast_render.ast_to_view(doc_json(doc), resolve_name=boom)
     assert view == PageView(items=(MentionRun(target_id="t-1", text="t-1"),))
 
@@ -205,7 +206,7 @@ def test_view_quote_is_the_only_nested_token() -> None:
             "type": "quote",
             "children": [
                 {"type": "text", "text": "quoted "},
-                {"type": "mention", "targetNodeId": "t-1", "text": "captured"},
+                {"type": "mention", "targetNodeId": "t-1"},
                 {"type": "typed_link", "verb": "cites", "text": "cites"},
             ],
         }
@@ -301,7 +302,7 @@ def test_plaintext_is_the_v2_excerpt() -> None:
         {"type": "text", "text": "Kuhn "},
         {"type": "typed_link", "verb": "cites", "text": "cites"},
         {"type": "text", "text": " earlier work on "},
-        {"type": "mention", "targetNodeId": "t-1", "text": "The Structure"},
+        {"type": "mention", "targetNodeId": "t-1", "customLabel": "The Structure"},
         {"type": "hard_break"},
         {"type": "math", "expression": "a^2"},
         {"type": "quote", "children": [{"type": "text", "text": "nested quote"}]},
@@ -310,9 +311,16 @@ def test_plaintext_is_the_v2_excerpt() -> None:
     assert ast_render.ast_to_plaintext(doc_json(doc)) == "Kuhn cites earlier work on The Structure a^2 nested quote"
 
 
-def test_plaintext_mention_prefers_display_text() -> None:
-    doc = [{"type": "mention", "targetNodeId": "t-1", "text": "captured", "displayText": "the Republic"}]
+def test_plaintext_mention_uses_custom_label() -> None:
+    doc = [{"type": "mention", "targetNodeId": "t-1", "customLabel": "the Republic"}]
     assert ast_render.ast_to_plaintext(doc_json(doc)) == "the Republic"
+
+
+def test_plaintext_bare_mention_is_silent_without_resolver() -> None:
+    """The wire captures no mention text: a bare mention excerpts to nothing
+    on the resolver-less derivation path."""
+    doc = [{"type": "mention", "targetNodeId": "t-1"}]
+    assert ast_render.ast_to_plaintext(doc_json(doc)) == ""
 
 
 def test_plaintext_collapses_whitespace() -> None:

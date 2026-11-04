@@ -139,7 +139,7 @@ def build_tree(store: LocalStore) -> TreeIds:
         create_env(
             ids.block_1,
             parent_id=ids.page,
-            content=[{"type": "mention", "targetNodeId": ids.target, "text": "see"}],
+            content=[{"type": "mention", "targetNodeId": ids.target, "customLabel": "see"}],
             hlc=(2, 0),
         )
     )
