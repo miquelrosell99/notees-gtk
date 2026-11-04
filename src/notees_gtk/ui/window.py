@@ -46,6 +46,7 @@ from notees_gtk.core.protocol.crypto import (
 from notees_gtk.core.protocol.features import card_property_uuid
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.query.dsl import QueryLanguageError, looks_like_query_language
 from notees_gtk.core.query.search import search_wire
 from notees_gtk.core.srs import CardGrade, CardSrsState, next_card_state
 from notees_gtk.core.sync.engine import SyncEngine
@@ -558,10 +559,12 @@ class NoteesWindow(Adw.ApplicationWindow):
     SEARCH_RESULT_LIMIT = 50
 
     def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
-        """Re-run the global search on every keystroke: ``content contains
-        <text>`` over the mirror through the store's run_query_ast seam (the
-        store read is lock-guarded and local — the same posture as the
-        sidebar refresh)."""
+        """Re-run the global search on every keystroke. Query-language input
+        (``looks_like_query_language`` — field prefixes, AND/OR/NOT, quoted
+        phrases) parses through the DSL with names resolved against the
+        mirror; anything else stays the plain ``content contains <text>``
+        path (the store read is lock-guarded and local — the same posture as
+        the sidebar refresh)."""
         text = entry.get_text()
         if not text.strip() or self._workspace_id is None:
             self._search_popover.popdown()
@@ -570,7 +573,15 @@ class NoteesWindow(Adw.ApplicationWindow):
         if store is None:
             return
         try:
-            result = store.run_query_ast(self._workspace_id, search_wire(text))
+            if looks_like_query_language(text):
+                result = store.run_query_language(self._workspace_id, text)
+            else:
+                result = store.run_query_ast(self._workspace_id, search_wire(text))
+        except QueryLanguageError as exc:
+            # A DSL syntax/resolution error is user input — surface the
+            # parser's message (unknown field/class/node) instead of results.
+            self.show_toast(str(exc))
+            return
         except ValueError:
             # The builder only emits the canonical shape; a failure here is
             # a programming error, not user input — surface it like a sync

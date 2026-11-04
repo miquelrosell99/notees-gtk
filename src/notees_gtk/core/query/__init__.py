@@ -16,6 +16,12 @@ from notees_gtk.core.query.compiler import (
     compile,
     compile_aggregate,
 )
+from notees_gtk.core.query.dsl import (
+    QueryLanguageError,
+    QueryLanguageResolvers,
+    looks_like_query_language,
+    parse_query_language,
+)
 from notees_gtk.core.query.execute import AggregateResult, QueryResult, count_query, matches, run_aggregate, run_query
 from notees_gtk.core.query.search import ast_for_search_text, search_wire
 
@@ -25,6 +31,8 @@ __all__ = [
     "CompiledAggregate",
     "CompiledQuery",
     "QueryCompileError",
+    "QueryLanguageError",
+    "QueryLanguageResolvers",
     "QueryResult",
     "ast_for_search_text",
     "search_wire",
@@ -32,7 +40,9 @@ __all__ = [
     "compile",
     "compile_aggregate",
     "count_query",
+    "looks_like_query_language",
     "matches",
+    "parse_query_language",
     "run_aggregate",
     "run_query",
 ]

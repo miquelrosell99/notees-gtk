@@ -127,6 +127,7 @@ from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.protocol.payloads import validate_payload
 from notees_gtk.core.protocol.query_ast import parse_query_ast
 from notees_gtk.core.query.compiler import CompileOptions
+from notees_gtk.core.query.dsl import QueryLanguageResolvers, parse_query_language
 from notees_gtk.core.query.execute import AggregateResult, QueryResult, run_aggregate, run_query
 from notees_gtk.data.errors import (
     CycleError,
@@ -4142,6 +4143,59 @@ class LocalStore:
         ast = parse_query_ast(raw_ast)
         options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
         return run_aggregate(self._conn, ast, options)
+
+    @_synchronized
+    def run_query_language(
+        self,
+        workspace_id: str,
+        text: str,
+        *,
+        now: datetime | None = None,
+        self_node_id: str | None = None,
+    ) -> QueryResult:
+        """Parse a text query-DSL string (``core.query.dsl`` — the
+        ``packages/query/src/dsl.ts`` port) and run it over the mirror.
+
+        Name resolution is injected by the parser but reads workspace state,
+        so the resolvers close over this mirror INSIDE the lock (the same
+        posture as the AST seams): classes and property schemas resolve by
+        name (case-insensitive, active rows — the web ``resolversFor``
+        policy), nodes by display name (title-is-content: the
+        ``content_plain`` exact case-insensitive match — the web's
+        ``resolveNodeByName`` additionally consults name equivalents, which
+        the GTK mirror does not read). Syntax errors and unresolvable names
+        raise ``QueryLanguageError`` (a ``ValueError``) — the search entry
+        surfaces the message.
+        """
+        resolvers = QueryLanguageResolvers(
+            resolve_class=lambda name: self._class_id_by_name(workspace_id, name),
+            resolve_property_schema=lambda name: self._property_schema_id_by_name(workspace_id, name),
+            resolve_node=lambda name: self._node_id_by_display_name(workspace_id, name),
+        )
+        ast = parse_query_language(text, resolvers=resolvers)
+        options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
+        return run_query(self._conn, ast, options)
+
+    def _class_id_by_name(self, workspace_id: str, name: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT id FROM class WHERE workspace_id = ? AND active = 1 AND lower(name) = lower(?) ORDER BY id LIMIT 1",
+            (workspace_id, name),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def _property_schema_id_by_name(self, workspace_id: str, name: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT id FROM property_schema WHERE workspace_id = ? AND active = 1 AND lower(name) = lower(?) ORDER BY id LIMIT 1",
+            (workspace_id, name),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def _node_id_by_display_name(self, workspace_id: str, name: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT id FROM nodes WHERE workspace_id = ? AND is_active = 1 AND lower(content_plain) = lower(?) ORDER BY id LIMIT 1",
+            (workspace_id, name),
+        ).fetchone()
+        return str(row[0]) if row else None
 
     # ------------------------------------------------------------------ card.review
     #

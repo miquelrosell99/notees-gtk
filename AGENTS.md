@@ -49,8 +49,8 @@ AGENTS.md
   catch-up pull, realtime WS acceleration, op-id dedupe).
 - `src/notees_gtk/core/query/` — the query-AST v2 surface (the
   `packages/query` port): compile-time placeholders, the SQLite compiler +
-  executor over the mirror, the pure global-search AST builder. No GTK
-  imports.
+  executor over the mirror, the pure global-search AST builder, and the text
+  query DSL (parser + name-resolution contract). No GTK imports.
 - `src/notees_gtk/data/` — the local SQLite store: outbox, dedupe log, seq
   cursor, mirrored node table, and the appliers (row-LWW, OR-Set membership,
   extends closure, property wire semantics). No GTK imports.
