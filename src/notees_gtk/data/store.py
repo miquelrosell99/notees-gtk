@@ -994,7 +994,43 @@ class LocalStore:
             "external_ref.delete": self._apply_external_ref_delete,
             "card.review": self._apply_card_review,
         }
+        # Change-notification subscribers (``subscribe``) — the live UI
+        # surfaces (query sections, …) re-derive from the mirror when an
+        # apply mutates it. The list is plain; fan-out copies it under the
+        # lock so listeners may unsubscribe re-entrantly.
+        self._listeners: list[Callable[[], None]] = []
         self._migrate()
+
+    # ------------------------------------------------------ change notification
+
+    def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to mirror-change notifications; returns the unsubscribe.
+
+        Notifications fire AFTER a mutating apply's transaction has
+        committed (``apply_remote``, ``restore_snapshot``, ``wipe``) — a
+        subscriber that immediately re-reads the mirror sees the new state.
+        A failing listener is logged, never propagated: the store must stay
+        green for every other subscriber (the sync engine applies on a
+        worker thread).
+        """
+        with self._lock:
+            self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._lock, contextlib.suppress(ValueError):
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def _notify_changed(self) -> None:
+        """Fan the change notification out to every subscriber."""
+        with self._lock:
+            listeners = list(self._listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 — one bad listener must not break the rest
+                _log.warning("store change listener failed", exc_info=True)
 
     # ------------------------------------------------------------------ schema
 
@@ -1186,6 +1222,7 @@ class LocalStore:
             self._conn.execute("DELETE FROM workspace_feature WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM edge WHERE workspace_id = ?", (workspace_id,))
             self._conn.execute("DELETE FROM node_link WHERE workspace_id = ?", (workspace_id,))
+        self._notify_changed()
 
     # ------------------------------------------------------------ remote apply
 
@@ -1203,7 +1240,8 @@ class LocalStore:
         including the dedupe record, so the envelope can be retried after a
         wipe/resync. Returns ``True`` when an applier mutated state, ``False``
         for dedupe hits, unknown op types (logged and skipped), and
-        LWW/re-create drops.
+        LWW/re-create drops. A mutating apply notifies ``subscribe`` listeners
+        after its transaction commits.
         """
         applier = self._appliers.get(env.op_type)
         if applier is None:
@@ -1225,7 +1263,10 @@ class LocalStore:
         if cursor.rowcount == 0:
             return False
         with self._conn:
-            return applier(env)
+            mutated = applier(env)
+        if mutated:
+            self._notify_changed()
+        return mutated
 
     # ------------------------------------------------------------- applier utils
 
@@ -4176,6 +4217,16 @@ class LocalStore:
         options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
         return run_query(self._conn, ast, options)
 
+    @_synchronized
+    def property_schema_names(self, workspace_id: str) -> dict[str, str]:
+        """Active property schemas' id → name (the aggregate grid's column
+        labels — TS ``client.listPropertySchemas()`` for
+        ``aggregateColumnLabel``)."""
+        rows = self._conn.execute(
+            "SELECT id, name FROM property_schema WHERE workspace_id = ? AND active = 1", (workspace_id,)
+        ).fetchall()
+        return {str(row[0]): str(row[1]) for row in rows}
+
     def _class_id_by_name(self, workspace_id: str, name: str) -> str | None:
         row = self._conn.execute(
             "SELECT id FROM class WHERE workspace_id = ? AND active = 1 AND lower(name) = lower(?) ORDER BY id LIMIT 1",
@@ -5279,6 +5330,7 @@ class LocalStore:
                         "UPDATE nodes SET content_plain = ? WHERE id = ?",
                         (plaintext_excerpt(parse_content_ast(content)), node_id),
                     )
+            self._notify_changed()
             return True
         except (sqlite3.Error, ValueError) as exc:
             _log.warning("Snapshot restore failed: %s", exc)

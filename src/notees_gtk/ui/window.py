@@ -650,13 +650,15 @@ class NoteesWindow(Adw.ApplicationWindow):
         title = node_display_name(row)
         self._page_view.show_page(
             title,
-            ast_to_view(row.content, resolve_name=self._resolve_name),
+            ast_to_view(row.content, resolve_name=self._resolve_name, self_node_id=node_id),
             aliases=self._alias_entries(row),
             aliased_main=self._aliased_main_entry(row),
             repoint_candidates=self._repoint_candidates(node_id) if row.aliased_node_id is not None else (),
             tags_row=self._tags_row(row),
             on_open_node=self._open_node,
             on_repoint=partial(self._on_alias_repoint, node_id),
+            store=store,
+            workspace_id=self._workspace_id,
         )
         self._editor.open_node(node_id, ast_to_plaintext(row.content))
 

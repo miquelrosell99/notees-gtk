@@ -24,6 +24,7 @@ from notees_gtk.ui.ast_render import (
     MentionRun,
     PageView,
     PlaceholderView,
+    QuerySectionView,
     QuoteView,
     TextRun,
     TypedLinkRun,
@@ -243,13 +244,48 @@ def test_view_quote_splits_markdown_links_too() -> None:
     [
         {"type": "asset_ref", "assetId": "a-1"},
         {"type": "embed_ref", "nodeId": "n-1"},
-        {"type": "query", "queryAst": {}},
         {"type": "whiteboard", "layout": {}},
     ],
 )
 def test_view_block_tokens_are_labeled_placeholders(token: object) -> None:
     view = ast_render.ast_to_view(doc_json([token]))
     assert view == PageView(items=(PlaceholderView(kind=str(token["type"])),))
+
+
+def test_view_query_token_is_a_live_section_run_request() -> None:
+    """The query token renders as a run request carrying the token's OWN AST
+    plus the hosting page id (the ``self`` anchor — part of the run's
+    identity)."""
+    ast = {"version": 2, "scope": {"type": "pages"}, "root": {"type": "group", "logic": "and", "children": []}}
+    doc = [{"type": "query", "queryAst": ast}]
+    view = ast_render.ast_to_view(doc_json(doc), self_node_id="page-1")
+    assert view == PageView(items=(QuerySectionView(query_ast=ast, self_node_id="page-1"),))
+
+
+def test_view_query_token_without_host_carries_none() -> None:
+    """No hosting page supplied → the run request still forms (a non-self
+    AST runs fine); only ``self``-targeted ASTs fail loud at RUN time."""
+    doc = [{"type": "query", "queryAst": {"version": 2, "scope": {"type": "pages"}, "root": {"type": "group", "logic": "and", "children": []}}}]
+    view = ast_render.ast_to_view(doc_json(doc))
+    (item,) = view.items
+    assert isinstance(item, QuerySectionView)
+    assert item.self_node_id is None
+
+
+def test_view_query_token_payload_passthrough_is_identity() -> None:
+    """The render plan carries the token's AST verbatim — no rewrite, no
+    server read (the default-tab vs hosted-view distinction is web-specific;
+    GTK renders what the token carries)."""
+    ast = {
+        "version": 2,
+        "scope": {"type": "entire_workspace"},
+        "root": {"type": "group", "logic": "and", "children": [{"type": "content", "op": "contains", "value": "x"}]},
+    }
+    doc = [{"type": "text", "text": "intro"}, {"type": "query", "queryAst": ast}, {"type": "text", "text": "outro"}]
+    view = ast_render.ast_to_view(doc_json(doc), self_node_id="host-9")
+    assert view.items[1] == QuerySectionView(query_ast=ast, self_node_id="host-9")
+    assert view.items[0] == TextRun(text="intro")
+    assert view.items[2] == TextRun(text="outro")
 
 
 def test_view_unknown_token_is_unsupported_placeholder() -> None:

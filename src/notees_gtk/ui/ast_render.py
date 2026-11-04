@@ -18,7 +18,11 @@ presentation. Resolution rules implemented here:
   token's replacement (SCHEMA.md render grammar) — split into link runs at
   render time (``packages/domain/src/markdownLinks.ts`` port), http/https/
   mailto hrefs only; every other shape stays literal text;
-- block-scale tokens (``asset_ref``/``embed_ref``/``query``/``whiteboard``)
+- the block-scale ``query`` token renders as a :class:`QuerySectionView` —
+  a LIVE-SECTION run request (the token's own ``queryAst`` + the hosting
+  page's node id as the ``self`` anchor), executed and re-run by the chrome
+  (the ``apps/web/src/ui/queryRun.ts`` port, :mod:`notees_gtk.ui.query_run`);
+  the remaining block-scale tokens (``asset_ref``/``embed_ref``/``whiteboard``)
   render as labeled placeholders until the GTK client grows real views.
 
 Plaintext (editor seed, sidebar names) is the excerpt derivation
@@ -45,6 +49,7 @@ __all__ = [
     "PageItem",
     "PageView",
     "PlaceholderView",
+    "QuerySectionView",
     "QuoteView",
     "TextRun",
     "TypedLinkRun",
@@ -61,7 +66,7 @@ type NameResolver = Callable[[str], str | None]
 _VALID_MARKS: frozenset[str] = frozenset({"bold", "italic", "strike", "highlight", "code"})
 
 #: Block-scale tokens rendered as labeled placeholders (no GTK views yet).
-_PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"asset_ref", "embed_ref", "query", "whiteboard"})
+_PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"asset_ref", "embed_ref", "whiteboard"})
 
 
 @dataclass(frozen=True)
@@ -136,8 +141,27 @@ class PlaceholderView:
     kind: str
 
 
+@dataclass(frozen=True)
+class QuerySectionView:
+    """The ``query`` content token as a live-section run request.
+
+    Carries the token's OWN ``queryAst`` payload (the default-tab
+    distinction is web-specific — GTK renders what the token carries) and
+    the hosting page's node id as the ``self`` member-target anchor. The
+    compiler's fail-loud-without-host contract makes the hosting page id
+    part of the run's identity: the chrome must always supply it (the
+    :func:`ast_to_view` ``self_node_id`` parameter, the window's shown-node
+    id). Execution, coalesced live re-runs, and row chrome live in
+    :mod:`notees_gtk.ui.query_run` + :mod:`notees_gtk.ui.query_section`
+    (the ``apps/web/src/ui/queryRun.ts`` + ``QueryNodeSection.tsx`` ports).
+    """
+
+    query_ast: Any
+    self_node_id: str | None
+
+
 #: Anything :class:`PageView` can hold at top level.
-type PageItem = InlineView | QuoteView | PlaceholderView
+type PageItem = InlineView | QuoteView | PlaceholderView | QuerySectionView
 
 
 @dataclass(frozen=True)
@@ -261,16 +285,19 @@ def _inline_views(token: Any, resolver: NameResolver | None) -> list[InlineView]
     return []
 
 
-def _page_items(token: Any, resolver: NameResolver | None) -> tuple[PageItem, ...]:
+def _page_items(token: Any, resolver: NameResolver | None, self_node_id: str | None) -> tuple[PageItem, ...]:
     """Render one top-level token to one or more page items.
 
     Only ``text`` tokens can fan out (one run per markdown-link segment);
-    quotes recurse their children through the same splitter, block-scale
-    tokens stay labeled placeholders, and unknown types render unsupported.
+    quotes recurse their children through the same splitter, the ``query``
+    token becomes a live-section run request, remaining block-scale tokens
+    stay labeled placeholders, and unknown types render unsupported.
     """
     if not isinstance(token, Mapping):
         return (PlaceholderView(kind="unsupported"),)
     ttype = token.get("type")
+    if ttype == "query":
+        return (QuerySectionView(query_ast=token.get("queryAst"), self_node_id=self_node_id),)
     if ttype == "quote":
         children = token.get("children")
         inner: list[InlineView] = []
@@ -292,6 +319,8 @@ def _page_items(token: Any, resolver: NameResolver | None) -> tuple[PageItem, ..
 def ast_to_view(
     ast_json: str | Sequence[Any] | None,
     resolve_name: NameResolver | None = None,
+    *,
+    self_node_id: str | None = None,
 ) -> PageView:
     """Render stored content into an immutable :class:`PageView`.
 
@@ -301,9 +330,13 @@ def ast_to_view(
             single text run.
         resolve_name: Optional store-backed lookup of a node id to its display
             name, used for mention pills and class chips.
+        self_node_id: The id of the node whose content is rendered — the
+            hosting page for ``query`` token sections (their ``self``
+            member-target anchor). Always supply it: a ``self``-targeted
+            query AST fails loud at run time without the host.
     """
     tokens = parse_content_ast(ast_json)
-    items = tuple(item for token in tokens for item in _page_items(token, resolve_name))
+    items = tuple(item for token in tokens for item in _page_items(token, resolve_name, self_node_id))
     return PageView(items=items)
 
 

@@ -3,7 +3,9 @@
 The heavy lifting (token parsing, mention/chip resolution) lives in the pure
 :mod:`notees_gtk.ui.ast_render` module; this file only turns view records into
 labels: Pango markup for marked runs and pills, monospace frames for math,
-dimmed placeholders for block-scale tokens (asset/embed/query/whiteboard).
+dimmed placeholders for block-scale tokens (asset/embed/whiteboard), and
+live query sections for ``query`` tokens
+(:mod:`notees_gtk.ui.query_section`).
 
 Above the content the widget renders the node-alias chrome (when the window
 passes it — see :mod:`notees_gtk.ui.aliases`): the Aliases section on an
@@ -22,6 +24,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
+from notees_gtk.data.store import LocalStore
 from notees_gtk.ui.aliases import AliasEntry, build_aliased_node_row, build_aliases_section
 from notees_gtk.ui.ast_render import (
     ClassChipRun,
@@ -31,11 +34,13 @@ from notees_gtk.ui.ast_render import (
     MentionRun,
     PageView,
     PlaceholderView,
+    QuerySectionView,
     QuoteView,
     TextRun,
     TypedLinkRun,
 )
 from notees_gtk.ui.brand import ContentColors, content_colors
+from notees_gtk.ui.query_section import QuerySectionWidget
 
 __all__ = ["PageViewWidget", "run_markup", "runs_to_markup"]
 
@@ -102,6 +107,9 @@ class PageViewWidget(Gtk.Box):
         # fallback) and lets it inherit into every content label.
         self._content.add_css_class("page-content")
         self._colors: ContentColors = content_colors(dark=False)
+        # The live query sections of the currently rendered page — stopped
+        # on every ``show_page`` (the subscription's lifetime is the page's).
+        self._query_sections: list[QuerySectionWidget] = []
         clamp = Adw.Clamp(maximum_size=860)
         clamp.set_child(self._content)
         scrolled.set_child(clamp)
@@ -118,6 +126,8 @@ class PageViewWidget(Gtk.Box):
         empty_state: str | None = None,
         on_open_node: Callable[[str], None] | None = None,
         on_repoint: Callable[[str | None], None] | None = None,
+        store: LocalStore | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         """Render ``view`` with ``title`` as the page header.
 
@@ -128,14 +138,23 @@ class PageViewWidget(Gtk.Box):
         picker); it renders under the title, above the alias chrome.
         ``empty_state`` appends a dimmed label after the content — the
         review session's "No answer on this card" register.
+
+        ``query`` tokens render as live sections when ``store`` +
+        ``workspace_id`` are supplied (the hosting page id rides in the view
+        records as each section's ``self`` anchor): each section subscribes
+        to the store's change notification and re-runs its AST until the
+        next ``show_page`` replaces it — the previous page's sections are
+        stopped here.
         """
+        for section in self._query_sections:
+            section.close()
+        self._query_sections = []
         while child := self._content.get_first_child():
             self._content.remove(child)
 
         # Margin Green content roles resolved for the active colour scheme
         # (tokens.css light/dark); re-resolved on every render.
         self._colors = content_colors(dark=Adw.StyleManager.get_default().get_dark())
-
         if title:
             heading = Gtk.Label(label=title, xalign=0, wrap=True)
             heading.add_css_class("title-1")
@@ -166,6 +185,9 @@ class PageViewWidget(Gtk.Box):
                 label.set_markup(f"“{runs_to_markup(item.children, self._colors)}”")
                 label.add_css_class("dim-label")
                 self._content.append(label)
+            elif isinstance(item, QuerySectionView):
+                self._flush_line(line)
+                self._content.append(self._query_section_widget(item, store, workspace_id, on_open_node))
             elif isinstance(item, PlaceholderView):
                 self._flush_line(line)
                 self._content.append(self._placeholder_widget(item))
@@ -193,3 +215,20 @@ class PageViewWidget(Gtk.Box):
         label = Gtk.Label(label=f"[{block.kind}]", xalign=0)
         label.add_css_class("dim-label")
         return label
+
+    def _query_section_widget(
+        self,
+        section: QuerySectionView,
+        store: LocalStore | None,
+        workspace_id: str | None,
+        on_open_node: Callable[[str], None] | None,
+    ) -> Gtk.Widget:
+        """The live query section — or the labeled fallback when the window
+        did not hand the store across (a render without a run surface)."""
+        if store is None or workspace_id is None:
+            label = Gtk.Label(label="[query]", xalign=0)
+            label.add_css_class("dim-label")
+            return label
+        widget = QuerySectionWidget(store, workspace_id, section, on_open_node=on_open_node)
+        self._query_sections.append(widget)
+        return widget
