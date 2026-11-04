@@ -40,6 +40,7 @@ from notees_gtk.core.protocol.models import (
     WsOpsMessage,
 )
 from notees_gtk.core.protocol.payloads import validate_payload
+from notees_gtk.core.protocol.query_ast import parse_query_ast
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -213,3 +214,106 @@ def test_ws_frames_declare_framing_version_two() -> None:
     assert ops["wsProtocolVersion"] == WS_PROTOCOL_VERSION
     assert "protocolVersion" not in hello
     assert "protocolVersion" not in ops
+
+
+# ------------------------------------------------------------- query-AST v2 gate
+#
+# P2's convergence arm (the query surface): the vendored query-ast-v2.json
+# corpus anchor must not just ride the wire opaquely (the P1 arm) — every v2
+# shape it carries must strict-parse AND compile + execute against the GTK
+# mirror's SQL. The fixture bytes are read, never edited (the byte-pin law).
+
+
+def _fixture_query_ast() -> dict[str, Any]:
+    """The query token's embedded AST from the vendored corpus fixture."""
+    raw = json.loads((FIXTURES_DIR / "wire" / "query-ast-v2.json").read_text())
+
+    def find(node: Any) -> dict[str, Any] | None:
+        if isinstance(node, dict):
+            if node.get("type") == "query" and "queryAst" in node:
+                return node["queryAst"]
+            for value in node.values():
+                found = find(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = find(item)
+                if found is not None:
+                    return found
+        return None
+
+    ast = find(raw["envelopes"][0]["payload"])
+    assert ast is not None, "the query-ast-v2 fixture must embed a query token AST"
+    return ast
+
+
+def test_query_ast_fixture_strict_parses() -> None:
+    """Every folded v2 condition shape in the corpus parses (the strict layer —
+    no opaque carriage)."""
+    parsed = parse_query_ast(_fixture_query_ast())
+    assert parsed.version == 2
+    assert parsed.sort is not None and len(parsed.sort) == 4
+
+
+def _fixture_envelopes() -> list[RelayEnvelope]:
+    raw = json.loads((FIXTURES_DIR / "wire" / "query-ast-v2.json").read_text())
+    return [RelayEnvelope.model_validate(item) for item in raw["envelopes"]]
+
+
+def test_query_ast_fixture_compiles_and_executes_on_the_mirror(tmp_path: Path) -> None:
+    """The fixture replays through the store (the auto-glob already proves
+    that), then its embedded AST compiles + runs against the mirror with the
+    hosting page supplied — every v2 shape is live SQL on the GTK schema."""
+    from notees_gtk.data.store import LocalStore
+
+    store = LocalStore(tmp_path / "store.db")
+    try:
+        for envelope in _fixture_envelopes():
+            assert store.apply_remote(envelope)
+        result = store.run_query_ast(
+            "0192a000-0000-7000-8000-000000000001",
+            _fixture_query_ast(),
+            self_node_id="0192a000-0000-7000-8000-00000000e1a1",
+        )
+        assert isinstance(result.ids, tuple)
+        aggregate = store.run_aggregate_ast(
+            "0192a000-0000-7000-8000-000000000001",
+            {
+                **_fixture_query_ast(),
+                "aggregation": {"dimensions": [{"kind": "isClass"}], "measures": [{"function": "count"}]},
+            },
+            self_node_id="0192a000-0000-7000-8000-00000000e1a1",
+        )
+        assert aggregate.columns == ("isClass", "count")
+    finally:
+        store.close()
+
+
+def test_query_ast_fixture_fail_loud_pins(tmp_path: Path) -> None:
+    """The spec's fail-loud arms stay fail-loud on the GTK path: a self target
+    without the hosting page raises, and referencePath/root exists raises."""
+    from notees_gtk.data.store import LocalStore
+
+    store = LocalStore(tmp_path / "store.db")
+    try:
+        for envelope in _fixture_envelopes():
+            store.apply_remote(envelope)
+        with pytest.raises(ValueError, match="selfNodeId"):
+            store.run_query_ast("0192a000-0000-7000-8000-000000000001", _fixture_query_ast())
+        for family in ("referencePath", "root"):
+            with pytest.raises(ValueError, match="emptiness"):
+                store.run_query_ast(
+                    "0192a000-0000-7000-8000-000000000001",
+                    {
+                        "version": 2,
+                        "scope": {"type": "entire_workspace"},
+                        "root": {
+                            "type": "group",
+                            "logic": "and",
+                            "children": [{"type": "member", "family": family, "op": "exists"}],
+                        },
+                    },
+                )
+    finally:
+        store.close()

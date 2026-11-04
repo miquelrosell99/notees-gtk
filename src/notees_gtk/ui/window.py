@@ -24,7 +24,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, GLib, Gtk, Pango
 
 from notees_gtk.config import ClientConfig
 from notees_gtk.core.api import ApiError, AuthenticationError, CardsAlgorithm, NoteesClient, UserPrefs
@@ -46,6 +46,7 @@ from notees_gtk.core.protocol.crypto import (
 from notees_gtk.core.protocol.features import card_property_uuid
 from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
+from notees_gtk.core.query.search import search_wire
 from notees_gtk.core.srs import CardGrade, CardSrsState, next_card_state
 from notees_gtk.core.sync.engine import SyncEngine
 from notees_gtk.data.errors import CycleError, MoveGuardError
@@ -165,9 +166,26 @@ class NoteesWindow(Adw.ApplicationWindow):
             on_cards_selected=self._show_cards_hub,
         )
         sidebar_view = Adw.ToolbarView()
-        sidebar_view.add_top_bar(Adw.HeaderBar(show_title=False))
+        sidebar_header = Adw.HeaderBar(show_title=False)
+        self._search_entry = Gtk.SearchEntry(placeholder_text="Search", hexpand=True, width_request=220)
+        self._search_entry.connect("search-changed", self._on_search_changed)
+        self._search_entry.connect("activate", self._on_search_activate)
+        self._search_entry.connect("stop-search", self._on_search_stop)
+        sidebar_header.set_title_widget(self._search_entry)
+        sidebar_view.add_top_bar(sidebar_header)
         sidebar_view.set_content(self._sidebar)
         sidebar_page = Adw.NavigationPage(title="Notees", child=sidebar_view)
+
+        # The search results popover: anchored to the entry, one row per hit
+        # (the slice-1 global search surface — content contains over the
+        # mirror via the store's run_query_ast seam).
+        self._search_results_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, width_request=300)
+        self._search_results_box.add_css_class("navigation-sidebar")
+        self._search_results_box.connect("row-activated", self._on_search_result_activated)
+        scrolled = Gtk.ScrolledWindow(child=self._search_results_box, max_content_height=360, propagate_natural_height=True)
+        self._search_popover = Gtk.Popover(autohide=True, has_arrow=False, child=scrolled)
+        self._search_popover.set_parent(self._search_entry)
+        self._search_results: list[str] = []
 
         self._page_view = PageViewWidget()
         actor_id = config_store.load_actor_id() or config_store.GTK_ACTOR_ID
@@ -533,6 +551,72 @@ class NoteesWindow(Adw.ApplicationWindow):
             self.show_toast(exc.detail)
         else:
             self.show_toast(str(exc))
+
+    # ----------------------------------------------------------------- search
+
+    #: Cap on the results list (a search box surface, not a query grid).
+    SEARCH_RESULT_LIMIT = 50
+
+    def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
+        """Re-run the global search on every keystroke: ``content contains
+        <text>`` over the mirror through the store's run_query_ast seam (the
+        store read is lock-guarded and local — the same posture as the
+        sidebar refresh)."""
+        text = entry.get_text()
+        if not text.strip() or self._workspace_id is None:
+            self._search_popover.popdown()
+            return
+        store = self._require_store()
+        if store is None:
+            return
+        try:
+            result = store.run_query_ast(self._workspace_id, search_wire(text))
+        except ValueError:
+            # The builder only emits the canonical shape; a failure here is
+            # a programming error, not user input — surface it like a sync
+            # error rather than crashing the keystroke.
+            self.show_toast("Search failed")
+            return
+        self._search_results = []
+        while child := self._search_results_box.get_first_child():
+            self._search_results_box.remove(child)
+        for row in result.rows[: self.SEARCH_RESULT_LIMIT]:
+            node_id = str(row["id"])
+            self._search_results.append(node_id)
+            title = str(row["content_plain"] or "").strip() or node_id
+            label = Gtk.Label(
+                label=title,
+                xalign=0,
+                ellipsize=Pango.EllipsizeMode.END,
+                margin_top=4,
+                margin_bottom=4,
+                margin_start=8,
+                margin_end=8,
+            )
+            self._search_results_box.append(Gtk.ListBoxRow(child=label))
+        if self._search_results:
+            self._search_popover.popup()
+        else:
+            self._search_popover.popdown()
+
+    def _on_search_activate(self, _entry: Gtk.SearchEntry) -> None:
+        """Enter opens the first hit (the web search surface's convention)."""
+        if self._search_results:
+            self._open_search_result(self._search_results[0])
+
+    def _on_search_stop(self, entry: Gtk.SearchEntry) -> None:
+        """Escape dismisses the popover and clears the entry."""
+        self._search_popover.popdown()
+        entry.set_text("")
+
+    def _on_search_result_activated(self, _box: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        index = row.get_index()
+        if 0 <= index < len(self._search_results):
+            self._open_search_result(self._search_results[index])
+
+    def _open_search_result(self, node_id: str) -> None:
+        self._search_popover.popdown()
+        self._open_node(node_id)
 
     # ----------------------------------------------------------------- nodes
 

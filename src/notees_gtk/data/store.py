@@ -125,6 +125,9 @@ from notees_gtk.core.protocol.features import (
 )
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.core.protocol.payloads import validate_payload
+from notees_gtk.core.protocol.query_ast import parse_query_ast
+from notees_gtk.core.query.compiler import CompileOptions
+from notees_gtk.core.query.execute import AggregateResult, QueryResult, run_aggregate, run_query
 from notees_gtk.data.errors import (
     CycleError,
     EnvelopeValidationError,
@@ -4094,6 +4097,51 @@ class LocalStore:
             (workspace_id, node_id),
         ).fetchall()
         return [str(row[0]) for row in rows]
+
+    # ------------------------------------------------------------- query surface
+    #
+    # The P2 query-AST v2 surface (``packages/query`` port): strict-parse the
+    # serialized AST, compile it against this mirror's derived schema, and run
+    # it on the private connection. The lock is honored (``_synchronized``) —
+    # the UI never touches the connection directly.
+
+    @_synchronized
+    def run_query_ast(
+        self,
+        workspace_id: str,
+        raw_ast: object,
+        *,
+        now: datetime | None = None,
+        self_node_id: str | None = None,
+    ) -> QueryResult:
+        """Parse + compile + run a plain query AST over the mirror.
+
+        Args:
+            workspace_id: The workspace the query scans (compiled into every
+                ``nodes``/``edge`` predicate).
+            raw_ast: The serialized AST (strict-parsed — fail loud on any
+                non-v2 shape).
+            now: The placeholder clock (tests pin it; default the current time).
+            self_node_id: The hosting page for ``self`` member targets — such
+                ASTs fail loud without it (spec law).
+        """
+        ast = parse_query_ast(raw_ast)
+        options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
+        return run_query(self._conn, ast, options)
+
+    @_synchronized
+    def run_aggregate_ast(
+        self,
+        workspace_id: str,
+        raw_ast: object,
+        *,
+        now: datetime | None = None,
+        self_node_id: str | None = None,
+    ) -> AggregateResult:
+        """Parse + compile + run an aggregation AST (the grouped grid)."""
+        ast = parse_query_ast(raw_ast)
+        options = CompileOptions(workspace_id=workspace_id, now=now, self_node_id=self_node_id)
+        return run_aggregate(self._conn, ast, options)
 
     # ------------------------------------------------------------------ card.review
     #

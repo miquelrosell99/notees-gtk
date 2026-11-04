@@ -40,12 +40,17 @@ AGENTS.md
 ## Layout
 
 - `src/notees_gtk/core/protocol/` — wire models: envelopes (envelope v3),
-  strict op payload schemas (zod `.strict()` parity), content grammar,
+  strict op payload schemas (zod `.strict()` parity), the strict query-AST v2
+  model (`query_ast.py` — the `query` content token's grammar), content grammar,
   deterministic date-node ids, HLC clock, feature map. No GTK imports.
 - `src/notees_gtk/core/api/` — synchronous REST client (`/api/relay/v2` +
   login/2FA), typed error taxonomy, threaded WebSocket client (WS framing v2).
 - `src/notees_gtk/core/sync/` — the two-way sync engine (outbox drain,
   catch-up pull, realtime WS acceleration, op-id dedupe).
+- `src/notees_gtk/core/query/` — the query-AST v2 surface (the
+  `packages/query` port): compile-time placeholders, the SQLite compiler +
+  executor over the mirror, the pure global-search AST builder. No GTK
+  imports.
 - `src/notees_gtk/data/` — the local SQLite store: outbox, dedupe log, seq
   cursor, mirrored node table, and the appliers (row-LWW, OR-Set membership,
   extends closure, property wire semantics). No GTK imports.
