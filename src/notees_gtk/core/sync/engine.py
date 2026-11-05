@@ -30,14 +30,18 @@ counted warning (catch-up replays the log — restoring the content-empty
 image would blank the workspace). With NO provider (a genuinely keyless
 workspace) the wire stays plaintext, remote `$e` envelopes and sealed
 snapshots are skipped with counted warnings, and the cursor still advances.
-Fail-loud ruling: a client that KNOWS the workspace is keyed but has no
-usable key sets :attr:`SyncEngine.encrypted_locked`, and push/pull/snapshot
-refuse loudly instead of silently syncing plaintext.
+Keyed engines also PUBLISH the local derived image when the server snapshot
+lags it: buffer, compact, seal, declare ``sealed=1`` — chunked part+commit
+above the comfort threshold, single PUT below (keyless engines upload the
+raw image undeclared). Fail-loud ruling: a client that KNOWS the workspace
+is keyed but has no usable key sets :attr:`SyncEngine.encrypted_locked`,
+and push/pull/snapshot refuse loudly instead of silently syncing plaintext.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -45,6 +49,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from notees_gtk.core.api import (
+    ApiError,
     HelloInfo,
     NetworkError,
     NoteesClient,
@@ -53,16 +58,46 @@ from notees_gtk.core.api import (
     RealtimeClient,
     ServerError,
 )
-from notees_gtk.core.protocol.clock import Clock
+from notees_gtk.core.protocol.clock import Clock, Hlc
+from notees_gtk.core.protocol.ids import new_uuid7
 from notees_gtk.core.protocol.models import RelayEnvelope
 from notees_gtk.data.errors import StoreError
 from notees_gtk.data.store import LocalStore
 
-__all__ = ["BACKOFF_SECONDS", "OUTBOX_CHUNK_SIZE", "EnvelopeCrypto", "PullResult", "PushResult", "SyncEngine"]
+__all__ = [
+    "BACKOFF_SECONDS",
+    "OUTBOX_CHUNK_SIZE",
+    "SNAPSHOT_CHUNK_THRESHOLD",
+    "SNAPSHOT_COMPACT_THRESHOLD",
+    "SNAPSHOT_PART_SIZE",
+    "SNAPSHOT_UPLOAD_BODY_LIMIT",
+    "EnvelopeCrypto",
+    "PullResult",
+    "PushResult",
+    "SyncEngine",
+]
 
 _log = logging.getLogger(__name__)
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+
+#: Pre-flight snapshot-upload body limit (bytes): at or above this the upload
+#: is skipped rather than transferred, mirroring the relay's own body cap
+#: (the tooling-safe margin, not the relay's 512 MiB route ceiling).
+SNAPSHOT_UPLOAD_BODY_LIMIT = 256 * 1024 * 1024
+
+#: Raw-image floor for compacting before an upload (bytes): at or above this
+#: the image is VACUUMed before sealing so replay-derived free pages don't
+#: ride along.
+SNAPSHOT_COMPACT_THRESHOLD = 32 * 1024 * 1024
+
+#: Sealed-image ceiling for the single-PUT path (bytes): above this the
+#: upload rides the part+commit multipart flow (the reference client chunks
+#: at this comfort threshold).
+SNAPSHOT_CHUNK_THRESHOLD = 48 * 1024 * 1024
+
+#: Part size for the chunked upload path (bytes; the WIRE.md part ceiling).
+SNAPSHOT_PART_SIZE = 64 * 1024 * 1024
 
 
 def _has_sqlite_magic(blob: bytes) -> bool:
@@ -152,6 +187,10 @@ class SyncEngine:
         sleeper: Callable[[float], None] = time.sleep,
         page_size: int = 1000,
         crypto: EnvelopeCrypto | None = None,
+        snapshot_upload_limit: int = SNAPSHOT_UPLOAD_BODY_LIMIT,
+        snapshot_compact_threshold: int = SNAPSHOT_COMPACT_THRESHOLD,
+        snapshot_chunk_threshold: int = SNAPSHOT_CHUNK_THRESHOLD,
+        snapshot_part_size: int = SNAPSHOT_PART_SIZE,
     ) -> None:
         """Initialize the engine binding client, store, and workspace.
 
@@ -163,6 +202,15 @@ class SyncEngine:
                 snapshot blobs seal/decrypt at the engine boundary. ``None``
                 keeps the whole wire plaintext (a keyless/API-key session or
                 a locked workspace).
+            snapshot_upload_limit: Pre-flight upload cap in bytes — at or
+                above it the upload is skipped with a report rather than
+                transferred (the relay would 413 it).
+            snapshot_compact_threshold: Raw-image floor for VACUUMing before
+                an upload.
+            snapshot_chunk_threshold: Sealed-image ceiling for the
+                single-PUT path; above it the multipart part+commit flow
+                rides (the transport always falls back to the single PUT).
+            snapshot_part_size: Chunk size for the multipart flow.
         """
         self._client = client
         self._store = store
@@ -172,6 +220,10 @@ class SyncEngine:
         self._sleeper = sleeper
         self._page_size = page_size
         self._crypto = crypto
+        self._snapshot_upload_limit = snapshot_upload_limit
+        self._snapshot_compact_threshold = snapshot_compact_threshold
+        self._snapshot_chunk_threshold = snapshot_chunk_threshold
+        self._snapshot_part_size = snapshot_part_size
         # Fail-loud ruling (owner decision, 2026-11-04): a KEYED workspace
         # opened without its key must NOT silently sync plaintext — the
         # client sets this when it knows the workspace is encrypted but has
@@ -190,6 +242,15 @@ class SyncEngine:
         # Count of snapshot restores declined (sealed-while-keyless and
         # plaintext-while-keyed arms alike).
         self.skipped_snapshots = 0
+        # Snapshot-upload watermarks and report latches (the TS
+        # maybeUploadSnapshot parity): the cursor seq of the last published
+        # checkpoint, the max remote HLC seen this session (the coverage
+        # watermark the upload declares), and once-per-session reports for
+        # the quarantine skip and the never-heals 413.
+        self._uploaded_snapshot_seq: int | None = None
+        self._received_hlc: Hlc | None = None
+        self._snapshot_quarantine_reported = False
+        self._snapshot_oversize_reported = False
         # Realtime state (start_realtime/stop_realtime). The lock serializes
         # catch-up pulls (main thread or the WS reader thread after a
         # reconnect hello) with live-ops buffering/application.
@@ -346,6 +407,11 @@ class SyncEngine:
                     if page.envelopes:
                         newest = max(page.envelopes, key=lambda env: (env.hlc.physical, env.hlc.logical)).hlc
                         self._clock.update(newest, _now_ms())
+                        if self._received_hlc is None or (newest.physical, newest.logical) > (
+                            self._received_hlc.physical,
+                            self._received_hlc.logical,
+                        ):
+                            self._received_hlc = newest
                     if page.next_after_seq is not None:
                         if page.next_after_seq <= after:
                             _log.warning(
@@ -361,6 +427,7 @@ class SyncEngine:
             finally:
                 self._pull_in_flight = False
             applied += self._drain_rt_buffer_locked()
+            self._maybe_upload_snapshot()
         return PullResult(applied=applied, cursor=self._store.cursor(self._workspace_id))
 
     def _apply_guarded(self, env: RelayEnvelope) -> int:
@@ -571,3 +638,103 @@ class SyncEngine:
         self._store.set_cursor(self._workspace_id, up_to_seq)
         _log.info("Restored snapshot up to seq %d", up_to_seq)
         return True
+
+
+    # ---------------------------------------------------------- snapshot upload
+
+    def _maybe_upload_snapshot(self) -> None:
+        """Publish the local derived image when the server snapshot lags it
+        (the TS ``maybeUploadSnapshot`` port — best-effort, runs at the end
+        of every pull).
+
+        Watermarks: the local cursor must be ahead of both the server's
+        snapshot coverage (``meta.up_to_seq``) and the checkpoint this
+        session already uploaded. Keyed engines BUFFER a copy of the image
+        (:meth:`LocalStore.snapshot_image`), VACUUM it past the compact
+        threshold, seal it, and declare ``sealed=1`` — above the chunk
+        threshold the upload rides the multipart part+commit flow, below it
+        the single PUT (the transport falls back automatically). Keyless
+        engines upload the raw image undeclared. A projection carrying
+        quarantined ops never uploads (the poisoned-snapshot lineage
+        ruling), and an image at/over the body limit is skipped — the 413 it
+        would draw never heals, so it is reported ONCE per session. No
+        failure here ever fails the sync round.
+        """
+        if self._store.quarantined_outbox_count() > 0:
+            if not self._snapshot_quarantine_reported:
+                self._snapshot_quarantine_reported = True
+                _log.error(
+                    "Snapshot upload skipped: the local projection carries quarantined envelopes — "
+                    "uploading would spread the divergence. Wipe the local store to rehydrate cleanly; "
+                    "the upload resumes once the quarantine table is empty.",
+                )
+            return
+        try:
+            meta = self._client.snapshot_probe(self._workspace_id)
+        except ApiError as exc:
+            _log.info("Snapshot upload skipped: probe failed (%s)", exc.detail)
+            return
+        cursor = self._store.cursor(self._workspace_id)
+        newer_than_server = not meta.has_snapshot or cursor > (meta.up_to_seq or 0)
+        newer_than_uploaded = self._uploaded_snapshot_seq is None or cursor > self._uploaded_snapshot_seq
+        if not (newer_than_server and newer_than_uploaded):
+            return
+        hlc = self._received_hlc if self._received_hlc is not None else Hlc(physical=0, logical=0)
+        try:
+            if self._crypto is not None:
+                # Buffer + seal: the image is sealed before any size decision.
+                image = self._store.snapshot_image(self._workspace_id)
+                if len(image) >= self._snapshot_compact_threshold:
+                    self._store.compact()
+                    image = self._store.snapshot_image(self._workspace_id)
+                sealed = self._crypto.encrypt_bytes(image)
+                if len(sealed) >= self._snapshot_upload_limit:
+                    self._report_oversize_upload(len(sealed))
+                    return
+                if len(sealed) > self._snapshot_chunk_threshold:
+                    upload_id = new_uuid7()
+                    part_count = math.ceil(len(sealed) / self._snapshot_part_size)
+                    for index in range(part_count):
+                        start = index * self._snapshot_part_size
+                        self._client.upload_snapshot_part(
+                            self._workspace_id, upload_id, index, sealed[start : start + self._snapshot_part_size]
+                        )
+                    self._client.commit_snapshot(
+                        self._workspace_id, upload_id, parts=part_count, hlc=hlc, sealed=True
+                    )
+                else:
+                    self._client.upload_snapshot(self._workspace_id, sealed, hlc=hlc, sealed=True)
+            else:
+                image = self._store.snapshot_image(self._workspace_id)
+                if len(image) >= self._snapshot_upload_limit:
+                    self._report_oversize_upload(len(image))
+                    return
+                self._client.upload_snapshot(self._workspace_id, image, hlc=hlc, sealed=False)
+        except ApiError as exc:
+            # Best-effort: a failed upload must not fail sync. The one error
+            # that never heals — the relay's body cap (413) — is surfaced
+            # once per session; anything else is a single quiet log line.
+            if exc.status == 413:
+                self._report_oversize_upload(None, error=exc)
+            else:
+                _log.info("Snapshot upload failed (best-effort): %s", exc.detail)
+            return
+        self._uploaded_snapshot_seq = cursor
+        self._snapshot_oversize_reported = False
+        self._snapshot_quarantine_reported = False
+
+    def _report_oversize_upload(self, size: int | None, *, error: ApiError | None = None) -> None:
+        """The never-heals 413 latch: reported ONCE per session, loudly."""
+        if self._snapshot_oversize_reported:
+            return
+        self._snapshot_oversize_reported = True
+        size_text = f" ({size} bytes)" if size is not None else ""
+        message = (
+            f"snapshot upload skipped{size_text}: the projection meets the relay's body cap — uploading "
+            "would be rejected. A server-side snapshot covers restore; the client upload stays skipped "
+            "this session."
+        )
+        if error is not None:
+            _log.error("%s (%s)", message, error.detail)
+        else:
+            _log.error("%s", message)

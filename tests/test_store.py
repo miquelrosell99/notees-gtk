@@ -5511,3 +5511,50 @@ class TestExternalRef:
         assert store.apply_remote(self.ref_env("external_ref.set", self.REF_GCAL, hlc=(10, 0), node_id=ghost)) is True
         assert store.resolve_external_ref(WS_A, self.REF_GCAL) == ghost
         assert store.external_refs_of(WS_A, ghost) == [self.REF_GCAL]
+
+
+class TestSnapshotImageExport:
+    """The upload image is a canonical derived shape: one ``node`` table (the
+    restore allowlist's only recognized name), canonical columns, the
+    workspace filter applied, and zero relay bookkeeping riding the wire."""
+
+    def test_image_carries_only_the_node_table_with_canonical_columns(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("a"), content="alpha", hlc=(2, 0)))
+        store.apply_remote(create_env(uid("b"), content="beta", hlc=(3, 0)))
+        store.enqueue(create_env(uid("outbox-only")))  # bookkeeping that must NOT ride the image
+
+        image = store.snapshot_image(WS_A)
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.deserialize(image)
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            assert tables == {"node"}
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(node)")}
+            assert {"id", "workspace_id", "is_class", "content", "hlc_physical", "actor_id"} <= columns
+            ids = {row[0] for row in conn.execute("SELECT id FROM node")}
+            assert ids == {uid("a"), uid("b")}
+        finally:
+            conn.close()
+
+    def test_image_filters_other_workspaces(self, store: LocalStore) -> None:
+        store.apply_remote(create_env(uid("in-a"), hlc=(2, 0)))
+        env_b = make_env("object.create", {"objectId": uid("in-b"), "parentId": None}, hlc=(2, 0))
+        store.apply_remote(env_b.model_copy(update={"workspace_id": "ws-other"}))
+
+        image = store.snapshot_image(WS_A)
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.deserialize(image)
+            ids = {row[0] for row in conn.execute("SELECT id FROM node")}
+            assert ids == {uid("in-a")}
+        finally:
+            conn.close()
+
+    def test_compact_and_quarantine_count(self, store: LocalStore) -> None:
+        assert store.quarantined_outbox_count() == 0
+        env = create_env(uid("poison"))
+        store.enqueue(env)
+        store.quarantine_outbox([env.id], reason="bad op")
+        assert store.quarantined_outbox_count() == 1
+        store.compact()  # VACUUM — must not raise outside a transaction
+        assert store.node(WS_A, uid("a")) is None  # the store still works

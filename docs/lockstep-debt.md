@@ -3,54 +3,48 @@
 The tracker for deliberately deferred E2EE work in this client. Each entry
 names what ships today, what's missing, and the reference design to port.
 
-## Locked-state UI (partial — fail-loud ruling shipped 2026-11-05)
+## Locked-state UI (shipped — residual polish only)
 
-The fail-loud ruling (owner decision, 2026-11-04 — a keyed workspace must
-never silently open keyless) is GTK-ported:
+The fail-loud ruling and its UI are GTK-ported (2026-11-05):
 
-- **Refusal**: `_install_workspace_crypto` (`ui/window.py`) fetch-or-ensures
-  the workspace key before the first sync round; a workspace with a key row
-  server-side and no usable master key (no master in memory, or the wrapped
-  record fails to unwrap under the current password's master key) sets
-  `SyncEngine.encrypted_locked`, and push/pull/snapshot-restore **refuse with
-  a warning** — nothing plaintext moves. `set_crypto` clears the lock.
-- **Loud state**: an `Adw.Banner` on the main page — "This workspace is
-  encrypted — sign in with your password to open it" — with a Sign-in
-  affordance that returns to the login page; a password sign-in re-derives
-  the master key and the post-login workspace load re-opens unlocked.
-  Interval sync skips the locked workspace.
-- **Silent-keyless survivors (by design, logged)**: a genuinely keyless
-  workspace (no key row — plaintext is its contract) and the undetectable
-  cases — operator/API-key configs the server 403s off `/key`, and offline
-  starts that cannot ask — still sync plaintext, each with a loud log line.
+- **Refusal**: a workspace with a key row server-side and no usable master
+  key sets `SyncEngine.encrypted_locked`; push/pull/snapshot-restore refuse
+  with a warning until `set_crypto` installs a key.
+- **In-session unlock re-prompt**: the banner's Sign in opens
+  `UnlockWorkspaceDialog` (`ui/unlock_dialog.py`) — the web's W2 modal. It
+  re-authenticates through `POST /api/auth/unlock` (session-less: `{kdf}`
+  only, no session minted; the login lockout applies — 429 surfaces the
+  server's retry), derives the master key on the worker thread, and re-opens
+  the workspace without a sign-out. Wrong password shows the form error
+  (401 / verifier mismatch); success adopts the key, refreshes the badges,
+  and re-selects the workspace.
+- **Selector lock badges**: keyed workspaces show a lock emblem in the
+  sidebar dropdown while no master key is available (web parity via the
+  `encrypted` flag on `GET /api/workspaces`) — `Gtk.SignalListItemFactory`
+  rows with the `system-lock-screen-symbolic` emblem.
+- **Silent-keyless survivors (by design, logged)**: genuinely keyless
+  workspaces (no key row) and the undetectable cases — operator/API-key
+  configs the server 403s off `/key` (no account email exists for the
+  unlock body, so the banner keeps the sign-out path), and offline starts —
+  still sync plaintext, each with a loud log line.
 
-Still missing vs the web reference (`feat(web,server): keyed workspaces fail
-loud`, 2026-11-04):
+Residual (not reference debt, GTK-accepted divergence): editing a locked
+workspace stays possible locally — the sync round is refused and the writes
+wait in the outbox until unlock.
 
-- An **in-app unlock re-prompt** (the web's `UnlockWorkspaceModal` asks for
-  the account password and re-opens without a full sign-out). GTK's path is
-  the banner → login page → re-login, which costs the session reload the
-  modal avoids.
-- **Lock badges in the workspace selector** — `WorkspaceRef.encrypted` is
-  parsed (wire parity) but the sidebar renders no badge.
-- Editing a locked workspace stays possible locally (the engine refuses the
-  sync round; the writes sit in the outbox until unlock).
+## Snapshot uploads (engine path shipped)
 
-## Snapshot uploads (transport ported, engine path unwired)
+The engine publishes the local derived image at the end of every pull (the
+TS `maybeUploadSnapshot` port): buffered, VACUUMed past the compact
+threshold, sealed and declared `sealed=1` when keyed (multipart part+commit
+above the 48 MiB comfort threshold, single PUT below — the e7c9c69
+transport), raw and undeclared when keyless. Watermarks gate re-uploads
+(server coverage + per-session upload seq); a quarantined projection never
+uploads (reported once); the never-heals 413/over-limit is reported once
+per session; no upload failure ever fails the round. `LocalStore` gained
+`snapshot_image` (one `node` table, canonical columns, workspace-filtered —
+relay bookkeeping never rides the wire), `compact` (VACUUM), and
+`quarantined_outbox_count`.
 
-The wire transport now carries the full upload surface:
-
-- `upload_snapshot(..., sealed=True)` sends `sealed=1` — sealed images skip
-  the server sanity gate (ciphertext is opaque), accepted never 422-gated.
-- Optional multipart methods per WIRE.md: `upload_snapshot_part`
-  (`PUT /snapshot/data/part`, one 64 MiB chunk, duplicate index 422) and
-  `commit_snapshot` (`POST /snapshot/data/commit`, parts must match the
-  staged indexes, same sanity gate + `sealed` flag, 201 mirrors the single
-  PUT). The single-PUT fallback stays the default path.
-
-The **engine upload path itself is still unwired** — restore-only, as
-before. When it lands (server-directed snapshot publishing), it seals with
-`WorkspaceKeyCrypto.encrypt_bytes`, declares `sealed=1`, chunks above the
-48 MiB comfort threshold, and mirrors the TS reference's
-`maybeUploadSnapshot` crypto branch (skip when the local projection carries
-quarantined rows; report-once on 413).
+Nothing recorded here today. Remaining lockstep arms: Flutter for the whole
+custody surface.

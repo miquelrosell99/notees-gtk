@@ -211,6 +211,68 @@ class TestLogin:
         assert exc_info.value.status == 401
         assert exc_info.value.detail == "Invalid email or password"
 
+
+class TestUnlock:
+    """POST /api/auth/unlock — the in-session unlock re-prompt (W2 port).
+    Session-less: {kdf} only, no token minted; the login lockout applies."""
+
+    KDF_BODY: dict[str, Any] = {
+        "algorithm": "scrypt",
+        "N": 131072,
+        "r": 8,
+        "p": 1,
+        "salt": "s",
+        "wrappedMasterKey": "w",
+        "keyVerifier": "v",
+    }
+
+    def test_unlock_returns_the_kdf_record_only(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert _json_body(request) == {"email": "ada@example.com", "password": "hunter2"}
+            return httpx.Response(200, json={"kdf": self.KDF_BODY})
+
+        client, requests = _make_client(_router({("POST", "/api/auth/unlock"): handler}))
+        kdf = client.unlock("ada@example.com", "hunter2")
+
+        assert kdf == self.KDF_BODY
+        # No session minted: the Authorization header is untouched.
+        assert "Authorization" not in requests[0].headers
+
+    def test_unlock_wrong_password_is_401(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                401, json={"error": {"code": "invalid_credentials", "message": "invalid email or password", "status": 401}}
+            )
+
+        client, _ = _make_client(_router({("POST", "/api/auth/unlock"): handler}))
+        with pytest.raises(AuthenticationError) as exc_info:
+            client.unlock("ada@example.com", "wrong")
+        assert exc_info.value.status == 401
+
+    def test_unlock_account_lockout_surfaces_the_retry(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                json={
+                    "error": {"code": "account_locked", "message": "too many failed attempts — try again in 5 minutes", "status": 429},
+                },
+            )
+
+        client, _ = _make_client(_router({("POST", "/api/auth/unlock"): handler}))
+        with pytest.raises(RateLimitedError) as exc_info:
+            client.unlock("ada@example.com", "hunter2")
+        assert exc_info.value.status == 429
+        assert "5 minutes" in exc_info.value.detail
+
+    def test_unlock_malformed_body_fails_loud(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"unexpected": True})
+
+        client, _ = _make_client(_router({("POST", "/api/auth/unlock"): handler}))
+        with pytest.raises(ValueError, match="malformed unlock body"):
+            client.unlock("ada@example.com", "hunter2")
+
+
 class TestWorkspaces:
     def test_plain_path_and_workspaces_unwrap(self) -> None:
         """The route is exactly /api/workspaces (no trailing slash) — the Fastify

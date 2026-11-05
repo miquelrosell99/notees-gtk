@@ -75,6 +75,7 @@ from notees_gtk.ui.tag_ops import (
 )
 from notees_gtk.ui.tags import build_tags_row
 from notees_gtk.ui.tree import NodeTreeSidebar, node_display_name
+from notees_gtk.ui.unlock_dialog import UnlockWorkspaceDialog
 from notees_gtk.ui.worker import run_in_worker
 
 __all__ = ["NoteesWindow"]
@@ -134,6 +135,10 @@ class NoteesWindow(Adw.ApplicationWindow):
         )
         self._locked_banner.connect("button-clicked", self._on_locked_sign_in)
         self._workspace_locked = False
+        # The account email, captured at login (None on key-only configs) —
+        # it decides between the in-session unlock re-prompt and a full
+        # sign-out/sign-in.
+        self._user_email: str | None = None
 
         self._login_view = LoginView(on_logged_in=self._on_logged_in)
         self._stack.add_named(self._login_view, "login")
@@ -149,11 +154,16 @@ class NoteesWindow(Adw.ApplicationWindow):
     # ----------------------------------------------------------------- login
 
     def _on_logged_in(
-        self, config: ClientConfig, client: NoteesClient, _user: dict[str, Any], master_key: bytes | None
+        self, config: ClientConfig, client: NoteesClient, user: dict[str, Any], master_key: bytes | None
     ) -> None:
         self._config = config
         self._client = client
         self._master_key = master_key
+        # The account email feeds the in-session unlock re-prompt (the
+        # session-less /auth/unlock body) — key-only configs carry none, so
+        # their locked workspaces keep the sign-out path.
+        email = user.get("email")
+        self._user_email = email if isinstance(email, str) and email else None
         self._build_main()
         self._stack.set_visible_child_name("main")
 
@@ -166,6 +176,7 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._engine = None
         self._client = None
         self._master_key = None
+        self._user_email = None
         self._workspace_locked = False
         self._locked_banner.set_revealed(False)
         self._stack.set_visible_child_name("login")
@@ -173,10 +184,32 @@ class NoteesWindow(Adw.ApplicationWindow):
             self._login_view.show_toast(message)
 
     def _on_locked_sign_in(self, *_args: object) -> None:
-        """The locked banner's Sign in: a full password sign-in re-derives
-        the master key; the post-login workspace load re-opens the workspace
-        and unlocks it (fetch-or-ensure now unwraps with the fresh key)."""
-        self._show_login("Sign in with your password to unlock the encrypted workspace")
+        """The locked banner's Sign in.
+
+        With the account email known (a password session) the in-session
+        unlock re-prompt asks for the password and re-opens the workspace
+        without a sign-out — the web's W2 modal. Key-only configs carry no
+        email and keep the full sign-out/sign-in path.
+        """
+        client = self._require_client()
+        if client is None:
+            return
+        if self._user_email is None:
+            self._show_login("Sign in with your password to unlock the encrypted workspace")
+            return
+
+        dialog = UnlockWorkspaceDialog(email=self._user_email, client=client, on_unlocked=self._on_workspace_unlocked)
+        dialog.present(self)
+
+    def _on_workspace_unlocked(self, master_key: bytes) -> None:
+        """The unlock re-prompt's success: adopt the re-derived master key,
+        refresh the selector badges, and re-open the workspace — the
+        fetch-or-ensure path now unwraps with the fresh key."""
+        self._master_key = master_key
+        self._load_workspaces()
+        workspace_id = self._workspace_id
+        if workspace_id is not None:
+            self._on_workspace_selected(workspace_id)
 
     # -------------------------------------------------------------- main UI
 
@@ -496,7 +529,11 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def _on_workspaces_loaded(self, workspaces: list[Any]) -> None:
         self._workspace_names = {ws.id: str(ws.name or ws.id) for ws in workspaces}
-        self._sidebar.set_workspaces(workspaces)
+        # The fail-loud ruling's selector parity: a keyed workspace shows the
+        # lock emblem while no master key is available (one master key serves
+        # every workspace, so the badge is session-wide).
+        locked_ids = frozenset(ws.id for ws in workspaces if getattr(ws, "encrypted", False) and not self._master_key)
+        self._sidebar.set_workspaces(workspaces, locked_ids=locked_ids)
         workspace_id = self._sidebar.selected_workspace()
         if workspace_id is not None:
             self._on_workspace_selected(workspace_id)

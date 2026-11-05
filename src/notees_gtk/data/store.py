@@ -140,6 +140,7 @@ from notees_gtk.data.errors import (
     MoveGuardError,
     NotFoundError,
     PropertyValueShapeError,
+    StoreError,
     SystemExtendsLockError,
     UnsupportedCarrierError,
 )
@@ -333,6 +334,17 @@ _SNAPSHOT_VERBATIM_COLUMNS: dict[str, str] = {
     "created_at": "created_at",
     "is_active": "is_active",
 }
+
+#: Canonical server derived-schema node columns an UPLOAD image carries (the
+#: restore map's sources plus the row-LWW causality triple — the same set the
+#: server self-heal image and the web client's snapshot() produce).
+_SNAPSHOT_EXPORT_COLUMNS: tuple[str, ...] = (
+    *dict.fromkeys(_SNAPSHOT_VERBATIM_COLUMNS.values()),
+    "updated_at",
+    "hlc_physical",
+    "hlc_logical",
+    "actor_id",
+)
 
 
 def _quote_ident(name: str) -> str:
@@ -5735,6 +5747,59 @@ class LocalStore:
     # ---------------------------------------------------------------- snapshots
 
     @_synchronized
+    # ---------------------------------------------------------- snapshot I/O
+
+    @_synchronized
+    def snapshot_image(self, workspace_id: str) -> bytes:
+        """Serialize the derived mirror as a server-shape snapshot image.
+
+        The image carries ONE table — ``node`` (singular, the server's
+        derived-schema name: the restore allowlist recognizes only it) —
+        with the canonical node columns the mirror shares, filtered to the
+        workspace. Relay bookkeeping (outbox, dedupe log, watermarks) never
+        rides the wire: other clients restore by column intersection and
+        the server sanity gate counts node rows, so the image is exactly
+        the canonical derived shape the web client's ``store.snapshot()``
+        uploads. Sealing (when keyed) is the engine's job — these are raw
+        plaintext bytes.
+        """
+        mirror_columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(nodes)")}
+        export_columns = [column for column in _SNAPSHOT_EXPORT_COLUMNS if column in mirror_columns]
+        if not export_columns:
+            raise StoreError("snapshot export failed: the mirror carries no node columns")
+        columns = ", ".join(_quote_ident(name) for name in export_columns)
+        rows = self._conn.execute(f"SELECT {columns} FROM nodes WHERE workspace_id = ?", (workspace_id,)).fetchall()
+        column_defs = ", ".join(_quote_ident(name) for name in export_columns)
+        placeholders = ", ".join("?" for _ in export_columns)
+        dest = sqlite3.connect(":memory:")
+        try:
+            with dest:
+                dest.execute(f"CREATE TABLE node ({column_defs})")
+                dest.executemany(f"INSERT INTO node VALUES ({placeholders})", rows)
+            return dest.serialize()
+        finally:
+            dest.close()
+
+    @_synchronized
+    def compact(self) -> None:
+        """Reclaim replay-derived free pages before a snapshot upload (VACUUM).
+
+        Mirrors the TS ``store.compact()``: the engine calls it when the
+        raw image crosses the compact threshold so the upload does not
+        carry the free-page tail. Runs outside any store transaction.
+        """
+        self._conn.execute("VACUUM")
+
+    @_synchronized
+    def quarantined_outbox_count(self) -> int:
+        """Number of parked (unretryable) outbox envelopes.
+
+        A projection that skipped ops must not become other devices'
+        bootstrap source — the engine's upload path checks this before
+        publishing a snapshot (the poisoned-snapshot lineage ruling)."""
+        row = self._conn.execute("SELECT COUNT(*) FROM relay_outbox WHERE state = 'quarantined'").fetchone()
+        return int(row[0]) if row is not None else 0
+
     def restore_snapshot(self, blob: bytes, *, workspace_id: str) -> bool:
         """Restore nodes from a downloaded snapshot blob (serialized derived DB).
 

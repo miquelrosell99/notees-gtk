@@ -297,6 +297,37 @@ class NoteesClient:
         """
         return self._api_key or self._token
 
+    def unlock(self, email: str, password: str) -> dict[str, Any]:
+        """Re-derive the master key in-session (``POST /api/auth/unlock`` —
+        the W2 unlock re-prompt port).
+
+        The caller already holds a live credential (a remembered session or
+        an API key), so this endpoint mints NO session — it answers ``{kdf}``
+        only. It is a password oracle all the same: the SAME per-IP counter
+        and per-account lockout as login, so a 429 carries the server's
+        retry detail and a wrong password answers 401.
+
+        Args:
+            email: Account email.
+            password: Account password.
+
+        Returns:
+            The validated ``kdf`` record body (feed to
+            :class:`notees_gtk.core.protocol.crypto.KdfRecord`).
+
+        Raises:
+            AuthenticationError: 401 ``invalid_credentials``.
+            RateLimitedError: 429 — the per-IP counter or the account
+                lockout (``account_locked``; the detail carries the retry).
+            ApiError: The request failed otherwise.
+            ValueError: The server answered a malformed body.
+        """
+        data = self._post_json("/api/auth/unlock", {"email": email, "password": password})
+        kdf = data.get("kdf") if isinstance(data, dict) else None
+        if not isinstance(kdf, dict):
+            raise ValueError(f"malformed unlock body: expected {{kdf}}, got {data!r}")
+        return kdf
+
     # -------------------------------------------------------------- workspaces
 
     def list_workspaces(self) -> list[WorkspaceRef]:

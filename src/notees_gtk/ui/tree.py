@@ -57,6 +57,7 @@ class NodeTreeSidebar(Gtk.Box):
         self._on_cards_selected = on_cards_selected
         self._on_graph_selected = on_graph_selected
         self._workspaces: list[WorkspaceRef] = []
+        self._workspace_locked_ids: frozenset[str] = frozenset()
         self._rows: list[NodeRow] = []
         self._expanded: set[str] = set()
         self._updating_dropdown = False
@@ -64,6 +65,10 @@ class NodeTreeSidebar(Gtk.Box):
         self._selecting_graph = False
 
         self._dropdown = Gtk.DropDown(hexpand=True)
+        workspace_factory = Gtk.SignalListItemFactory()
+        workspace_factory.connect("setup", self._on_workspace_item_setup)
+        workspace_factory.connect("bind", self._on_workspace_item_bind)
+        self._dropdown.set_factory(workspace_factory)
         self._dropdown.connect("notify::selected", self._on_dropdown_changed)
         dropdown_frame = Gtk.Box(margin_start=12, margin_end=12, margin_top=12)
         dropdown_frame.append(self._dropdown)
@@ -103,9 +108,36 @@ class NodeTreeSidebar(Gtk.Box):
 
     # ------------------------------------------------------------------ public
 
-    def set_workspaces(self, workspaces: Sequence[WorkspaceRef]) -> None:
-        """Populate the workspace drop-down; selects the first entry."""
+    def _on_workspace_item_setup(self, _factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
+        """A workspace row: lock emblem (hidden unless locked) + label."""
+        box = Gtk.Box(spacing=6)
+        icon = Gtk.Image(icon_name="system-lock-screen-symbolic", visible=False)
+        label = Gtk.Label(xalign=0, hexpand=True)
+        box.append(icon)
+        box.append(label)
+        list_item.set_child(box)
+
+    def _on_workspace_item_bind(self, _factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
+        item = list_item.get_item()
+        box = list_item.get_child()
+        icon = box.get_first_child() if isinstance(box, Gtk.Box) else None
+        label = icon.get_next_sibling() if icon is not None else None
+        if isinstance(label, Gtk.Label):
+            label.set_text(item.get_string() if item is not None else "")
+        if isinstance(icon, Gtk.Image):
+            position = list_item.get_position()
+            workspace = self._workspaces[position] if 0 <= position < len(self._workspaces) else None
+            icon.set_visible(workspace is not None and workspace.id in self._workspace_locked_ids)
+
+    def set_workspaces(self, workspaces: Sequence[WorkspaceRef], *, locked_ids: frozenset[str] = frozenset()) -> None:
+        """Populate the workspace drop-down; selects the first entry.
+
+        ``locked_ids`` marks keyed workspaces with no key available (the
+        fail-loud ruling) — those rows carry a lock emblem, the selector
+        parity of the web's lock badges.
+        """
         self._workspaces = list(workspaces)
+        self._workspace_locked_ids = locked_ids
         names = Gtk.StringList()
         for workspace in self._workspaces:
             names.append(workspace.name or workspace.id)

@@ -29,11 +29,13 @@ from notees_gtk.core.api import (
     RateLimitedError,
     ServerError,
     SnapshotMeta,
+    SnapshotUploadResult,
     WorkspaceRef,
 )
 from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.crypto import (
     WorkspaceKeyCrypto,
+    decrypt_bytes,
     encrypt_bytes,
     generate_workspace_key,
 )
@@ -44,7 +46,16 @@ from notees_gtk.core.protocol.models import (
     RelayEnvelope,
     new_envelope,
 )
-from notees_gtk.core.sync import EnvelopeCrypto, PullResult, PushResult, SyncEngine
+from notees_gtk.core.sync import (
+    SNAPSHOT_CHUNK_THRESHOLD,
+    SNAPSHOT_COMPACT_THRESHOLD,
+    SNAPSHOT_PART_SIZE,
+    SNAPSHOT_UPLOAD_BODY_LIMIT,
+    EnvelopeCrypto,
+    PullResult,
+    PushResult,
+    SyncEngine,
+)
 from notees_gtk.data.store import LocalStore
 
 WS = "ws-a"
@@ -131,6 +142,11 @@ class FakeRelayClient(NoteesClient):
         self.snapshot_blob: bytes | None = None
         self.snapshot_up_to_seq: int | None = None
         self.snapshot_sealed = False
+        # Snapshot-upload recordings (the engine's maybeUploadSnapshot
+        # drives these at the end of every pull).
+        self.uploaded_snapshots: list[tuple[bytes, Hlc, bool]] = []
+        self.uploaded_parts: list[tuple[str, int, bytes]] = []
+        self.committed_snapshots: list[tuple[str, int, Hlc, bool]] = []
         self.batch_script: list[BaseException] = []
         self.batch_calls: list[list[RelayEnvelope]] = []
         self.catch_up_calls: list[int] = []
@@ -189,6 +205,39 @@ class FakeRelayClient(NoteesClient):
             raise AssertionError("no snapshot staged")
         return self.snapshot_blob
 
+    def upload_snapshot(self, workspace_id: str, data: bytes, *, hlc: Hlc, sealed: bool = False) -> SnapshotUploadResult:
+        assert workspace_id == self.workspace_id
+        self.uploaded_snapshots.append((data, hlc, sealed))
+        return SnapshotUploadResult(
+            snapshot_id="uploaded-snap",
+            workspace_id=workspace_id,
+            up_to_hlc=hlc,
+            up_to_seq=self._next_seq,
+        )
+
+    def upload_snapshot_part(self, workspace_id: str, upload: str, index: int, data: bytes) -> None:
+        assert workspace_id == self.workspace_id
+        if any(staged_upload == upload and staged_index == index for staged_upload, staged_index, _ in self.uploaded_parts):
+            raise QuarantinedError(f"duplicate snapshot part {index}", status=422)
+        self.uploaded_parts.append((upload, index, data))
+
+    def commit_snapshot(
+        self, workspace_id: str, upload: str, *, parts: int, hlc: Hlc, sealed: bool = False
+    ) -> SnapshotUploadResult:
+        assert workspace_id == self.workspace_id
+        staged = sorted(
+            (index, data) for staged_upload, index, data in self.uploaded_parts if staged_upload == upload
+        )
+        if len(staged) != parts or (staged and staged[-1][0] != parts - 1):
+            raise QuarantinedError("parts mismatch", status=422)
+        self.committed_snapshots.append((upload, parts, hlc, sealed))
+        return SnapshotUploadResult(
+            snapshot_id="committed-snap",
+            workspace_id=workspace_id,
+            up_to_hlc=hlc,
+            up_to_seq=self._next_seq,
+        )
+
 
 class RecordingSleeper:
     """Injectable engine sleeper that records durations instead of sleeping."""
@@ -209,6 +258,10 @@ def make_engine(
     clock: Clock | None = None,
     page_size: int = 1000,
     crypto: EnvelopeCrypto | None = None,
+    snapshot_upload_limit: int = SNAPSHOT_UPLOAD_BODY_LIMIT,
+    snapshot_compact_threshold: int = SNAPSHOT_COMPACT_THRESHOLD,
+    snapshot_chunk_threshold: int = SNAPSHOT_CHUNK_THRESHOLD,
+    snapshot_part_size: int = SNAPSHOT_PART_SIZE,
 ) -> SyncEngine:
     return SyncEngine(
         relay,
@@ -219,6 +272,10 @@ def make_engine(
         clock=clock,
         page_size=page_size,
         crypto=crypto,
+        snapshot_upload_limit=snapshot_upload_limit,
+        snapshot_compact_threshold=snapshot_compact_threshold,
+        snapshot_chunk_threshold=snapshot_chunk_threshold,
+        snapshot_part_size=snapshot_part_size,
     )
 
 
@@ -990,3 +1047,140 @@ class TestEncryptedLockedModel:
     def test_workspace_ref_parses_the_flag(self) -> None:
         ref = WorkspaceRef(id="w1", encrypted=True)
         assert ref.model_dump(by_alias=True)["encrypted"] is True
+
+
+# --- snapshot-upload engine path (recorded-debt slice): buffered + sealed, ----
+# --- chunked over the threshold, single PUT below, latch semantics per TS. ----
+
+
+class TestSnapshotUpload:
+    """The maybeUploadSnapshot port: publish the derived image when the server
+    snapshot lags it — sealed+declared when keyed, chunked over the comfort
+    threshold, skipped (never failing sync) under quarantine/oversize."""
+
+    def test_keyless_pull_uploads_a_plaintext_image_once(self, store: LocalStore, tmp_path: Path) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), content="image me", hlc=(2, 0)))
+        engine = make_engine(relay, store)
+        assert engine.pull().applied == 1
+
+        assert len(relay.uploaded_snapshots) == 1
+        image, hlc, sealed = relay.uploaded_snapshots[0]
+        assert sealed is False  # a plaintext derived store, undeclared
+        assert hlc == Hlc(physical=2, logical=0)  # the received-HLC watermark
+        # The image is a canonical derived shape: a fresh store restores it.
+        other = LocalStore(tmp_path / "other.db")
+        assert other.restore_snapshot(image, workspace_id=WS) is True
+        row = other.node(WS, uid("n1"))
+        assert row is not None and row.content_plain == "image me"
+        # The upload watermark: the next pull does not re-publish.
+        assert engine.pull().applied == 0
+        assert len(relay.uploaded_snapshots) == 1
+
+    def test_keyed_pull_seals_and_declares_the_upload(self, store: LocalStore, tmp_path: Path) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(WorkspaceKeyCrypto(key).encrypt_envelope(create_env(uid("n1"), content="sealed", hlc=(3, 0))))
+        engine = make_engine(relay, store, crypto=WorkspaceKeyCrypto(key))
+        assert engine.pull().applied == 1
+
+        assert len(relay.uploaded_snapshots) == 1
+        image, _hlc, sealed = relay.uploaded_snapshots[0]
+        assert sealed is True  # sealed=1 — the restore contract's declaration
+        # The sealed image opens under the workspace key and restores.
+        other = LocalStore(tmp_path / "restored.db")
+        assert other.restore_snapshot(decrypt_bytes(key, image), workspace_id=WS) is True
+        assert other.node(WS, uid("n1")) is not None
+
+    def test_keyed_upload_chunks_above_the_threshold(self, store: LocalStore, tmp_path: Path) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), content="chunk me", hlc=(2, 0)))
+        engine = make_engine(
+            relay,
+            store,
+            crypto=WorkspaceKeyCrypto(key),
+            snapshot_chunk_threshold=64,  # tiny thresholds exercise the multipart flow
+            snapshot_part_size=32,
+        )
+        assert engine.pull().applied == 1
+
+        assert relay.uploaded_snapshots == []  # the single PUT stayed unused
+        assert len(relay.committed_snapshots) == 1
+        upload_id, parts, hlc, sealed = relay.committed_snapshots[0]
+        assert sealed is True
+        assert hlc == Hlc(physical=2, logical=0)
+        assert parts == len(relay.uploaded_parts)
+        assert [index for _upload, index, _data in relay.uploaded_parts] == list(range(parts))
+        assert all(upload == upload_id for upload, _index, _data in relay.uploaded_parts)
+        # The parts reassemble the sealed image exactly (the commit's contract).
+        reassembled = b"".join(data for _upload, _index, data in sorted(relay.uploaded_parts, key=lambda part: part[1]))
+        other = LocalStore(tmp_path / "chunk-restored.db")
+        assert other.restore_snapshot(decrypt_bytes(key, reassembled), workspace_id=WS) is True
+        assert other.node(WS, uid("n1")) is not None
+
+    def test_upload_skips_when_the_server_snapshot_covers_the_cursor(self, store: LocalStore) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), hlc=(2, 0)))
+        relay.snapshot_blob = make_server_snapshot(
+            [{"id": uid("srv"), "workspace_id": WS, "is_class": 0, "is_embedded": 0, "updated_at": None}]
+        )
+        relay.snapshot_up_to_seq = 50  # the server image already covers the local cursor
+        engine = make_engine(relay, store)
+        engine.pull()
+        assert relay.uploaded_snapshots == []
+
+    def test_quarantined_projection_never_uploads_and_reports_once(self, store: LocalStore, caplog: pytest.LogCaptureFixture) -> None:
+        """The poisoned-snapshot lineage ruling: a projection that skipped ops
+        must not become other devices' bootstrap source."""
+        relay = FakeRelayClient(WS)
+        relay.batch_script = [QuarantinedError("bad op", status=422)]
+        store.enqueue(create_env(uid("poison")))
+        engine = make_engine(relay, store)
+        engine.push()  # the chunk lands in quarantine
+        relay.receive_remote(create_env(uid("n1"), hlc=(2, 0)))
+
+        with caplog.at_level(logging.ERROR):
+            engine.pull()
+        assert relay.uploaded_snapshots == []
+        assert sum("quarantined" in record.message for record in caplog.records) == 1
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            engine.pull()
+        assert sum("quarantined" in record.message for record in caplog.records) == 0
+
+    def test_oversize_image_skips_with_a_once_per_session_report(self, store: LocalStore, caplog: pytest.LogCaptureFixture) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), hlc=(2, 0)))
+        engine = make_engine(relay, store, snapshot_upload_limit=16)  # any image meets the cap
+        with caplog.at_level(logging.ERROR):
+            engine.pull()
+        assert relay.uploaded_snapshots == []
+        assert sum("body cap" in record.message for record in caplog.records) == 1
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            engine.pull()
+        assert relay.uploaded_snapshots == []
+        assert sum("body cap" in record.message for record in caplog.records) == 0
+
+    def test_a_413_from_the_relay_is_reported_once_and_never_fails_sync(self, store: LocalStore, caplog: pytest.LogCaptureFixture) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), hlc=(2, 0)))
+
+        def reject(_workspace_id: str, _data: bytes, *, hlc: Hlc, sealed: bool = False) -> SnapshotUploadResult:
+            raise QuarantinedError("entity too large", status=413)
+
+        relay.upload_snapshot = reject  # type: ignore[method-assign]
+        engine = make_engine(relay, store)
+        with caplog.at_level(logging.ERROR):
+            result = engine.pull()  # the upload failure must not fail the round
+        assert result.applied == 1
+        assert sum("body cap" in record.message for record in caplog.records) == 1
+
+    def test_upload_failure_is_best_effort_and_resets_the_watermark_on_success(self, store: LocalStore) -> None:
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("n1"), hlc=(2, 0)))
+        engine = make_engine(relay, store)
+        relay.snapshot_probe = lambda workspace_id: (_ for _ in ()).throw(NetworkError("boom"))  # type: ignore[method-assign]
+        assert engine.pull().applied == 1  # the probe failure is swallowed
+        assert relay.uploaded_snapshots == []
