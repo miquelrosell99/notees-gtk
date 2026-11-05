@@ -83,6 +83,6 @@ artifacts only — the `release` job stays gated on `refs/tags/v`).
 ## Consuming side
 
 The client talks to a Notees server deployment (relay + object API, see the
-main repo's operations docs). Client data stays local under
+notees-sync repo's operations docs). Client data stays local under
 `~/.config/notees-gtk/` and `~/.local/share/notees-gtk/`; server connection
 (URL, API key / session) is configured at first launch.

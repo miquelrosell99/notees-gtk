@@ -1,6 +1,6 @@
 # notees-gtk
 
-First-class GTK4/libadwaita desktop client for [Notees](https://github.com/miquelrosell99/notees), a self-hosted, privacy-first note-taking application with an operation-log sync protocol.
+First-class GTK4/libadwaita desktop client for [Notees](https://github.com/miquelrosell99/notees-sync), a self-hosted, privacy-first note-taking application with an operation-log sync protocol.
 
 <!-- Screenshot: add an app window capture here once the UI stabilizes. -->
 
@@ -73,7 +73,7 @@ uv python install 3.12
 uv sync
 ```
 
-Run a Notees dev server from the [notees](https://github.com/miquelrosell99/notees) checkout and point the client at it:
+Run a Notees dev server from the [notees-sync](https://github.com/miquelrosell99/notees-sync) checkout and point the client at it:
 
 ```sh
 docker compose -f compose.dev.yaml up

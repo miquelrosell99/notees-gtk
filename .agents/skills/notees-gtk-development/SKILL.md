@@ -6,23 +6,23 @@ description: Develop the notees-gtk repo — the Python/GTK4 lockstep desktop cl
 # notees-gtk development
 
 notees-gtk is one of three implementations of the Notees sync protocol —
-the TypeScript monorepo (`miquelrosell99/notees`) is the reference, Flutter is
+the TypeScript core (`miquelrosell99/notees-sync`) is the reference, Flutter is
 the third. This repo ports the wire models (`core/protocol/`), the REST/WS
 clients (`core/api/`), the sync engine (`core/sync/`), and the derived SQLite
 appliers (`data/`) to Python; the GTK chrome (`ui/`) is deliberately thin over
 a headless-testable core.
 
-Canonical protocol references live in the main repo: `packages/protocol/
+Canonical protocol references live in the notees-sync repo: `packages/protocol/
 SCHEMA.md` (the normative model) and `WIRE.md` (the wire spec) — read them
 before touching the wire.
 
 ## Non-negotiable laws
 
 1. **The fixture corpus is byte-pinned — never edit fixture bytes.**
-   `tests/fixtures/wire/` is a vendored copy of the main repo's
+   `tests/fixtures/wire/` is a vendored copy of the notees-sync repo's
    `packages/protocol/fixtures/`, sha256-identical at vendor time. It is the
    cross-implementation convergence anchor shared with Flutter. If a fixture
-   file differs from the main repo's, re-vendor from the main repo — do not
+   file differs from the notees-sync repo's, re-vendor from the notees-sync repo — do not
    hand-patch. Verify with the sha256 procedure in
    `references/development-workflow.md`.
 2. **Lockstep law.** A wire/applier/payload change is NOT done until all three
@@ -34,7 +34,7 @@ before touching the wire.
    at the repo root for recent related work. After shipping a slice, add one
    entry (what shipped, why, how it was verified) in the same pass. A change
    without its changelog entry is not done.
-4. **Docs are part of the change.** Wire changes update the main repo's
+4. **Docs are part of the change.** Wire changes update the notees-sync repo's
    `SCHEMA.md`/`WIRE.md` there; behavior changes update this repo's
    `README.md`/`AGENTS.md`/skills in the same pass when they describe changed
    reality.
@@ -50,7 +50,7 @@ before touching the wire.
 
 ## Gate before declaring done
 
-Two tiers (the notees monorepo's "Gate economics" is the shared law — same
+Two tiers (the notees-sync repo's "Gate economics" is the shared law — same
 shape here):
 
 - **Scoped (the per-task loop):** `uv run pytest tests/<touched-files>` on the
@@ -69,10 +69,10 @@ vanishes on an unloaded re-run is a load symptom — root-cause before
 retrying.
 
 The live end-to-end module (`tests/test_live_server_e2e.py`) self-skips without a
-built monorepo server — run it deliberately when the change touches the wire:
+built sync server — run it deliberately when the change touches the wire:
 
 ```sh
-pnpm --filter @notees/server build   # in a Notees monorepo checkout
+pnpm --filter @notees/server build   # in a notees-sync checkout
 NOTEES_V2_ROOT=<path-to-notees-checkout> uv run pytest tests/test_live_server_e2e.py
 ```
 

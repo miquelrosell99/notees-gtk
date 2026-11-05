@@ -6,8 +6,8 @@ notees-gtk is the first-class GTK4/libadwaita desktop client for Notees — a
 self-hosted, privacy-first, local-first personal information environment whose
 only authority is an immutable operation log (envelope **v3**). This repo is
 the Python lockstep implementation of the wire protocol, the derived SQLite
-appliers, and the sync engine; the TypeScript monorepo
-(`miquelrosell99/notees`) is the reference implementation, and the Flutter
+appliers, and the sync engine; the TypeScript core
+(`miquelrosell99/notees-sync` — the wire authority + server) is the reference implementation, and the Flutter
 client is the third implementation of the same contracts.
 
 The GTK client is offline-first: edits land in a local SQLite outbox and sync
@@ -33,7 +33,7 @@ AGENTS.md
   gate, the changelog-as-record rule, docs-part-of-change).
 - **Any release/packaging task — tag, CI, PKGBUILD, GitHub Release →
   invoke the `notees-gtk-operations` skill first.**
-- The skills summarize and enforce; the main repo's `docs/developers/`
+- The skills summarize and enforce; the notees-sync repo's `docs/developers/`
   runbooks are the canonical protocol/wire reference for all three
   implementations.
 
@@ -84,17 +84,17 @@ AGENTS.md
 - Gate (blocking, mirrors `ci.yml`): `uv run pytest && uv run ruff check &&
   uv run mypy src`.
 - Arch package locally: `makepkg -si` from a clone.
-- Live end-to-end check: build the monorepo server (`pnpm --filter
-  @notees/server build` in a Notees checkout) and point `NOTEES_V2_ROOT` at
+- Live end-to-end check: build the sync server (`pnpm --filter
+  @notees/server build` in a notees-sync checkout) and point `NOTEES_V2_ROOT` at
   it; `tests/test_live_server_e2e.py` self-skips when the server build or
   node is absent.
 
 ## Invariants
 
 - **The fixture corpus is byte-pinned.** `tests/fixtures/wire/` is a vendored
-  copy of the main repo's `packages/protocol/fixtures/` (sha256-identical at
+  copy of the notees-sync repo's `packages/protocol/fixtures/` (sha256-identical at
   vendor time). Never edit, reformat, or regenerate those bytes; a wire change
-  re-vendors the corpus from the main repo.
+  re-vendors the corpus from the notees-sync repo.
 - **Lockstep law.** A wire/applier change is not done until the three
   implementations converge — the TS reference, this client, and Flutter — each
   with fixtures exercising every affected applier. Recipe:
@@ -104,7 +104,7 @@ AGENTS.md
   `displayTemplate` (fixture `class-display-template.json`), but no GTK
   surface renders it yet — the web reference chrome (mentions, pickers,
   breadcrumbs, search rows) does. When building class-aware titles, read the
-  contract in the main repo's `packages/protocol/SCHEMA.md` (reference-chrome
+  contract in the notees-sync repo's `packages/protocol/SCHEMA.md` (reference-chrome
   only, the tri-state, the dual-key/folded placeholder rule, the
   equal-rank first-index-wins alias precedence).
 - **Fail loud; no backward compatibility.** Retired wire keys are rejected
@@ -138,7 +138,7 @@ AGENTS.md
   `CHANGELOG.md` for recent related work. A change without its changelog +
   doc updates is not done.
 - **Docs are part of the change:** behavior, wire, or UX changes update the
-  relevant docs in the same pass — the main repo's `SCHEMA.md`/`WIRE.md` when
+  relevant docs in the same pass — the notees-sync repo's `SCHEMA.md`/`WIRE.md` when
   the wire changes, this file and the skills when they describe changed
   reality.
 - **No legacy version names:** narrative v1/v2 history and milestone labels
