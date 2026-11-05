@@ -122,6 +122,19 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self._toast_overlay.set_child(self._stack)
 
+        # The fail-loud locked state (owner ruling, 2026-11-04): a keyed
+        # workspace opened without its key refuses content sync and shows
+        # this sticky banner until a password sign-in re-derives the master
+        # key and the workspace re-opens unlocked. Lives on the main page
+        # only — the login page has no workspace context.
+        self._locked_banner = Adw.Banner(
+            title="This workspace is encrypted — sign in with your password to open it",
+            button_label="Sign in",
+            revealed=False,
+        )
+        self._locked_banner.connect("button-clicked", self._on_locked_sign_in)
+        self._workspace_locked = False
+
         self._login_view = LoginView(on_logged_in=self._on_logged_in)
         self._stack.add_named(self._login_view, "login")
 
@@ -145,16 +158,25 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._stack.set_visible_child_name("main")
 
     def _show_login(self, message: str | None = None) -> None:
-        """Return to the login page (session expired or never authenticated)."""
+        """Return to the login page (session expired, never authenticated,
+        or the locked banner's sign-in affordance)."""
         engine = self._engine
         if engine is not None:
             engine.stop_realtime()
         self._engine = None
         self._client = None
         self._master_key = None
+        self._workspace_locked = False
+        self._locked_banner.set_revealed(False)
         self._stack.set_visible_child_name("login")
         if message:
             self._login_view.show_toast(message)
+
+    def _on_locked_sign_in(self, *_args: object) -> None:
+        """The locked banner's Sign in: a full password sign-in re-derives
+        the master key; the post-login workspace load re-opens the workspace
+        and unlocks it (fetch-or-ensure now unwraps with the fresh key)."""
+        self._show_login("Sign in with your password to unlock the encrypted workspace")
 
     # -------------------------------------------------------------- main UI
 
@@ -234,7 +256,10 @@ class NoteesWindow(Adw.ApplicationWindow):
         content_page = Adw.NavigationPage(title="", child=content_view)
 
         split = Adw.NavigationSplitView(sidebar=sidebar_page, content=content_page, hexpand=True, vexpand=True)
-        self._stack.add_named(split, "main")
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
+        main_box.append(self._locked_banner)
+        main_box.append(split)
+        self._stack.add_named(main_box, "main")
 
         self._load_workspaces()
 
@@ -492,51 +517,80 @@ class NoteesWindow(Adw.ApplicationWindow):
         self._engine = engine
         self._start_interval_sync()
 
-        def work() -> bool:
-            self._install_workspace_crypto(client, engine, workspace_id)
+        def work() -> tuple[bool, bool]:
+            proceed = self._install_workspace_crypto(client, engine, workspace_id)
+            if not proceed:
+                return False, False
             restored = engine.maybe_restore_snapshot()
             engine.sync()
-            return restored
+            return True, restored
 
-        run_in_worker(work, on_done=self._on_workspace_synced, on_error=self._on_sync_error)
+        run_in_worker(work, on_done=lambda result: self._on_workspace_opened(workspace_id, *result), on_error=self._on_sync_error)
 
-    def _install_workspace_crypto(self, client: NoteesClient, engine: SyncEngine, workspace_id: str) -> None:
+    def _install_workspace_crypto(self, client: NoteesClient, engine: SyncEngine, workspace_id: str) -> bool:
         """Fetch-or-ensure the workspace key and hand the engine its provider.
 
         Runs on the worker thread BEFORE the first sync round (a keyed
         engine must decrypt snapshot/envelopes from the very first apply).
         Fetch the server's wrapped key; on 404 (never keyed) generate a
         workspace key, wrap it under the session master key, and PUT it —
-        first write wins, so a lost race adopts the winner's record. With no
-        master key (key-only/API-key config — the server 403s operators on
-        ``/key``) the engine stays keyless: locked sync, plaintext writes.
+        first write wins, so a lost race adopts the winner's record.
+
+        Returns ``True`` when content sync may proceed. The fail-loud ruling
+        (owner decision, 2026-11-04 — a keyed workspace must never silently
+        open keyless) makes the ``False`` arms loud by contract: the engine
+        gets ``encrypted_locked`` and the window shows the locked banner.
+        ``True`` with no provider is only ever the genuinely-keyless
+        workspace (no key row server-side) or the undetectable cases
+        (operator/API-key configs the server 403s on ``/key``, or an
+        unreachable server) — both stay honest plaintext, logged.
         """
         master_key = self._master_key
-        if master_key is None:
-            return
         try:
             wrapped = client.fetch_workspace_key(workspace_id)
-            if wrapped is None:
-                wrapped = client.store_workspace_key(workspace_id, wrap_workspace_key(master_key, generate_workspace_key()))
-            engine.set_crypto(WorkspaceKeyCrypto(unwrap_workspace_key(master_key, wrapped)))
         except ApiError as exc:
-            _log.warning("Workspace key unavailable for %s (%s); syncing keyless (locked)", workspace_id, exc.detail)
+            # Undetectable: an operator/API-key principal is 403'd off /key
+            # and an offline start cannot ask — proceed keyless, loudly.
+            _log.warning("Workspace key status unknown for %s (%s); syncing keyless", workspace_id, exc.detail)
             engine.set_crypto(None)
+            return True
+        if master_key is None:
+            if wrapped is not None:
+                # Keyed workspace, no master key (a fresh key-only session,
+                # or a session whose login predates custody): FAIL LOUD.
+                _log.warning("Workspace %s is encrypted but no master key is in memory; refusing content sync", workspace_id)
+                engine.set_crypto(None)
+                engine.encrypted_locked = True
+                return False
+            return True  # genuinely keyless workspace — plaintext is its contract
+        if wrapped is None:
+            try:
+                wrapped = client.store_workspace_key(workspace_id, wrap_workspace_key(master_key, generate_workspace_key()))
+            except ApiError as exc:
+                _log.warning("Workspace key store failed for %s (%s); syncing keyless", workspace_id, exc.detail)
+                engine.set_crypto(None)
+                return True
+        try:
+            engine.set_crypto(WorkspaceKeyCrypto(unwrap_workspace_key(master_key, wrapped)))
         except ValueError as exc:
             # The wrapped record does not open under this account's current
-            # master key (wrapped under a former password of the same
-            # account — the post-password-change edge): degrade to keyless
-            # locked sync rather than failing the round with an opaque
-            # sync-error toast.
-            _log.warning("Workspace key unwrap failed for %s (%s); syncing keyless (locked)", workspace_id, exc)
+            # master key (wrapped under a former password): we KNOW the
+            # workspace is keyed and have no usable key — fail loud like the
+            # no-master-key arm, never silent plaintext sync.
+            _log.warning("Workspace key unwrap failed for %s (%s); refusing content sync", workspace_id, exc)
             engine.set_crypto(None)
-        except Exception as exc:  # noqa: BLE001 — any other failure degrades the same way
-            # Unknown failures (transport quirks, parse edges) must never
-            # fail the sync round: degrade to keyless locked sync.
-            _log.warning("Workspace key install failed for %s (%s); syncing keyless (locked)", workspace_id, exc)
-            engine.set_crypto(None)
+            engine.encrypted_locked = True
+            return False
+        return True
 
-    def _on_workspace_synced(self, restored: bool) -> None:
+    def _on_workspace_opened(self, workspace_id: str, proceed: bool, restored: bool) -> None:
+        locked = not proceed
+        if locked != self._workspace_locked:
+            self._workspace_locked = locked
+            self._locked_banner.set_revealed(locked)
+        if locked:
+            _log.warning("Workspace %s is encrypted and locked; content sync refused", workspace_id)
+            return
         self._refresh_sidebar()
         if restored:
             self.show_toast("Restored the latest workspace snapshot")
@@ -550,7 +604,7 @@ class NoteesWindow(Adw.ApplicationWindow):
 
     def _on_interval_sync(self) -> bool:
         engine = self._engine
-        if engine is not None:
+        if engine is not None and not self._workspace_locked:
             run_in_worker(engine.sync, on_done=lambda _result: self._refresh_sidebar(), on_error=self._on_sync_error)
         return True  # keep the GLib timeout source alive (GLib.SOURCE_CONTINUE)
 

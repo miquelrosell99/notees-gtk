@@ -24,10 +24,15 @@ E2EE (the ``EnvelopeCrypto`` boundary): when a crypto provider is installed,
 push seals a COPY of each outbox chunk before it hits the wire — outbox rows
 and the local mirror's self-apply stay plaintext — and every remote envelope
 decrypts at the single apply chokepoint before store validation. Snapshot
-blobs decrypt after download (the future upload path seals symmetrically).
-With NO provider (a keyless/API-key session, a locked workspace) the wire
-stays plaintext and remote `$e` envelopes are skipped with a counted warning
-— the cursor still advances and sync stays green.
+blobs follow the probe's ``sealed`` declaration: keyed clients decrypt and
+restore ONLY sealed images; a plaintext server image is skipped with a
+counted warning (catch-up replays the log — restoring the content-empty
+image would blank the workspace). With NO provider (a genuinely keyless
+workspace) the wire stays plaintext, remote `$e` envelopes and sealed
+snapshots are skipped with counted warnings, and the cursor still advances.
+Fail-loud ruling: a client that KNOWS the workspace is keyed but has no
+usable key sets :attr:`SyncEngine.encrypted_locked`, and push/pull/snapshot
+refuse loudly instead of silently syncing plaintext.
 """
 
 from __future__ import annotations
@@ -167,14 +172,24 @@ class SyncEngine:
         self._sleeper = sleeper
         self._page_size = page_size
         self._crypto = crypto
-        # Locked-skip bookkeeping: the up_to_seq of the sealed snapshot we
-        # declined while keyless (warn counted once per snapshot; reset when
-        # a provider is installed so a later lock cycle re-warns).
-        self._locked_skipped_snapshot_seq: int | None = None
+        # Fail-loud ruling (owner decision, 2026-11-04): a KEYED workspace
+        # opened without its key must NOT silently sync plaintext — the
+        # client sets this when it knows the workspace is encrypted but has
+        # no usable key, and push/pull/snapshot-restore refuse with a
+        # warning until a provider is installed (set_crypto clears it).
+        self.encrypted_locked = False
+        # Skip bookkeeping: the up_to_seq of the snapshot we declined (the
+        # sealed one while keyless, or the plaintext server image while
+        # keyed — warn counted once per snapshot; reset when a provider is
+        # installed so a later cycle re-warns).
+        self._declined_snapshot_seq: int | None = None
         # Count of remote `$e` envelopes skipped because NO provider is
         # installed (the locked-workspace semantic): the cursor still
         # advances and sync stays green — see _apply_guarded.
         self.skipped_encrypted = 0
+        # Count of snapshot restores declined (sealed-while-keyless and
+        # plaintext-while-keyed arms alike).
+        self.skipped_snapshots = 0
         # Realtime state (start_realtime/stop_realtime). The lock serializes
         # catch-up pulls (main thread or the WS reader thread after a
         # reconnect hello) with live-ops buffering/application.
@@ -190,12 +205,14 @@ class SyncEngine:
 
         Synchronous — ``cryptography`` is sync — and safe to call between
         rounds; the next push/pull uses the new provider. Installing a key
-        also clears the locked-snapshot skip marker (a later lock cycle
-        re-warns from a clean slate).
+        also clears the snapshot-decline marker and the fail-loud lock (a
+        provider is proof the workspace opened with its key); clearing the
+        key keeps the lock untouched — the caller re-evaluates it.
         """
         self._crypto = crypto
         if crypto is not None:
-            self._locked_skipped_snapshot_seq = None
+            self._declined_snapshot_seq = None
+            self.encrypted_locked = False
 
     def _seal_for_wire(self, chunk: list[RelayEnvelope]) -> list[RelayEnvelope]:
         """Encrypt a COPY of the chunk for the wire; the outbox rows and the
@@ -216,7 +233,14 @@ class SyncEngine:
         other 4xx quarantine the chunk and the loop continues with the next
         one; network/5xx/429 retry on the backoff schedule, then give up for
         this round leaving the chunk pending.
+
+        Fail-loud ruling: when :attr:`encrypted_locked` is set (a keyed
+        workspace opened without its key), the push refuses — nothing may
+        inject plaintext ops into an encrypted log.
         """
+        if self.encrypted_locked:
+            _log.warning("Push refused: encrypted workspace is locked (no workspace key)")
+            return PushResult(sent=0, quarantined=0)
         sent = 0
         quarantined = 0
         while True:
@@ -291,7 +315,14 @@ class SyncEngine:
         apply it. Pulls are serialized with the realtime stream and any
         buffered live ops are drained afterwards (op-id dedupe makes the
         overlap harmless).
+
+        Fail-loud ruling: when :attr:`encrypted_locked` is set, the pull
+        refuses — the client surfaces the locked state instead of silently
+        pulling a workspace it cannot open.
         """
+        if self.encrypted_locked:
+            _log.warning("Pull refused: encrypted workspace is locked (no workspace key)")
+            return PullResult(applied=0, cursor=self._store.cursor(self._workspace_id))
         applied = 0
         with self._rt_lock:
             self._pull_in_flight = True
@@ -467,11 +498,33 @@ class SyncEngine:
         blob is downloaded and its ``nodes`` table copied over (column
         intersection) with the cursor set to ``up_to_seq``.
 
+        The restore contract (WIRE.md — keyed off the probe's ``sealed`` flag,
+        the wire's declaration of what the blob IS):
+
+        - keyed + ``sealed=True``: decrypt, then restore; a sealed blob the
+          key cannot open throws (real corruption).
+        - keyed + ``sealed=False`` — a keyless upload or the server's own
+          self-heal image (built from a derived store that SKIPS sealed
+          envelopes, so the image is content-empty while claiming
+          ``up_to_seq`` = latest): SKIP with a counted warning, cursor stays
+          put, and seq catch-up replays the log from the durable cursor.
+          Restoring it and jumping the cursor would blank the workspace (the
+          empty-store trap).
+        - keyless + sealed blob (no sqlite magic): skip with a counted
+          warning; catch-up covers the content.
+        - keyless + plaintext: restore as-is (a genuinely keyless
+          workspace's contract).
+
         Returns ``True`` only when a snapshot blob was restored. Snapshots with
         ``up_to_seq=None`` (pre-cursor era) are skipped: this store tracks no
         HLC watermark to compare, and catch-up from 0 converges via op-id
-        dedupe.
+        dedupe. Fail-loud ruling: :attr:`encrypted_locked` refuses the restore
+        (a locked client must not install an image into a workspace it cannot
+        open).
         """
+        if self.encrypted_locked:
+            _log.warning("Snapshot restore refused: encrypted workspace is locked (no workspace key)")
+            return False
         meta = self._client.snapshot_probe(self._workspace_id)
         stored_epoch = self._store.stored_restore_epoch(self._workspace_id)
         if meta.restore_epoch != stored_epoch:
@@ -483,19 +536,30 @@ class SyncEngine:
         up_to_seq = meta.up_to_seq if meta.up_to_seq is not None else 0
         if up_to_seq <= self._store.cursor(self._workspace_id):
             return False
-        if self._crypto is None and self._locked_skipped_snapshot_seq == up_to_seq:
-            return False  # this sealed snapshot was already declined while locked
+        if self._declined_snapshot_seq == up_to_seq:
+            return False  # this snapshot was already declined — no re-download
         blob = self._client.snapshot_data(self._workspace_id)
         if self._crypto is not None:
+            if not meta.sealed:
+                # Keyed workspace, PLAINTEXT snapshot (the empty-store trap):
+                # skip with a counted warning; the cursor stays put so the
+                # seq catch-up below replays the log (never the image).
+                self.skipped_snapshots += 1
+                self._declined_snapshot_seq = up_to_seq
+                _log.warning(
+                    "server snapshot is plaintext for an encrypted workspace (%d bytes, up to seq %d) — replaying the log instead; the image derives from a store that skips sealed envelopes",
+                    len(blob),
+                    up_to_seq,
+                )
+                return False
             blob = self._crypto.decrypt_bytes(blob)
         elif not _has_sqlite_magic(blob):
-            # Locked + sealed snapshot (TS parity): without a provider the
-            # blob is opaque bytes. Skip the restore — the seq catch-up
-            # covers the content — with a counted warning (once per
-            # snapshot, and the marker declines re-downloads on later
-            # rounds; the store's restore_snapshot would return False
-            # anyway, but silently and after re-downloading every round).
-            self._locked_skipped_snapshot_seq = up_to_seq
+            # Locked + sealed snapshot: without a provider the blob is opaque
+            # bytes. Skip the restore — the seq catch-up covers the content —
+            # with a counted warning (once per snapshot, and the marker
+            # declines re-downloads on later rounds).
+            self.skipped_snapshots += 1
+            self._declined_snapshot_seq = up_to_seq
             _log.warning(
                 "workspace key unavailable: skipped a sealed snapshot (%d bytes, up to seq %d); seq catch-up covers the content",
                 len(blob),

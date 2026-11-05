@@ -83,20 +83,27 @@ class WorkspaceRef(BaseModel):
     """Workspace membership entry from ``GET /api/workspaces``.
 
     The server sends ``id``, ``name`` (null when unnamed), ``role``,
-    ``createdAt``, and the relay ``envelopeCount`` / ``latestSeq`` stats; the
-    ref carries what the chrome addresses workspaces by.
+    ``createdAt``, the relay ``envelopeCount`` / ``latestSeq`` stats, and
+    ``encrypted`` (a workspace_key row exists — the workspace is
+    client-encrypted); the ref carries what the chrome addresses workspaces
+    by.
     """
 
     id: str
     name: str | None = None
+    encrypted: bool = False
 
 
 class SnapshotMeta(BaseModel):
     """Snapshot metadata from ``GET /api/relay/v2/snapshot`` (WIRE.md).
 
     Wire shape: ``snapshotId``, ``hlc``, ``hasSnapshot``, ``restoreEpoch``,
-    ``upToSeq`` (null when no snapshot exists). ``workspaceId`` deliberately
-    does not ride along — the client asked for exactly one workspace.
+    ``upToSeq`` (null when no snapshot exists), ``sealed``. ``workspaceId``
+    deliberately does not ride along — the client asked for exactly one
+    workspace. ``sealed`` declares what the blob IS: ``True`` = a sealed
+    image (a keyed client sealed it); ``False`` = a plaintext derived store
+    (a keyless client upload, or the server's own self-heal snapshot) — the
+    restore contract in :meth:`SyncEngine.maybe_restore_snapshot` keys off it.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -106,6 +113,7 @@ class SnapshotMeta(BaseModel):
     has_snapshot: bool
     restore_epoch: int
     up_to_seq: int | None
+    sealed: bool = False
 
 
 class SnapshotUploadResult(BaseModel):
@@ -446,24 +454,89 @@ class NoteesClient:
         response = self._send("GET", f"{RELAY_V2_BASE}/snapshot/data", params={"workspaceId": workspace_id})
         return response.content
 
-    def upload_snapshot(self, workspace_id: str, data: bytes, *, hlc: Hlc) -> SnapshotUploadResult:
+    def upload_snapshot(self, workspace_id: str, data: bytes, *, hlc: Hlc, sealed: bool = False) -> SnapshotUploadResult:
         """Upload a client-produced snapshot blob (WIRE.md).
 
         Args:
             workspace_id: Workspace the snapshot belongs to.
-            data: Raw snapshot bytes (a serialized derived-state SQLite db).
+            data: Raw snapshot bytes (a serialized derived-state SQLite db,
+                or a sealed image — see ``sealed``).
             hlc: The HLC up to which the snapshot covers the operation log;
                 sent as the ``physical``/``logical`` query parameters.
+            sealed: Declare the body a SEALED image (the engine's crypto
+                branch is the only sealer) via ``sealed=1``; absent means a
+                plaintext derived store. Sealed uploads skip the server's
+                sanity gate (ciphertext is opaque) — the flag rides the
+                snapshot row and is served back as ``sealed`` in the probe.
 
         Returns:
             The server's acknowledgement (snapshot id + covered seq).
         """
-        response = self._send(
-            "PUT",
-            f"{RELAY_V2_BASE}/snapshot/data",
-            params={"workspaceId": workspace_id, "physical": hlc.physical, "logical": hlc.logical},
-            content=data,
-        )
+        params: dict[str, Any] = {"workspaceId": workspace_id, "physical": hlc.physical, "logical": hlc.logical}
+        if sealed:
+            params["sealed"] = "1"
+        response = self._send("PUT", f"{RELAY_V2_BASE}/snapshot/data", params=params, content=data)
+        return SnapshotUploadResult.model_validate(response.json())
+
+    def upload_snapshot_part(self, workspace_id: str, upload: str, index: int, data: bytes) -> None:
+        """Stage one part of a multipart snapshot upload (WIRE.md).
+
+        Optional transport — large checkpoints only; the single
+        :meth:`upload_snapshot` stays the default path. ``upload`` is a
+        client-generated uuid naming the multipart upload; ``index`` is
+        zero-based and each index stages exactly once (a duplicate index is
+        rejected 422). The part body is binary; 201 acknowledges
+        ``{upload, index}``.
+        """
+        if index < 0:
+            raise ValueError(f"part index must be non-negative, got {index}")
+        if not data:
+            raise ValueError("snapshot part must be a non-empty binary body")
+        params = {"workspaceId": workspace_id, "upload": upload, "index": index}
+        self._send("PUT", f"{RELAY_V2_BASE}/snapshot/data/part", params=params, content=data)
+
+    def commit_snapshot(
+        self,
+        workspace_id: str,
+        upload: str,
+        *,
+        parts: int,
+        hlc: Hlc,
+        sealed: bool = False,
+    ) -> SnapshotUploadResult:
+        """Commit a multipart snapshot upload (WIRE.md).
+
+        Concatenates the upload's parts 0..N-1 in order and stores the
+        result as the checkpoint — the same sanity gate (sealed uploads are
+        exempt) and the same ``sealed`` flag as the single PUT; the 201 body
+        mirrors it. An unknown upload is 404; a ``parts`` count that does
+        not match the staged indexes is 422; a gate failure is 422 with the
+        staged parts left in place.
+
+        Args:
+            workspace_id: Workspace the checkpoint belongs to.
+            upload: The multipart upload id previously staged via
+                :meth:`upload_snapshot_part`.
+            parts: The number of parts claimed; must match the staged
+                indexes exactly.
+            hlc: The HLC up to which the snapshot covers the operation log.
+            sealed: Declare the committed image sealed (``sealed=1``).
+
+        Returns:
+            The server's acknowledgement (snapshot id + covered seq).
+        """
+        if parts <= 0:
+            raise ValueError(f"parts must be positive, got {parts}")
+        params: dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "upload": upload,
+            "parts": parts,
+            "physical": hlc.physical,
+            "logical": hlc.logical,
+        }
+        if sealed:
+            params["sealed"] = "1"
+        response = self._send("POST", f"{RELAY_V2_BASE}/snapshot/data/commit", params=params)
         return SnapshotUploadResult.model_validate(response.json())
 
     def stats(self, workspace_id: str) -> RelayStats:

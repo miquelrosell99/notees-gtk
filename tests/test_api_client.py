@@ -507,6 +507,156 @@ class TestSnapshots:
         assert result.up_to_hlc == Hlc(physical=1767225600000, logical=7)
         assert result.up_to_seq == 99
 
+    def test_probe_maps_the_sealed_declaration(self) -> None:
+        """`sealed` declares what the blob IS — the restore contract keys off it."""
+        probe: dict[str, Any] = {
+            "snapshotId": "0192a000-0000-7000-8000-0000000000e1",
+            "hlc": {"physical": 1767225600000, "logical": 7},
+            "hasSnapshot": True,
+            "restoreEpoch": 3,
+            "upToSeq": 77,
+            "sealed": True,
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=probe)
+
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/snapshot"): handler}))
+        assert client.snapshot_probe(WORKSPACE_ID).sealed is True
+
+    def test_probe_sealed_defaults_false_for_plaintext_meta(self) -> None:
+        """Pre-sealed servers and plaintext images: the flag defaults off."""
+        probe: dict[str, Any] = {
+            "snapshotId": "",
+            "hlc": {"physical": 0, "logical": 0},
+            "hasSnapshot": False,
+            "restoreEpoch": 0,
+            "upToSeq": None,
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=probe)
+
+        client, _ = _make_client(_router({("GET", f"{RELAY_V2_BASE}/snapshot"): handler}))
+        assert client.snapshot_probe(WORKSPACE_ID).sealed is False
+
+    def test_upload_snapshot_declares_sealed(self) -> None:
+        """Sealed uploads send sealed=1 — and skip the server's sanity gate
+        (ciphertext is opaque), so a sealed image is accepted, never 422-gated."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["sealed"] == "1"
+            return httpx.Response(
+                201,
+                json={
+                    "snapshotId": "0192a000-0000-7000-8000-0000000000e3",
+                    "workspaceId": WORKSPACE_ID,
+                    "upToHlc": {"physical": 1767225600000, "logical": 7},
+                    "upToSeq": 99,
+                },
+            )
+
+        client, _ = _make_client(_router({("PUT", f"{RELAY_V2_BASE}/snapshot/data"): handler}))
+        result = client.upload_snapshot(WORKSPACE_ID, b"opaque-sealed-image", hlc=Hlc(physical=1767225600000, logical=7), sealed=True)
+        assert result.snapshot_id == "0192a000-0000-7000-8000-0000000000e3"
+
+    def test_upload_snapshot_omits_sealed_by_default(self) -> None:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.params.get("sealed", ""))
+            return httpx.Response(
+                201,
+                json={
+                    "snapshotId": "0192a000-0000-7000-8000-0000000000e4",
+                    "workspaceId": WORKSPACE_ID,
+                    "upToHlc": {"physical": 0, "logical": 0},
+                    "upToSeq": 0,
+                },
+            )
+
+        client, _ = _make_client(_router({("PUT", f"{RELAY_V2_BASE}/snapshot/data"): handler}))
+        client.upload_snapshot(WORKSPACE_ID, b"plaintext-image", hlc=Hlc(physical=0, logical=0))
+        assert seen == [""]  # absent — a plaintext derived store
+
+    def test_upload_snapshot_part_stages_one_chunk(self) -> None:
+        blob = b"part-bytes"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "PUT"
+            assert request.url.path == f"{RELAY_V2_BASE}/snapshot/data/part"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
+            assert request.url.params["upload"] == "0192a000-0000-7000-8000-0000000000aa"
+            assert request.url.params["index"] == "3"
+            assert request.content == blob
+            return httpx.Response(201, json={"upload": "0192a000-0000-7000-8000-0000000000aa", "index": 3})
+
+        client, _ = _make_client(_router({("PUT", f"{RELAY_V2_BASE}/snapshot/data/part"): handler}))
+        client.upload_snapshot_part(WORKSPACE_ID, "0192a000-0000-7000-8000-0000000000aa", 3, blob)
+
+    def test_upload_snapshot_part_rejects_duplicate_index(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"error": {"code": "validation_failed", "message": "duplicate", "status": 422}})
+
+        client, _ = _make_client(_router({("PUT", f"{RELAY_V2_BASE}/snapshot/data/part"): handler}))
+        with pytest.raises(QuarantinedError):
+            client.upload_snapshot_part(WORKSPACE_ID, "0192a000-0000-7000-8000-0000000000aa", 0, b"again")
+
+    def test_upload_snapshot_part_validates_before_wire(self) -> None:
+        client, requests = _make_client(lambda request: httpx.Response(500))
+        with pytest.raises(ValueError, match="non-negative"):
+            client.upload_snapshot_part(WORKSPACE_ID, "u", -1, b"x")
+        with pytest.raises(ValueError, match="non-empty"):
+            client.upload_snapshot_part(WORKSPACE_ID, "u", 0, b"")
+        assert requests == []
+
+    def test_commit_snapshot_concatenates_and_mirrors_the_single_put(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == f"{RELAY_V2_BASE}/snapshot/data/commit"
+            assert request.url.params["workspaceId"] == WORKSPACE_ID
+            assert request.url.params["upload"] == "0192a000-0000-7000-8000-0000000000aa"
+            assert request.url.params["parts"] == "2"
+            assert request.url.params["physical"] == "1767225600000"
+            assert request.url.params["logical"] == "7"
+            assert request.url.params["sealed"] == "1"
+            return httpx.Response(
+                201,
+                json={
+                    "snapshotId": "0192a000-0000-7000-8000-0000000000e5",
+                    "workspaceId": WORKSPACE_ID,
+                    "upToHlc": {"physical": 1767225600000, "logical": 7},
+                    "upToSeq": 99,
+                },
+            )
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/snapshot/data/commit"): handler}))
+        result = client.commit_snapshot(
+            WORKSPACE_ID,
+            "0192a000-0000-7000-8000-0000000000aa",
+            parts=2,
+            hlc=Hlc(physical=1767225600000, logical=7),
+            sealed=True,
+        )
+        assert isinstance(result, SnapshotUploadResult)
+        assert result.up_to_seq == 99
+
+    def test_commit_snapshot_unknown_upload_is_404(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": {"code": "not_found", "message": "no parts staged", "status": 404}})
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/snapshot/data/commit"): handler}))
+        with pytest.raises(QuarantinedError):
+            client.commit_snapshot(WORKSPACE_ID, "0192a000-0000-7000-8000-0000000000aa", parts=1, hlc=Hlc(physical=0, logical=0))
+
+    def test_commit_snapshot_parts_mismatch_is_422(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"error": {"code": "validation_failed", "message": "parts mismatch", "status": 422}})
+
+        client, _ = _make_client(_router({("POST", f"{RELAY_V2_BASE}/snapshot/data/commit"): handler}))
+        with pytest.raises(QuarantinedError):
+            client.commit_snapshot(WORKSPACE_ID, "0192a000-0000-7000-8000-0000000000aa", parts=3, hlc=Hlc(physical=0, logical=0))
+
     def test_stats_maps_v2_shape(self) -> None:
         stats: dict[str, Any] = {
             "envelopeCount": 42,

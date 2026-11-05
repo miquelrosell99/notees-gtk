@@ -29,6 +29,7 @@ from notees_gtk.core.api import (
     RateLimitedError,
     ServerError,
     SnapshotMeta,
+    WorkspaceRef,
 )
 from notees_gtk.core.protocol.clock import Clock, Hlc
 from notees_gtk.core.protocol.crypto import (
@@ -43,7 +44,7 @@ from notees_gtk.core.protocol.models import (
     RelayEnvelope,
     new_envelope,
 )
-from notees_gtk.core.sync import EnvelopeCrypto, PushResult, SyncEngine
+from notees_gtk.core.sync import EnvelopeCrypto, PullResult, PushResult, SyncEngine
 from notees_gtk.data.store import LocalStore
 
 WS = "ws-a"
@@ -129,6 +130,7 @@ class FakeRelayClient(NoteesClient):
         self.restore_epoch = 0
         self.snapshot_blob: bytes | None = None
         self.snapshot_up_to_seq: int | None = None
+        self.snapshot_sealed = False
         self.batch_script: list[BaseException] = []
         self.batch_calls: list[list[RelayEnvelope]] = []
         self.catch_up_calls: list[int] = []
@@ -177,6 +179,7 @@ class FakeRelayClient(NoteesClient):
             has_snapshot=has_snapshot,
             restore_epoch=self.restore_epoch,
             up_to_seq=self.snapshot_up_to_seq if has_snapshot else None,
+            sealed=self.snapshot_sealed,
         )
 
     def snapshot_data(self, workspace_id: str) -> bytes:
@@ -863,6 +866,7 @@ class TestE2eeBoundary:
         blob = make_server_snapshot([{"id": uid("snap-node"), "is_class": 1, "workspace_id": WS}])
         relay = FakeRelayClient(WS)
         relay.snapshot_blob = encrypt_bytes(key, blob)
+        relay.snapshot_sealed = True  # the meta's declaration is what authorizes the decrypt
         relay.snapshot_up_to_seq = 7
         store.set_cursor(WS, 1)
         engine = self._keyed_engine(relay, store, key)
@@ -879,3 +883,110 @@ class TestE2eeBoundary:
         engine = make_engine(relay, store)
         assert engine.maybe_restore_snapshot() is True
         assert store.node(WS, uid("snap-node")) is not None
+
+
+# --- sealed-snapshot restore contract + fail-loud ruling (lockstep debt slice) ----
+
+
+class TestSealedSnapshotContract:
+    """The `sealed` meta declaration is the restore contract (WIRE.md):
+    keyed clients decrypt and restore ONLY sealed images; a plaintext server
+    image is skipped with a counted warning and the log is replayed; the
+    fail-loud ruling refuses content sync on a known-keyed locked workspace."""
+
+    def test_keyed_client_skips_plaintext_server_image_and_replays_the_log(
+        self, store: LocalStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The empty-store trap: a plaintext self-heal image claiming
+        up_to_seq=latest must never be restored into a keyed workspace —
+        catch-up from the durable cursor covers the content instead."""
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        # The server's self-heal image: a plaintext derived store, meta NOT sealed.
+        relay.snapshot_blob = make_server_snapshot(
+            [{"id": uid("img-node"), "workspace_id": WS, "is_class": 0, "is_embedded": 0, "updated_at": None}]
+        )
+        relay.snapshot_sealed = False
+        relay.snapshot_up_to_seq = 42
+        # The real content lives in the log past the durable cursor (seq 5).
+        for i in range(5):
+            relay.receive_remote(create_env(uid(f"filler-{i}"), hlc=(1, i)))
+        relay.receive_remote(create_env(uid("log-node"), content="from the log", hlc=(2, 0)))
+        store.set_cursor(WS, 5)
+        engine = make_engine(relay, store, crypto=WorkspaceKeyCrypto(key))
+
+        with caplog.at_level(logging.WARNING):
+            assert engine.maybe_restore_snapshot() is False
+        assert engine.skipped_snapshots == 1
+        assert store.node(WS, uid("img-node")) is None  # the image never installed
+        assert store.cursor(WS) == 5  # cursor stays put — the log replays
+        assert any("plaintext for an encrypted workspace" in r.message for r in caplog.records)
+
+        # The same call again declines BEFORE re-downloading.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert engine.maybe_restore_snapshot() is False
+        assert relay.snapshot_data_calls == 1
+        assert not any("plaintext for an encrypted workspace" in r.message for r in caplog.records)
+
+        # Catch-up replays the log from the durable cursor — no blanking:
+        # the covered prefix (seqs 1–5) is already under the cursor, and the
+        # content past it applies op by op instead of the image jumping it.
+        result = engine.pull()
+        assert result.applied == 1
+        row = store.node(WS, uid("log-node"))
+        assert row is not None and row.content_plain == "from the log"
+        assert store.cursor(WS) == 6  # advanced by the replay, not by the image
+        assert store.node(WS, uid("img-node")) is None  # still: the image never installed
+
+    def test_keyed_client_restores_only_meta_declared_sealed_blobs(self, store: LocalStore) -> None:
+        key = generate_workspace_key()
+        relay = FakeRelayClient(WS)
+        relay.snapshot_blob = encrypt_bytes(
+            key, make_server_snapshot([{"id": uid("sealed-node"), "is_class": 1, "workspace_id": WS}])
+        )
+        relay.snapshot_sealed = True
+        relay.snapshot_up_to_seq = 9
+        store.set_cursor(WS, 1)
+        engine = make_engine(relay, store, crypto=WorkspaceKeyCrypto(key))
+        assert engine.maybe_restore_snapshot() is True
+        assert store.node(WS, uid("sealed-node")) is not None
+
+    def test_fail_loud_lock_refuses_push_pull_and_snapshot(self, store: LocalStore) -> None:
+        """The owner ruling: a known-keyed workspace opened without a key
+        refuses content sync — nothing plaintext may move."""
+        relay = FakeRelayClient(WS)
+        relay.receive_remote(create_env(uid("remote")))
+        store.enqueue(create_env(uid("local")))
+        engine = make_engine(relay, store)
+        engine.encrypted_locked = True
+
+        assert engine.push() == PushResult(sent=0, quarantined=0)
+        assert engine.pull() == PullResult(applied=0, cursor=0)
+        assert engine.maybe_restore_snapshot() is False
+        assert store.pending_outbox(WS) != []  # the outbox kept its envelopes
+        assert store.node(WS, uid("remote")) is None
+
+    def test_installing_a_key_clears_the_fail_loud_lock(self, store: LocalStore) -> None:
+        relay = FakeRelayClient(WS)
+        store.enqueue(create_env(uid("n1"), content="unlocked", hlc=(2, 0)))
+        engine = make_engine(relay, store)
+        engine.encrypted_locked = True
+        assert engine.push() == PushResult(sent=0, quarantined=0)
+
+        engine.set_crypto(WorkspaceKeyCrypto(generate_workspace_key()))
+        assert engine.encrypted_locked is False
+        assert engine.push().sent == 1  # the sealed wire flows again
+
+
+class TestEncryptedLockedModel:
+    """WorkspaceRef carries the server's `encrypted` flag (selector chrome
+    and locked detection parity with the web's lock badges)."""
+
+    def test_workspace_ref_defaults_to_unencrypted(self) -> None:
+        ref = WorkspaceRef(id="w1")
+        assert ref.encrypted is False
+
+    def test_workspace_ref_parses_the_flag(self) -> None:
+        ref = WorkspaceRef(id="w1", encrypted=True)
+        assert ref.model_dump(by_alias=True)["encrypted"] is True
